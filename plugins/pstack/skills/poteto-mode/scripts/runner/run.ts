@@ -47,8 +47,16 @@ export interface RunResult {
   readonly receipt: RunnerReceipt;
 }
 
+function boundedEvidence(value: string, limit: number): string {
+  if (value.length <= limit) return value;
+  const head = Math.ceil(limit / 2);
+  const tail = limit - head;
+  const omitted = value.length - head - tail;
+  return `${value.slice(0, head)}\n[truncated ${omitted} characters]\n${value.slice(value.length - tail)}`;
+}
+
 function evidence(value: string): string {
-  return value.trim().slice(0, ERROR_EVIDENCE_LIMIT);
+  return boundedEvidence(value.trim(), ERROR_EVIDENCE_LIMIT);
 }
 
 function removeIfExists(path: string): void {
@@ -410,7 +418,7 @@ function retriedPreflightEvidence(
   const payloadLimit = ERROR_EVIDENCE_LIMIT - firstLabel.length - secondLabel.length;
   const firstLimit = Math.floor(payloadLimit / 2);
   const secondLimit = payloadLimit - firstLimit;
-  return `${firstLabel}${first.slice(0, firstLimit)}${secondLabel}${second.slice(0, secondLimit)}`;
+  return `${firstLabel}${boundedEvidence(first, firstLimit)}${secondLabel}${boundedEvidence(second, secondLimit)}`;
 }
 
 function statusExitCode(status: ReceiptStatus): number {
@@ -818,7 +826,6 @@ async function executeLane(
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    removeIfExists(options.outputPath);
     receipt = completeReceipt(options, {
       ...base,
       status: "malformed-output",
@@ -833,6 +840,7 @@ async function executeLane(
         evidence: evidence(`${result.stderr}\n${result.stdout}`),
       },
     });
+    removeIfExists(options.outputPath);
   }
 
   writeReceipt(options.receiptPath, receipt);

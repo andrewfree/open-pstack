@@ -100,7 +100,7 @@ describe("invocationCommand", () => {
       "--sandbox",
       "read-only",
       "--tools",
-      "read_file,grep,list_dir,run_terminal_cmd",
+      "read_file,grep,list_dir",
       "--disallowed-tools",
       "Agent,search_tool,use_tool",
       "--output-format",
@@ -111,6 +111,28 @@ describe("invocationCommand", () => {
       "--disable-web-search",
       "--verbatim",
     ]);
+  });
+
+  it("keeps a read-only Grok lane clear of the shell tool its plan mode would stall on", () => {
+    const grok = invocationCommand(options({ provider: "grok", model: "grok-4.6" }));
+    expect(grok.args).not.toContain("run_terminal_cmd");
+    expect(grok.args).toEqual(
+      expect.arrayContaining([
+        "--permission-mode",
+        "plan",
+        "--sandbox",
+        "read-only",
+        "--tools",
+        "read_file,grep,list_dir",
+      ])
+    );
+
+    const claude = invocationCommand(
+      options({ provider: "claude", model: "claude-fable-5" })
+    );
+    expect(claude.args).toEqual(
+      expect.arrayContaining(["--permission-mode", "plan"])
+    );
   });
 
   it("uses bounded write modes without blanket bypasses", () => {
