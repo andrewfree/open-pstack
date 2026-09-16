@@ -10,7 +10,11 @@ import {
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { invocationCommand, preflightCommand, type CommandSpec } from "./commands.ts";
-import { parseProviderOutput, reportedModelMatches } from "./parse-output.ts";
+import {
+  cursorListedModel,
+  parseProviderOutput,
+  reportedModelMatches,
+} from "./parse-output.ts";
 import type {
   Provider,
   ReceiptStatus,
@@ -377,11 +381,13 @@ function preflightPassed(provider: Provider, model: string, result: ProcessResul
       return /logged in/i.test(combined);
     case "grok":
       return /logged in/i.test(combined) && combined.includes(model);
+    case "cursor":
+      return cursorListedModel(combined, model) !== null;
   }
 }
 
 function successfulPreflightEvidence(provider: Provider, model: string): string {
-  return provider === "grok"
+  return provider === "grok" || provider === "cursor"
     ? `authenticated; model ${model} available`
     : "authenticated";
 }
@@ -403,6 +409,11 @@ function preflightFailureStatus(
 ): ReceiptStatus {
   const status = unavailableStatus(value);
   if (status !== "child-failed") return status;
+  if (provider === "cursor") {
+    return cursorListedModel(value, model) === null
+      ? "unavailable-model"
+      : "unauthenticated";
+  }
   return provider === "grok" && !value.includes(model)
     ? "unavailable-model"
     : "unauthenticated";
@@ -444,13 +455,26 @@ function statusExitCode(status: ReceiptStatus): number {
 function modelProof(
   provider: Provider,
   requested: string,
-  reported: string | null
+  reported: string | null,
+  listedModel: string | null
 ): {
   readonly reportedModel: string | null;
   readonly modelVerified: boolean;
   readonly modelEvidence: "provider-report" | "pinned-argv" | null;
 } {
   if (reportedModelMatches(requested, reported)) {
+    return {
+      reportedModel: reported,
+      modelVerified: true,
+      modelEvidence: "provider-report",
+    };
+  }
+  if (
+    provider === "cursor" &&
+    reported !== null &&
+    listedModel !== null &&
+    reported.trim() === listedModel
+  ) {
     return {
       reportedModel: reported,
       modelVerified: true,
@@ -681,6 +705,13 @@ async function executeLane(
     );
   }
 
+  const listedModel = options.provider === "cursor"
+    ? cursorListedModel(
+      `${preflightResult.stdout}\n${preflightResult.stderr}`,
+      options.model
+    )
+    : null;
+
   preflightState = {
     argv: [preflightExecutable, ...preflight.args],
     status: preflightResult.cancelledBy !== null
@@ -807,7 +838,8 @@ async function executeLane(
     const proof = modelProof(
       options.provider,
       options.model,
-      parsed.reportedModel
+      parsed.reportedModel,
+      listedModel
     );
     if (!proof.modelVerified && proof.modelEvidence !== "pinned-argv") {
       throw new Error(

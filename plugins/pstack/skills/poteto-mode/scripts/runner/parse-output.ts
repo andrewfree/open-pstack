@@ -76,7 +76,7 @@ function parseClaude(stdout: string, requestedModel: string): ParsedOutput {
 
 const ERROR_DETAIL_LIMIT = 500;
 
-function grokErrorMessage(result: JsonObject): string {
+function providerErrorMessage(provider: Provider, result: JsonObject): string {
   const subtype = nullableString(result.subtype) ?? "unknown";
   const detail = nullableString(object(result.error)?.message)
     ?? nullableString(result.error)
@@ -85,7 +85,7 @@ function grokErrorMessage(result: JsonObject): string {
   const reason = detail === null
     ? ""
     : `: ${detail.trim().slice(0, ERROR_DETAIL_LIMIT)}`;
-  return `grok reported an error result (subtype ${subtype})${reason}`;
+  return `${provider} reported an error result (subtype ${subtype})${reason}`;
 }
 
 function parseGrok(stdout: string, requestedModel: string): ParsedOutput {
@@ -104,7 +104,7 @@ function parseGrok(stdout: string, requestedModel: string): ParsedOutput {
 
   if (result === null) throw new Error("grok result did not contain a terminal event");
   if (result.is_error === true || result.subtype !== "success") {
-    throw new Error(grokErrorMessage(result));
+    throw new Error(providerErrorMessage("grok", result));
   }
   const text = nullableString(result.result);
   if (text === null) throw new Error("grok result did not contain final text");
@@ -114,6 +114,74 @@ function parseGrok(stdout: string, requestedModel: string): ParsedOutput {
     reportedModel: modelFromUsage(result.modelUsage, requestedModel),
     sessionId: nullableString(result.session_id),
     usage: normalizedUsage(result.usage),
+    costUsd: finiteNumber(result.total_cost_usd) ?? null,
+  };
+}
+
+function cursorUsage(value: unknown): NormalizedUsage | null {
+  const usage = object(value);
+  if (usage === null) return null;
+  const result: NormalizedUsage = {
+    inputTokens: finiteNumber(usage.inputTokens),
+    cachedInputTokens: finiteNumber(usage.cacheReadTokens),
+    cacheCreationInputTokens: finiteNumber(usage.cacheWriteTokens),
+    outputTokens: finiteNumber(usage.outputTokens),
+  };
+  return Object.values(result).some((entry) => entry !== undefined)
+    ? result
+    : null;
+}
+
+export function cursorListedModel(
+  modelsOutput: string,
+  model: string
+): string | null {
+  for (const line of modelsOutput.split("\n")) {
+    const trimmed = line.trim();
+    const separator = trimmed.indexOf(" - ");
+    if (separator < 0) continue;
+    if (trimmed.slice(0, separator) !== model) continue;
+    return nullableString(trimmed.slice(separator + 3).trim());
+  }
+  return null;
+}
+
+function parseCursor(stdout: string): ParsedOutput {
+  let result: JsonObject | null = null;
+  let reportedModel: string | null = null;
+  let sessionId: string | null = null;
+
+  for (const line of stdout.split("\n")) {
+    if (line.trim().length === 0) continue;
+    let raw: unknown;
+    try {
+      raw = JSON.parse(line);
+    } catch {
+      throw new Error("cursor emitted a non-JSON event");
+    }
+    const event = object(raw);
+    if (event === null) continue;
+    if (event.type === "system" && event.subtype === "init") {
+      reportedModel = nullableString(event.model) ?? reportedModel;
+      sessionId = nullableString(event.session_id) ?? sessionId;
+    }
+    if (event.type === "result") result = event;
+  }
+
+  if (result === null) {
+    throw new Error("cursor result did not contain a terminal event");
+  }
+  if (result.is_error === true || result.subtype !== "success") {
+    throw new Error(providerErrorMessage("cursor", result));
+  }
+  const text = nullableString(result.result);
+  if (text === null) throw new Error("cursor result did not contain final text");
+
+  return {
+    text,
+    reportedModel,
+    sessionId: nullableString(result.session_id) ?? sessionId,
+    usage: cursorUsage(result.usage),
     costUsd: finiteNumber(result.total_cost_usd) ?? null,
   };
 }
@@ -174,6 +242,8 @@ export function parseProviderOutput(
       return parseCodex(stdout);
     case "grok":
       return parseGrok(stdout, requestedModel);
+    case "cursor":
+      return parseCursor(stdout);
   }
 }
 
