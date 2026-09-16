@@ -51,7 +51,7 @@ Probe only the four selected `provider:model@effort` pairs. Run one probe per fa
 |---|---|---|---|---|
 | Fable | Fable matrix row + selected effort | native Agent `pstack-fable-<effort>` | Claude CLI | native one-turn probe or `claude auth status --json` plus one-turn probe |
 | Sol | Sol matrix row + selected effort | `codex exec` | native `spawn_agent` | `codex login status` plus one-turn probe or native one-turn probe |
-| Grok | Grok matrix row + selected effort | Grok CLI | Grok CLI | `grok models` must list the requested model; one-turn probe |
+| Grok | Grok matrix row + selected effort | Cursor CLI | Cursor CLI | `cursor-agent models` must list the requested model; one-turn probe |
 | Opus | Opus matrix row + selected effort | native Agent `pstack-opus-<effort>` | Claude CLI | native one-turn probe or `claude auth status --json` plus one-turn probe |
 
 A family whose matrix row names the `cursor` provider probes through the external runner with `cursor-agent`, and its availability proof is `cursor-agent models` listing the requested slug plus a one-turn probe. Cursor has no effort flag, so that family's Selectable efforts cell holds only the effort its slug names; changing its effort means changing the matrix row's Model cell, not the descriptor alone.
@@ -88,22 +88,22 @@ After the operator confirms, write the in-memory render from step 6. Never paste
 
 Provider-qualified per-role choices. Read the installed pstack provider-dispatch reference before dispatching a configured role. Every documented role remains present. `inherit-parent` and `auto` use the parent model natively and still count as one panel lane.
 
-feature, refactoring: grok:grok-4.6@xhigh
+feature, refactoring: cursor:cursor-grok-4.6-xhigh@xhigh
 bug-fix: codex:gpt-5.6-sol@max
 perf-issue: codex:gpt-5.6-sol@max
 hillclimb: codex:gpt-5.6-sol@max
 judgment and prose: claude:claude-fable-5@max
 hardest tasks: claude:claude-fable-5@max
-how explorer: grok:grok-4.6@xhigh
+how explorer: cursor:cursor-grok-4.6-xhigh@xhigh
 how explainer: claude:claude-fable-5@max
-how critics: claude:claude-fable-5@max, codex:gpt-5.6-sol@max, grok:grok-4.6@xhigh, claude:claude-opus-5@xhigh
+how critics: claude:claude-fable-5@max, codex:gpt-5.6-sol@max, cursor:cursor-grok-4.6-xhigh@xhigh, claude:claude-opus-5@xhigh
 why investigators, synthesizer: inherit-parent
 reflect tooling, judgment, divergent, synthesizer: inherit-parent
-arena runners: claude:claude-fable-5@max, codex:gpt-5.6-sol@max, grok:grok-4.6@xhigh, claude:claude-opus-5@xhigh
-arena cross-judge pool: claude:claude-fable-5@max, codex:gpt-5.6-sol@max, grok:grok-4.6@xhigh, claude:claude-opus-5@xhigh
-swarm workers: grok:grok-4.6@xhigh
-architect runners: claude:claude-fable-5@max, codex:gpt-5.6-sol@max, grok:grok-4.6@xhigh, claude:claude-opus-5@xhigh
-interrogate reviewers: claude:claude-fable-5@max, codex:gpt-5.6-sol@max, grok:grok-4.6@xhigh, claude:claude-opus-5@xhigh
+arena runners: claude:claude-fable-5@max, codex:gpt-5.6-sol@max, cursor:cursor-grok-4.6-xhigh@xhigh, claude:claude-opus-5@xhigh
+arena cross-judge pool: claude:claude-fable-5@max, codex:gpt-5.6-sol@max, cursor:cursor-grok-4.6-xhigh@xhigh, claude:claude-opus-5@xhigh
+swarm workers: cursor:cursor-grok-4.6-xhigh@xhigh
+architect runners: claude:claude-fable-5@max, codex:gpt-5.6-sol@max, cursor:cursor-grok-4.6-xhigh@xhigh, claude:claude-opus-5@xhigh
+interrogate reviewers: claude:claude-fable-5@max, codex:gpt-5.6-sol@max, cursor:cursor-grok-4.6-xhigh@xhigh, claude:claude-opus-5@xhigh
 ```
 
 ### 8. Wire it in
