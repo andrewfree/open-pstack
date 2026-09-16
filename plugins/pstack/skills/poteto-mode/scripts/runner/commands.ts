@@ -27,6 +27,8 @@ export function preflightCommand(provider: Provider): CommandSpec {
       };
     case "grok":
       return { command: "grok", args: ["models"], stdin: "none" };
+    case "cursor":
+      return { command: "cursor-agent", args: ["models"], stdin: "none" };
   }
 }
 
@@ -54,6 +56,22 @@ function grokTools(mode: AccessMode): string {
   const readonly = ["read_file", "grep", "list_dir"];
   const write = ["run_terminal_cmd", "search_replace"];
   return [...readonly, ...(mode === "isolated-write" ? write : [])].join(",");
+}
+
+function cursorTools(mode: AccessMode): string {
+  const readonly = [
+    "read_tool_call",
+    "grep_tool_call",
+    "glob_tool_call",
+    "ls_tool_call",
+    "read_lints_tool_call",
+  ];
+  const write = ["edit_tool_call", "delete_tool_call", "shell_tool_call"];
+  return [...readonly, ...(mode === "isolated-write" ? write : [])].join(",");
+}
+
+function cursorAccess(mode: AccessMode): readonly string[] {
+  return mode === "read-only" ? ["--mode", "plan"] : ["--force"];
 }
 
 function permissionMode(mode: AccessMode): string {
@@ -146,6 +164,26 @@ export function invocationCommand(options: RunnerOptions): CommandSpec {
           "--verbatim",
         ],
         stdin: "none",
+      };
+    case "cursor":
+      return {
+        command: "cursor-agent",
+        args: [
+          "--print",
+          "--model",
+          options.model,
+          "--output-format",
+          "stream-json",
+          ...cursorAccess(options.mode),
+          "--sandbox",
+          "enabled",
+          "--allowed-tools",
+          cursorTools(options.mode),
+          "--workspace",
+          options.cwd,
+          "--trust",
+        ],
+        stdin: "prompt",
       };
   }
 }
