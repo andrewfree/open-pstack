@@ -156,6 +156,57 @@ export function cursorListedModel(
   return null;
 }
 
+function modelTokens(value: string): string[] {
+  return value
+    .toLowerCase()
+    .split(/[\s-]+/)
+    .filter((token) => token.length > 0);
+}
+
+function sameTokens(left: string[], right: string[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every((token, index) => token === right[index])
+  );
+}
+
+function tokenSubsequence(needle: string[], haystack: string[]): boolean {
+  if (needle.length === 0) return false;
+  let matched = 0;
+  for (const token of haystack) {
+    if (token !== needle[matched]) continue;
+    matched += 1;
+    if (matched === needle.length) return true;
+  }
+  return false;
+}
+
+/**
+ * Cursor names the served model by display name in its init event, and the
+ * `cursor-agent models` listing is not a reliable exact copy of that name: the
+ * listing drops effort words the init event keeps, so
+ * `cursor-grok-4.6-high-fast - Cursor Grok 4.6 Fast` is served as
+ * `Cursor Grok 4.6 High Fast`. Accept the report when it equals the listed
+ * display name, when it spells out the requested slug, or when the listed name
+ * runs through it in order. All three ignore case, whitespace, and hyphens.
+ */
+export function cursorReportedModelMatches(
+  requested: string,
+  listed: string | null,
+  reported: string | null
+): boolean {
+  if (reported === null) return false;
+  const reportedTokens = modelTokens(reported);
+  if (reportedTokens.length === 0) return false;
+  if (sameTokens(reportedTokens, modelTokens(requested))) return true;
+  if (listed === null) return false;
+  const listedTokens = modelTokens(listed);
+  return (
+    listedTokens.join("") === reportedTokens.join("") ||
+    tokenSubsequence(listedTokens, reportedTokens)
+  );
+}
+
 function parseCursor(stdout: string): ParsedOutput {
   let result: JsonObject | null = null;
   let reportedModel: string | null = null;
