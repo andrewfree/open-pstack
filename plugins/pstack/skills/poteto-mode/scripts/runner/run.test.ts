@@ -93,6 +93,10 @@ if (process.env.FAKE_INVALID_MODEL === "1") {
   console.error("The requested model is not supported with this account.");
   process.exit(1);
 }
+if (process.env.FAKE_NOISY_FAILURE === "1") {
+  console.log("HEAD_MARKER" + "x".repeat(12000) + "TAIL_MARKER");
+  process.exit(1);
+}
 if (stage === "model" && process.env.FAKE_DESCENDANT_HOLDS_PIPES_MS) {
   const seconds = Number(process.env.FAKE_DESCENDANT_HOLDS_PIPES_MS) / 1000;
   const descendant = Bun.spawn(["/bin/sh", "-c", "sleep " + seconds], {
@@ -117,6 +121,10 @@ if (name === "claude") {
   console.log(JSON.stringify({type:"turn.completed",usage:{input_tokens:20,cached_input_tokens:5,output_tokens:3,reasoning_output_tokens:1}}));
 } else {
   console.log(JSON.stringify({type:"assistant",message:{content:[{type:"text",text:"progress"}]}}));
+  if (process.env.FAKE_GROK_CANCELLED === "1") {
+    console.log(JSON.stringify({type:"result",subtype:"cancelled",is_error:true,result:"run_terminal_cmd was denied by the headless approval policy"}));
+    process.exit(0);
+  }
   console.log(JSON.stringify({type:"result",subtype:"success",is_error:false,result:"GROK_OK",session_id:"g1",usage:{input_tokens:30,output_tokens:4,total_tokens:34},total_cost_usd:0.02,modelUsage:{[model + "-build"]:{}}}));
 }
 if (process.env.FAKE_MODEL_EXITING_PATH) {
@@ -221,6 +229,8 @@ beforeEach(() => {
   process.env.PATH = `${bin}:${dirname(process.execPath)}:${previousPath ?? ""}`;
   delete process.env.FAKE_TIMEOUT;
   delete process.env.FAKE_INVALID_MODEL;
+  delete process.env.FAKE_NOISY_FAILURE;
+  delete process.env.FAKE_GROK_CANCELLED;
   delete process.env.FAKE_CANCEL;
   delete process.env.FAKE_CANCEL_STAGE;
   delete process.env.FAKE_IGNORE_SIGNAL;
@@ -245,6 +255,8 @@ afterEach(() => {
   process.env.PATH = previousPath;
   delete process.env.FAKE_TIMEOUT;
   delete process.env.FAKE_INVALID_MODEL;
+  delete process.env.FAKE_NOISY_FAILURE;
+  delete process.env.FAKE_GROK_CANCELLED;
   delete process.env.FAKE_CANCEL;
   delete process.env.FAKE_CANCEL_STAGE;
   delete process.env.FAKE_IGNORE_SIGNAL;
@@ -312,6 +324,34 @@ describe("runLane", () => {
       modelVerified: false,
       modelEvidence: null,
     });
+  });
+
+  it("keeps both ends of a noisy failure and marks what it dropped", async () => {
+    process.env.FAKE_NOISY_FAILURE = "1";
+    const input = options("grok", "noisy-failure");
+    const result = await runLane(input);
+    expect(result.exitCode).toBe(70);
+    const recorded = receipt(input.receiptPath);
+    expect(recorded.status).toBe("child-failed");
+    expect(recorded.error?.evidence).toStartWith("HEAD_MARKER");
+    expect(recorded.error?.evidence).toEndWith("TAIL_MARKER");
+    expect(recorded.error?.evidence).toContain("[truncated 8022 characters]");
+    expect(recorded.error?.evidence.length).toBeLessThan(4_100);
+  });
+
+  it("reports the Grok subtype and denial text when a headless approval cancels the lane", async () => {
+    process.env.FAKE_GROK_CANCELLED = "1";
+    const input = options("grok", "grok-cancelled");
+    const result = await runLane(input);
+    expect(result.exitCode).toBe(65);
+    expect(existsSync(input.outputPath)).toBe(false);
+    const recorded = receipt(input.receiptPath);
+    expect(recorded.status).toBe("malformed-output");
+    expect(recorded.error?.message).toContain("subtype cancelled");
+    expect(recorded.error?.message).toContain(
+      "run_terminal_cmd was denied by the headless approval policy"
+    );
+    expect(recorded.error?.evidence).toContain("\"subtype\":\"cancelled\"");
   });
 
   it("retries a contradictory Grok authentication preflight before running the model", async () => {

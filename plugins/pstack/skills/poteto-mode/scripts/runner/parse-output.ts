@@ -74,6 +74,20 @@ function parseClaude(stdout: string, requestedModel: string): ParsedOutput {
   };
 }
 
+const ERROR_DETAIL_LIMIT = 500;
+
+function grokErrorMessage(result: JsonObject): string {
+  const subtype = nullableString(result.subtype) ?? "unknown";
+  const detail = nullableString(object(result.error)?.message)
+    ?? nullableString(result.error)
+    ?? nullableString(result.result)
+    ?? nullableString(result.message);
+  const reason = detail === null
+    ? ""
+    : `: ${detail.trim().slice(0, ERROR_DETAIL_LIMIT)}`;
+  return `grok reported an error result (subtype ${subtype})${reason}`;
+}
+
 function parseGrok(stdout: string, requestedModel: string): ParsedOutput {
   let result: JsonObject | null = null;
   for (const line of stdout.split("\n")) {
@@ -90,7 +104,7 @@ function parseGrok(stdout: string, requestedModel: string): ParsedOutput {
 
   if (result === null) throw new Error("grok result did not contain a terminal event");
   if (result.is_error === true || result.subtype !== "success") {
-    throw new Error("grok reported an error result");
+    throw new Error(grokErrorMessage(result));
   }
   const text = nullableString(result.result);
   if (text === null) throw new Error("grok result did not contain final text");

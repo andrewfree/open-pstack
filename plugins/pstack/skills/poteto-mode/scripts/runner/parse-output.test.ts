@@ -110,6 +110,33 @@ describe("parseProviderOutput", () => {
     expect(parsed.reportedModel).toBe("claude-fable-5");
   });
 
+  it("names the Grok result subtype and the provider's own error text", () => {
+    const cancelled = [
+      JSON.stringify({
+        type: "result",
+        subtype: "cancelled",
+        is_error: true,
+        result: "run_terminal_cmd was denied by the headless approval policy",
+      }),
+    ].join("\n");
+    expect(() => parseProviderOutput("grok", cancelled, "", "grok-4.6")).toThrow(
+      "subtype cancelled"
+    );
+    expect(() => parseProviderOutput("grok", cancelled, "", "grok-4.6")).toThrow(
+      "denied by the headless approval policy"
+    );
+
+    const errored = JSON.stringify({
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+      error: { message: "upstream refused the request" },
+    });
+    expect(() => parseProviderOutput("grok", errored, "", "grok-4.6")).toThrow(
+      "(subtype error_during_execution): upstream refused the request"
+    );
+  });
+
   it("rejects malformed or textless responses", () => {
     expect(() =>
       parseProviderOutput("claude", "not-json", "", "claude-fable-5")
