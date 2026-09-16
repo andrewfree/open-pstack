@@ -13,6 +13,7 @@ import { invocationCommand, preflightCommand, type CommandSpec } from "./command
 import { versionedClaudeAlias } from "./model-aliases.ts";
 import {
   cursorListedModel,
+  cursorReportedModelMatches,
   parseProviderOutput,
   reportedModelMatches,
 } from "./parse-output.ts";
@@ -472,9 +473,7 @@ function modelProof(
   }
   if (
     provider === "cursor" &&
-    reported !== null &&
-    listedModel !== null &&
-    reported.trim() === listedModel
+    cursorReportedModelMatches(requested, listedModel, reported)
   ) {
     return {
       reportedModel: reported,

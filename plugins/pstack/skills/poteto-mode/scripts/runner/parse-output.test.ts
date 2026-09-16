@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   cursorListedModel,
+  cursorReportedModelMatches,
   parseProviderOutput,
   reportedModelMatches,
 } from "./parse-output.ts";
@@ -277,5 +278,92 @@ describe("parseProviderOutput", () => {
         "cursor-grok-4.6-xhigh"
       )
     ).toThrow("terminal event");
+  });
+});
+
+describe("cursorReportedModelMatches", () => {
+  it("accepts the listed display name for the requested slug", () => {
+    expect(
+      cursorReportedModelMatches(
+        "cursor-grok-4.6-xhigh",
+        "Cursor Grok 4.6 Extra High",
+        "Cursor Grok 4.6 Extra High"
+      )
+    ).toBe(true);
+    expect(
+      cursorReportedModelMatches(
+        "cursor-grok-4.6-xhigh",
+        "Cursor Grok 4.6 Extra High",
+        "  cursor grok 4.6 extra-high "
+      )
+    ).toBe(true);
+  });
+
+  it("accepts a report that spells out the requested slug", () => {
+    expect(
+      cursorReportedModelMatches(
+        "cursor-grok-4.6-high-fast",
+        "Cursor Grok 4.6 Fast",
+        "Cursor Grok 4.6 High Fast"
+      )
+    ).toBe(true);
+    expect(
+      cursorReportedModelMatches(
+        "cursor-grok-4.6-high-fast",
+        null,
+        "Cursor Grok 4.6 High Fast"
+      )
+    ).toBe(true);
+  });
+
+  it("accepts a listed name that runs through the report in order", () => {
+    expect(
+      cursorReportedModelMatches(
+        "cursor-grok-4.6-fast",
+        "Cursor Grok 4.6 Fast",
+        "Cursor Grok 4.6 High Fast"
+      )
+    ).toBe(true);
+    expect(
+      cursorReportedModelMatches(
+        "claude-opus-5-thinking-high",
+        "Claude Opus 5 1M Thinking",
+        "Claude Opus 5 1M Thinking High"
+      )
+    ).toBe(true);
+  });
+
+  it("rejects a report for a different model", () => {
+    expect(
+      cursorReportedModelMatches(
+        "cursor-grok-4.5-high-fast",
+        "Cursor Grok 4.5 Fast",
+        "Cursor Grok 4.6 High Fast"
+      )
+    ).toBe(false);
+    expect(
+      cursorReportedModelMatches(
+        "cursor-grok-4.5-high-fast",
+        null,
+        "Cursor Grok 4.6 High Fast"
+      )
+    ).toBe(false);
+    expect(
+      cursorReportedModelMatches(
+        "cursor-grok-4.6-xhigh",
+        "Cursor Grok 4.6 Extra High",
+        "Cursor Grok 4.5"
+      )
+    ).toBe(false);
+    expect(
+      cursorReportedModelMatches(
+        "cursor-grok-4.6-fast",
+        "Cursor Grok 4.6 Fast",
+        "Cursor Fast Grok 4.6"
+      )
+    ).toBe(false);
+    expect(
+      cursorReportedModelMatches("cursor-grok-4.6-fast", "Cursor Grok 4.6 Fast", null)
+    ).toBe(false);
   });
 });

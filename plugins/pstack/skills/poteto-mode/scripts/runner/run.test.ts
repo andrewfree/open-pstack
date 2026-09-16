@@ -541,6 +541,20 @@ describe("runLane", () => {
     });
   });
 
+  it("accepts a Cursor report that adds the effort word the listing drops", async () => {
+    process.env.FAKE_CURSOR_REPORTED_MODEL = "Cursor Grok 4.6 Extra High Fast";
+    const input = options("cursor", "cursor-effort-word");
+    const result = await runLane(input);
+    expect(result.exitCode).toBe(0);
+    expect(readFileSync(input.outputPath, "utf8")).toBe("CURSOR_OK");
+    expect(receipt(input.receiptPath)).toMatchObject({
+      status: "complete",
+      reportedModel: "Cursor Grok 4.6 Extra High Fast",
+      modelVerified: true,
+      modelEvidence: "provider-report",
+    });
+  });
+
   it("refuses a Cursor lane that reports another model", async () => {
     process.env.FAKE_CURSOR_REPORTED_MODEL = "Cursor Grok 4.5";
     const input = options("cursor", "cursor-wrong-model");
