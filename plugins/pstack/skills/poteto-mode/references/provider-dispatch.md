@@ -12,12 +12,12 @@ pstack model choices are provider-qualified descriptors:
 |---|---|---|---|---|---|---|
 | fable | claude-fable-5-thinking-max | claude | claude-fable-5 | max | low medium high xhigh max | fable |
 | sol | gpt-5.6-sol-max | codex | gpt-5.6-sol | max | low medium high xhigh max | - |
-| grok | grok-4.6-fast-xhigh | grok | grok-4.6 | xhigh | low medium high xhigh max | - |
+| grok | grok-4.6-fast-xhigh | cursor | cursor-grok-4.6-xhigh | xhigh | xhigh | - |
 | opus | claude-opus-5-thinking-xhigh | claude | claude-opus-5 | xhigh | low medium high xhigh max | opus |
 
 The allowed effort universe is exactly `low`, `medium`, `high`, `xhigh`, `max`. First-run requested efforts are the Default effort cell of each row. A Claude-native agent stem of `-` means the family has no Claude-native agent. Otherwise the shipped agent name is `pstack-<stem>-<effort>`.
 
-`fast` is part of Cursor's Grok selector, not a Grok Build CLI model or effort flag. The portable Grok route pins the current CLI model `grok-4.6`. The first-run Grok effort is `xhigh`.
+The Grok family runs on Cursor's hosted Grok. `cursor-agent` names reasoning effort inside the model slug, so that row's Model cell is the whole choice and its Selectable efforts cell holds only the effort that slug names. Moving the family to another effort means editing the Model cell to another slug from `cursor-agent models`, such as `cursor-grok-4.6-high`. `cursor-grok-4.6-xhigh-fast` is the exact upstream `grok-4.6-fast-xhigh` selector and costs more; the default row takes the non-fast slug. The standalone `grok` provider stays supported by the launcher. To go back to the local Grok CLI, set this row to `grok` / `grok-4.6` with `low medium high xhigh max` selectable and update every descriptor that names it.
 
 ## The parent owns the route
 
@@ -90,7 +90,7 @@ A Cursor lane pins `--print`, `--model`, `--output-format stream-json`, `--works
 
 Cursor reports the served model by display name rather than by slug, in the `system` `init` event at the head of its stream. The runner resolves the requested slug's display name from the same preflight listing and compares the two, so a Cursor receipt still earns `modelEvidence: "provider-report"`. Cursor's result event carries token usage and a session id but no cost, so `costUsd` stays null on this route.
 
-No model-matrix family routes through Cursor yet. The provider is available to any lane that pins a Cursor slug explicitly.
+The Grok model-matrix family routes through Cursor. Because a matrix row names one provider, every Grok lane follows that row, readers and writers alike.
 
 ## Completion and dropouts
 
