@@ -98,7 +98,7 @@ if (name === "cursor-agent" && args[0] === "models") {
   }
   const listed = process.env.FAKE_CURSOR_MISSING_MODEL === "1"
     ? "cursor-grok-4.6-xhigh-fast - Cursor Grok 4.6 Extra High Fast"
-    : "cursor-grok-4.6-xhigh - Cursor Grok 4.6 Extra High";
+    : "cursor-grok-4.6-xhigh - Cursor Grok 4.6 Extra High\\ncursor-grok-4.6-high-fast - Cursor Grok 4.6 Fast";
   console.log("Available models\\n\\nauto - Auto (current, default)\\n" + listed);
   process.exit(0);
 }
@@ -544,17 +544,31 @@ describe("runLane", () => {
   });
 
   it("accepts a Cursor report that adds the effort word the listing drops", async () => {
-    process.env.FAKE_CURSOR_REPORTED_MODEL = "Cursor Grok 4.6 Extra High Fast";
-    const input = options("cursor", "cursor-effort-word");
+    process.env.FAKE_CURSOR_REPORTED_MODEL = "Cursor Grok 4.6 High Fast";
+    const input = {
+      ...options("cursor", "cursor-effort-word"),
+      model: "cursor-grok-4.6-high-fast",
+    };
     const result = await runLane(input);
     expect(result.exitCode).toBe(0);
     expect(readFileSync(input.outputPath, "utf8")).toBe("CURSOR_OK");
     expect(receipt(input.receiptPath)).toMatchObject({
       status: "complete",
-      reportedModel: "Cursor Grok 4.6 Extra High Fast",
+      reportedModel: "Cursor Grok 4.6 High Fast",
       modelVerified: true,
       modelEvidence: "provider-report",
     });
+  });
+
+  it("refuses a Cursor report that adds a word from neither the slug nor the listing", async () => {
+    process.env.FAKE_CURSOR_REPORTED_MODEL = "Cursor Grok 4.6 Extra High Fast";
+    const input = options("cursor", "cursor-extra-word");
+    const result = await runLane(input);
+    expect(result.exitCode).toBe(65);
+    expect(existsSync(input.outputPath)).toBe(false);
+    expect(receipt(input.receiptPath).error?.message).toContain(
+      "requested model cursor-grok-4.6-xhigh was not reported by cursor"
+    );
   });
 
   it("refuses a Cursor lane that reports another model", async () => {

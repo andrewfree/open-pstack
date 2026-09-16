@@ -384,7 +384,7 @@ describe("cursorReportedModelMatches", () => {
   it("accepts a listed name that runs through the report in order", () => {
     expect(
       cursorReportedModelMatches(
-        "cursor-grok-4.6-fast",
+        "cursor-grok-4.6-high-fast",
         "Cursor Grok 4.6 Fast",
         "Cursor Grok 4.6 High Fast"
       )
@@ -396,6 +396,23 @@ describe("cursorReportedModelMatches", () => {
         "Claude Opus 5 1M Thinking High"
       )
     ).toBe(true);
+  });
+
+  it("rejects a report that adds a word from neither the slug nor the listing", () => {
+    expect(
+      cursorReportedModelMatches(
+        "cursor-grok-4.6-high",
+        "Cursor Grok 4.6",
+        "Cursor Grok 4.6 High Fast"
+      )
+    ).toBe(false);
+    expect(
+      cursorReportedModelMatches(
+        "cursor-grok-4.6-fast",
+        "Cursor Grok 4.6 Fast",
+        "Cursor Grok 4.6 High Fast"
+      )
+    ).toBe(false);
   });
 
   it("rejects a report for a different model", () => {
