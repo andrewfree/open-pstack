@@ -188,7 +188,11 @@ function tokenSubsequence(needle: string[], haystack: string[]): boolean {
  * `cursor-grok-4.6-high-fast - Cursor Grok 4.6 Fast` is served as
  * `Cursor Grok 4.6 High Fast`. Accept the report when it equals the listed
  * display name, when it spells out the requested slug, or when the listed name
- * runs through it in order. All three ignore case, whitespace, and hyphens.
+ * runs through it in order and every word the report adds comes from the
+ * requested slug. Without that last condition a request for
+ * `cursor-grok-4.6-high` would be satisfied by `Cursor Grok 4.6 High Fast`,
+ * which is the separate `cursor-grok-4.6-high-fast` model. All three rules
+ * ignore case, whitespace, and hyphens.
  */
 export function cursorReportedModelMatches(
   requested: string,
@@ -198,12 +202,15 @@ export function cursorReportedModelMatches(
   if (reported === null) return false;
   const reportedTokens = modelTokens(reported);
   if (reportedTokens.length === 0) return false;
-  if (sameTokens(reportedTokens, modelTokens(requested))) return true;
+  const requestedTokens = modelTokens(requested);
+  if (sameTokens(reportedTokens, requestedTokens)) return true;
   if (listed === null) return false;
   const listedTokens = modelTokens(listed);
+  if (listedTokens.join("") === reportedTokens.join("")) return true;
+  const allowed = new Set([...requestedTokens, ...listedTokens]);
   return (
-    listedTokens.join("") === reportedTokens.join("") ||
-    tokenSubsequence(listedTokens, reportedTokens)
+    tokenSubsequence(listedTokens, reportedTokens) &&
+    reportedTokens.every((token) => allowed.has(token))
   );
 }
 
