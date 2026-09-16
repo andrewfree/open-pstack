@@ -114,7 +114,7 @@ describe("parseProviderOutput", () => {
         }),
         JSON.stringify({
           type: "assistant",
-          message: { role: "assistant", content: [{ type: "text", text: "progress" }] },
+          message: { role: "assistant", content: [{ type: "text", text: "CURSOR_OK" }] },
           session_id: "cursor-session",
         }),
         JSON.stringify({
@@ -123,7 +123,7 @@ describe("parseProviderOutput", () => {
           is_error: false,
           duration_ms: 11,
           duration_api_ms: 11,
-          result: "CURSOR_OK",
+          result: "progressCURSOR_OK",
           session_id: "cursor-session",
           request_id: "req-1",
           usage: {
@@ -178,10 +178,18 @@ describe("parseProviderOutput", () => {
           session_id: "cursor-session",
         }),
         JSON.stringify({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "FINAL_ANSWER" }],
+          },
+          session_id: "cursor-session",
+        }),
+        JSON.stringify({
           type: "result",
           subtype: "success",
           is_error: false,
-          result: "FINAL_ANSWER",
+          result: "I'll read the two runner files first.I have the citations; writing the review now.FINAL_ANSWER",
           session_id: "cursor-session",
         }),
       ].join("\n"),
