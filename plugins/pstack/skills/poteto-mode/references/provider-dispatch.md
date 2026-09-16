@@ -96,7 +96,7 @@ A Cursor lane pins `--print`, `--model`, `--output-format stream-json`, `--works
 
 `--allowed-tools` names Cursor's proto tool-call fields, such as `read_tool_call` and `shell_tool_call`. It does not appear in `cursor-agent --help`; the CLI validates the value and prints the complete accepted set when it rejects a name. Re-read that rejection message after a Cursor CLI upgrade before trusting the tool surface.
 
-Cursor reports the served model by display name rather than by slug, in the `system` `init` event at the head of its stream. The runner resolves the requested slug's display name from the same preflight listing and compares the two, so a Cursor receipt still earns `modelEvidence: "provider-report"`. Cursor's result event carries token usage and a session id but no cost, so `costUsd` stays null on this route.
+Cursor reports the served model by display name rather than by slug, in the `system` `init` event at the head of its stream, and the `cursor-agent models` listing is not an exact copy of that name: the listing drops effort words the init event keeps, as in `cursor-grok-4.6-high-fast - Cursor Grok 4.6 Fast` served as `Cursor Grok 4.6 High Fast`. The runner accepts the report in any of three forms, all ignoring case, whitespace, and hyphens: it equals the listed display name for the requested slug, its words spell out the requested slug, or the listed name's words run through it in order. Any of the three still earns `modelEvidence: "provider-report"`. Cursor's result event carries token usage and a session id but no cost, so `costUsd` stays null on this route.
 
 No model-matrix family routes through Cursor yet. The provider is available to any lane that pins a Cursor slug explicitly.
 
@@ -106,7 +106,7 @@ Success requires all of these:
 
 1. Exit status `0`.
 2. Receipt status `complete`.
-3. Either `modelVerified: true` with `modelEvidence: "provider-report"`, or a Codex receipt with `reportedModel: null`, `modelVerified: false`, and `modelEvidence: "pinned-argv"`. For Claude's `fable` and `opus` aliases, the concrete provider report must belong to the requested family. Codex 0.149.0 accepts the exact `--model` argument but does not report the served model in its JSONL stream. A Cursor receipt's `reportedModel` is the served model's display name; `provider-report` there means that name matched the display name the preflight listing gave for the requested slug.
+3. Either `modelVerified: true` with `modelEvidence: "provider-report"`, or a Codex receipt with `reportedModel: null`, `modelVerified: false`, and `modelEvidence: "pinned-argv"`. For Claude's `fable` and `opus` aliases, the concrete provider report must belong to the requested family. Codex 0.149.0 accepts the exact `--model` argument but does not report the served model in its JSONL stream. A Cursor receipt's `reportedModel` is the served model's display name; `provider-report` there means that name matched the requested slug under the display-name rules above.
 4. A non-empty output file.
 
 The receipt also carries elapsed time, token usage when the CLI exposes it, and cost when available. Keep it with the arena or review artifacts so parent-harness comparisons are evidence-based.
