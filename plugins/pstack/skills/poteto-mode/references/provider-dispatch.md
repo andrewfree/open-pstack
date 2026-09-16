@@ -12,10 +12,12 @@ pstack model choices are provider-qualified descriptors:
 |---|---|---|---|---|---|---|
 | fable | fable | claude | fable | max | low medium high xhigh max | fable |
 | sol | gpt-5.6-sol-max | codex | gpt-5.6-sol | max | low medium high xhigh max | - |
-| grok | grok-4.6-fast-xhigh | grok | grok-4.6 | xhigh | low medium high xhigh max | - |
+| grok | grok-4.6-fast-xhigh | cursor | cursor-grok-4.6-xhigh | xhigh | xhigh | - |
 | opus | opus | claude | opus | xhigh | low medium high xhigh max | opus |
 
 The allowed effort universe is exactly `low`, `medium`, `high`, `xhigh`, `max`. First-run requested efforts are the Default effort cell of each row. A Claude-native agent stem of `-` means the family has no Claude-native agent. Otherwise the shipped agent name is `pstack-<stem>-<effort>`.
+
+The Grok family runs on Cursor's hosted Grok. `cursor-agent` names reasoning effort inside the model slug, so that row's Model cell is the whole choice and its Selectable efforts cell holds only the effort that slug names. Moving the family to another effort means editing the Model cell to another slug from `cursor-agent models`, such as `cursor-grok-4.6-high`. `cursor-grok-4.6-xhigh-fast` is the exact upstream `grok-4.6-fast-xhigh` selector and costs more; the default row takes the non-fast slug. The standalone `grok` provider stays supported by the launcher. To go back to the local Grok CLI, set this row to `grok` / `grok-4.6` with `low medium high xhigh max` selectable and update every descriptor that names it.
 
 `fable` and `opus` are Claude Code's rolling aliases. Claude resolves each alias to the latest available family revision. A runner receipt keeps the requested alias in `model` and the concrete provider-reported revision in `reportedModel`; verification accepts only a numeric `claude-fable-*` or `claude-opus-*` revision from the matching family.
 
@@ -24,8 +26,6 @@ The allowed effort universe is exactly `low`, `medium`, `high`, `xhigh`, `max`. 
 Normalize configured descriptors before matching them to the matrix or choosing a route. If a provider-qualified Claude model starts with `claude-fable-` or `claude-opus-` and its remaining revision contains only digits and hyphens, replace that model component in memory with `fable` or `opus`. Preserve provider, effort, role, and lane order. Use only the normalized descriptor for native dispatch or runner argv. Never pass the versioned predecessor to Claude.
 
 This read-time rule makes an older installed sheet use the latest family revision immediately without writing user files. Once per parent run, report that the persisted sheet is stale and that `/setup-pstack` will rewrite it after its normal probes and confirmation. Unknown versioned Claude models remain invalid. The external runner rejects a missed Fable or Opus version pin instead of silently executing it.
-
-`fast` is part of Cursor's Grok selector, not a Grok Build CLI model or effort flag. The portable Grok route pins the current CLI model `grok-4.6`. The first-run Grok effort is `xhigh`.
 
 ## The parent owns the route
 
@@ -98,7 +98,7 @@ A Cursor lane pins `--print`, `--model`, `--output-format stream-json`, `--works
 
 Cursor reports the served model by display name rather than by slug, in the `system` `init` event at the head of its stream, and the `cursor-agent models` listing is not an exact copy of that name: the listing drops effort words the init event keeps, as in `cursor-grok-4.6-high-fast - Cursor Grok 4.6 Fast` served as `Cursor Grok 4.6 High Fast`. The runner accepts the report in any of three forms, all ignoring case, whitespace, and hyphens: it equals the listed display name for the requested slug, its words spell out the requested slug, or the listed name's words run through it in order and every extra word the report carries comes from the requested slug or the listed name, which is what keeps a request for `cursor-grok-4.6-high` from being satisfied by `Cursor Grok 4.6 High Fast`. Any of the three still earns `modelEvidence: "provider-report"`. Cursor's result event carries token usage and a session id but no cost, so `costUsd` stays null on this route. The lane output is the last `assistant` message, which is the finished answer; the result event's text is the concatenation of every assistant message (interim status lines included) and is used only when no assistant message arrived.
 
-No model-matrix family routes through Cursor yet. The provider is available to any lane that pins a Cursor slug explicitly.
+The Grok model-matrix family routes through Cursor. Because a matrix row names one provider, every Grok lane follows that row, readers and writers alike.
 
 ## Completion and dropouts
 

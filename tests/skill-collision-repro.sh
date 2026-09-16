@@ -76,7 +76,7 @@ fi
 # provider/model quad and the three panel skills plus setup-pstack copy it verbatim.
 setup="$repo/plugins/pstack/skills/setup-pstack/SKILL.md"
 dispatch="$repo/plugins/pstack/skills/poteto-mode/references/provider-dispatch.md"
-quad_of() { { grep -oE '(claude|codex|grok):[a-z0-9.-]+@(low|medium|high|xhigh|max)' || true; } | tr '\n' ' ' | sed 's/ $//'; }
+quad_of() { { grep -oE '(claude|codex|grok|cursor):[a-z0-9.-]+@(low|medium|high|xhigh|max)' || true; } | tr '\n' ' ' | sed 's/ $//'; }
 canon_quad="$(awk '
   $0 == "## Model matrix" { in_matrix = 1; next }
   in_matrix && /^## / { exit }
