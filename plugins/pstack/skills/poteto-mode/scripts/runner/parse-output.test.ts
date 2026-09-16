@@ -151,6 +151,71 @@ describe("parseProviderOutput", () => {
     });
   });
 
+  it("keeps the Cursor answer free of the interim narration", () => {
+    const parsed = parseProviderOutput(
+      "cursor",
+      [
+        JSON.stringify({
+          type: "system",
+          subtype: "init",
+          session_id: "cursor-session",
+          model: "Cursor Grok 4.6 Extra High",
+        }),
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "I'll read the two runner files first." }],
+          },
+          session_id: "cursor-session",
+        }),
+        JSON.stringify({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "I have the citations; writing the review now." }],
+          },
+          session_id: "cursor-session",
+        }),
+        JSON.stringify({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          result: "FINAL_ANSWER",
+          session_id: "cursor-session",
+        }),
+      ].join("\n"),
+      "",
+      "cursor-grok-4.6-xhigh"
+    );
+    expect(parsed.text).toBe("FINAL_ANSWER");
+  });
+
+  it("falls back to the last Cursor assistant message when the result has no text", () => {
+    const parsed = parseProviderOutput(
+      "cursor",
+      [
+        JSON.stringify({
+          type: "assistant",
+          message: { role: "assistant", content: [{ type: "text", text: "first pass" }] },
+        }),
+        JSON.stringify({
+          type: "assistant",
+          message: { role: "assistant", content: [{ type: "text", text: "LAST_MESSAGE" }] },
+        }),
+        JSON.stringify({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "cursor-session",
+        }),
+      ].join("\n"),
+      "",
+      "cursor-grok-4.6-xhigh"
+    );
+    expect(parsed.text).toBe("LAST_MESSAGE");
+  });
+
   it("names the Cursor result subtype and the provider's own error text", () => {
     const cancelled = JSON.stringify({
       type: "result",
