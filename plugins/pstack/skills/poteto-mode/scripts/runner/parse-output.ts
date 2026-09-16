@@ -207,10 +207,30 @@ export function cursorReportedModelMatches(
   );
 }
 
+/**
+ * Cursor streams its running narration as `assistant` text events, one event
+ * per interim status line, and repeats the finished answer in the terminal
+ * `result` event. Only the latest assistant message is worth keeping: joining
+ * the events would paste every progress sentence in front of the answer.
+ */
+function cursorAssistantText(event: JsonObject): string | null {
+  const content = object(event.message)?.content;
+  if (!Array.isArray(content)) return null;
+  const parts: string[] = [];
+  for (const entry of content) {
+    const part = object(entry);
+    if (part === null || part.type !== "text") continue;
+    const text = nullableString(part.text);
+    if (text !== null) parts.push(text);
+  }
+  return parts.length > 0 ? parts.join("") : null;
+}
+
 function parseCursor(stdout: string): ParsedOutput {
   let result: JsonObject | null = null;
   let reportedModel: string | null = null;
   let sessionId: string | null = null;
+  let assistantText: string | null = null;
 
   for (const line of stdout.split("\n")) {
     if (line.trim().length === 0) continue;
@@ -226,6 +246,9 @@ function parseCursor(stdout: string): ParsedOutput {
       reportedModel = nullableString(event.model) ?? reportedModel;
       sessionId = nullableString(event.session_id) ?? sessionId;
     }
+    if (event.type === "assistant") {
+      assistantText = cursorAssistantText(event) ?? assistantText;
+    }
     if (event.type === "result") result = event;
   }
 
@@ -235,7 +258,7 @@ function parseCursor(stdout: string): ParsedOutput {
   if (result.is_error === true || result.subtype !== "success") {
     throw new Error(providerErrorMessage("cursor", result));
   }
-  const text = nullableString(result.result);
+  const text = nullableString(result.result) ?? assistantText;
   if (text === null) throw new Error("cursor result did not contain final text");
 
   return {
