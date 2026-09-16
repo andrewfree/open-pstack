@@ -143,7 +143,8 @@ if (name === "claude") {
   console.log(JSON.stringify({type:"system",subtype:"init",apiKeySource:"login",cwd:process.cwd(),session_id:"cu1",model:process.env.FAKE_CURSOR_REPORTED_MODEL ?? "Cursor Grok 4.6 Extra High",permissionMode:"default"}));
   console.log(JSON.stringify({type:"assistant",message:{role:"assistant",content:[{type:"text",text:"I'll read the runner files first."}]},session_id:"cu1"}));
   console.log(JSON.stringify({type:"assistant",message:{role:"assistant",content:[{type:"text",text:"I have the citations; writing the answer now."}]},session_id:"cu1"}));
-  console.log(JSON.stringify({type:"result",subtype:"success",is_error:false,duration_ms:5,duration_api_ms:5,result:"CURSOR_OK",session_id:"cu1",request_id:"r1",usage:{inputTokens:40,outputTokens:6,cacheReadTokens:8,cacheWriteTokens:2}}));
+  console.log(JSON.stringify({type:"assistant",message:{role:"assistant",content:[{type:"text",text:"CURSOR_OK"}]},session_id:"cu1"}));
+  console.log(JSON.stringify({type:"result",subtype:"success",is_error:false,duration_ms:5,duration_api_ms:5,result:"I'll read the runner files first.I have the citations; writing the answer now.CURSOR_OK",session_id:"cu1",request_id:"r1",usage:{inputTokens:40,outputTokens:6,cacheReadTokens:8,cacheWriteTokens:2}}));
 } else {
   console.log(JSON.stringify({type:"assistant",message:{content:[{type:"text",text:"progress"}]}}));
   if (process.env.FAKE_GROK_CANCELLED === "1") {
