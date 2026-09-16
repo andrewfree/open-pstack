@@ -215,10 +215,11 @@ export function cursorReportedModelMatches(
 }
 
 /**
- * Cursor streams its running narration as `assistant` text events, one event
- * per interim status line, and repeats the finished answer in the terminal
- * `result` event. Only the latest assistant message is worth keeping: joining
- * the events would paste every progress sentence in front of the answer.
+ * Cursor streams one complete `assistant` message per turn: the interim
+ * status lines first, the finished answer last. The terminal `result` event's
+ * text is the concatenation of all of them with no separator (verified
+ * against cursor-agent 2026.09.10 on 2026-09-16), so the last assistant
+ * message is the answer and the result text is only a fallback.
  */
 function cursorAssistantText(event: JsonObject): string | null {
   const content = object(event.message)?.content;
@@ -265,7 +266,7 @@ function parseCursor(stdout: string): ParsedOutput {
   if (result.is_error === true || result.subtype !== "success") {
     throw new Error(providerErrorMessage("cursor", result));
   }
-  const text = nullableString(result.result) ?? assistantText;
+  const text = assistantText ?? nullableString(result.result);
   if (text === null) throw new Error("cursor result did not contain final text");
 
   return {
