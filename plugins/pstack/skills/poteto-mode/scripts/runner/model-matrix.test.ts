@@ -22,9 +22,9 @@ const MATRIX_HEADER = [
 ] as const;
 
 const FAMILY_ORDER = ["fable", "sol", "grok", "opus"] as const;
-const PROVIDERS = ["claude", "codex", "grok"] as const;
+const PROVIDERS = ["claude", "codex", "grok", "cursor"] as const;
 const DESCRIPTOR_RE =
-  /(claude|codex|grok):[a-z0-9.-]+@(low|medium|high|xhigh|max)/g;
+  /(claude|codex|grok|cursor):[a-z0-9.-]+@(low|medium|high|xhigh|max)/g;
 const PANEL_ROLES = [
   "how critics",
   "arena runners",

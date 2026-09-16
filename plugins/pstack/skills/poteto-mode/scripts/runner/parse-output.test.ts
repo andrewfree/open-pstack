@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { parseProviderOutput, reportedModelMatches } from "./parse-output.ts";
+import {
+  cursorListedModel,
+  parseProviderOutput,
+  reportedModelMatches,
+} from "./parse-output.ts";
 
 describe("parseProviderOutput", () => {
   it("extracts Claude text, model, usage, cost, and session", () => {
@@ -94,6 +98,109 @@ describe("parseProviderOutput", () => {
     );
   });
 
+  it("extracts Cursor text, display-name model, session, and usage", () => {
+    const parsed = parseProviderOutput(
+      "cursor",
+      [
+        JSON.stringify({
+          type: "system",
+          subtype: "init",
+          apiKeySource: "login",
+          cwd: "/tmp/worktree",
+          session_id: "cursor-session",
+          model: "Cursor Grok 4.6 Extra High",
+          permissionMode: "default",
+        }),
+        JSON.stringify({
+          type: "assistant",
+          message: { role: "assistant", content: [{ type: "text", text: "progress" }] },
+          session_id: "cursor-session",
+        }),
+        JSON.stringify({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          duration_ms: 11,
+          duration_api_ms: 11,
+          result: "CURSOR_OK",
+          session_id: "cursor-session",
+          request_id: "req-1",
+          usage: {
+            inputTokens: 40,
+            outputTokens: 6,
+            cacheReadTokens: 8,
+            cacheWriteTokens: 2,
+          },
+        }),
+      ].join("\n"),
+      "",
+      "cursor-grok-4.6-xhigh"
+    );
+    expect(parsed).toMatchObject({
+      text: "CURSOR_OK",
+      reportedModel: "Cursor Grok 4.6 Extra High",
+      sessionId: "cursor-session",
+      usage: {
+        inputTokens: 40,
+        outputTokens: 6,
+        cachedInputTokens: 8,
+        cacheCreationInputTokens: 2,
+      },
+      costUsd: null,
+    });
+  });
+
+  it("names the Cursor result subtype and the provider's own error text", () => {
+    const cancelled = JSON.stringify({
+      type: "result",
+      subtype: "cancelled",
+      is_error: true,
+      result: "the workspace was not trusted",
+    });
+    expect(() =>
+      parseProviderOutput("cursor", cancelled, "", "cursor-grok-4.6-xhigh")
+    ).toThrow("subtype cancelled");
+    expect(() =>
+      parseProviderOutput("cursor", cancelled, "", "cursor-grok-4.6-xhigh")
+    ).toThrow("the workspace was not trusted");
+
+    const errored = JSON.stringify({
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+      error: { message: "upstream refused the request" },
+    });
+    expect(() =>
+      parseProviderOutput("cursor", errored, "", "cursor-grok-4.6-xhigh")
+    ).toThrow(
+      "cursor reported an error result (subtype error_during_execution): upstream refused the request"
+    );
+  });
+
+  it("resolves a Cursor display name only for an exact listed slug", () => {
+    const listing = [
+      "Available models",
+      "",
+      "auto - Auto (current, default)",
+      "cursor-grok-4.6-high - Cursor Grok 4.6",
+      "cursor-grok-4.6-high-fast - Cursor Grok 4.6 Fast",
+      "cursor-grok-4.6-xhigh - Cursor Grok 4.6 Extra High",
+    ].join("\n");
+    expect(cursorListedModel(listing, "cursor-grok-4.6-high")).toBe(
+      "Cursor Grok 4.6"
+    );
+    expect(cursorListedModel(listing, "cursor-grok-4.6-xhigh")).toBe(
+      "Cursor Grok 4.6 Extra High"
+    );
+    expect(cursorListedModel(listing, "cursor-grok-4.6-max")).toBeNull();
+    expect(
+      cursorListedModel(
+        "Error: Authentication required. Run 'agent login'.",
+        "cursor-grok-4.6-xhigh"
+      )
+    ).toBeNull();
+  });
+
   it("selects the requested Claude model when usage includes a side model", () => {
     const parsed = parseProviderOutput(
       "claude",
@@ -149,5 +256,16 @@ describe("parseProviderOutput", () => {
         "gpt-5.6-sol"
       )
     ).toThrow("final agent message");
+    expect(() =>
+      parseProviderOutput("cursor", "not-json", "", "cursor-grok-4.6-xhigh")
+    ).toThrow("non-JSON event");
+    expect(() =>
+      parseProviderOutput(
+        "cursor",
+        JSON.stringify({ type: "system", subtype: "init", model: "Cursor Grok 4.6" }),
+        "",
+        "cursor-grok-4.6-xhigh"
+      )
+    ).toThrow("terminal event");
   });
 });

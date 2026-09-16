@@ -27,7 +27,8 @@ const name = process.argv[1].split("/").at(-1);
 const isPreflight =
   (name === "claude" && args[0] === "auth") ||
   (name === "codex" && args[0] === "login") ||
-  (name === "grok" && args[0] === "models");
+  (name === "grok" && args[0] === "models") ||
+  (name === "cursor-agent" && args[0] === "models");
 const stage = isPreflight ? "preflight" : "model";
 const startedPath = isPreflight
   ? process.env.FAKE_PREFLIGHT_STARTED_PATH
@@ -87,6 +88,20 @@ if (name === "grok" && args[0] === "models") {
   console.log("You are logged in with grok.com.\\nAvailable models:\\n  * grok-4.6 (default)");
   process.exit(0);
 }
+if (name === "cursor-agent" && args[0] === "models") {
+  if (process.env.FAKE_CURSOR_PREFLIGHT_LOG_PATH) {
+    appendFileSync(process.env.FAKE_CURSOR_PREFLIGHT_LOG_PATH, "attempt\\n");
+  }
+  if (process.env.FAKE_CURSOR_UNAUTH === "1") {
+    console.error("Error: Authentication required. Run 'agent login', pass --api-key/--auth-token, or set CURSOR_API_KEY/CURSOR_AUTH_TOKEN.");
+    process.exit(1);
+  }
+  const listed = process.env.FAKE_CURSOR_MISSING_MODEL === "1"
+    ? "cursor-grok-4.6-xhigh-fast - Cursor Grok 4.6 Extra High Fast"
+    : "cursor-grok-4.6-xhigh - Cursor Grok 4.6 Extra High";
+  console.log("Available models\\n\\nauto - Auto (current, default)\\n" + listed);
+  process.exit(0);
+}
 const modelIndex = args.findIndex((value) => value === "--model");
 const model = modelIndex >= 0 ? args[modelIndex + 1] : "unknown";
 if (process.env.FAKE_INVALID_MODEL === "1") {
@@ -119,6 +134,10 @@ if (name === "claude") {
   console.log(JSON.stringify({type:"thread.started",thread_id:"o1"}));
   console.log(JSON.stringify({type:"item.completed",item:{type:"agent_message",text:"CODEX_OK"}}));
   console.log(JSON.stringify({type:"turn.completed",usage:{input_tokens:20,cached_input_tokens:5,output_tokens:3,reasoning_output_tokens:1}}));
+} else if (name === "cursor-agent") {
+  console.log(JSON.stringify({type:"system",subtype:"init",apiKeySource:"login",cwd:process.cwd(),session_id:"cu1",model:process.env.FAKE_CURSOR_REPORTED_MODEL ?? "Cursor Grok 4.6 Extra High",permissionMode:"default"}));
+  console.log(JSON.stringify({type:"assistant",message:{role:"assistant",content:[{type:"text",text:"progress"}]},session_id:"cu1"}));
+  console.log(JSON.stringify({type:"result",subtype:"success",is_error:false,duration_ms:5,duration_api_ms:5,result:"CURSOR_OK",session_id:"cu1",request_id:"r1",usage:{inputTokens:40,outputTokens:6,cacheReadTokens:8,cacheWriteTokens:2}}));
 } else {
   console.log(JSON.stringify({type:"assistant",message:{content:[{type:"text",text:"progress"}]}}));
   if (process.env.FAKE_GROK_CANCELLED === "1") {
@@ -145,12 +164,14 @@ function options(provider: Provider, suffix: string = provider): RunnerOptions {
       ? "claude-fable-5"
       : provider === "codex"
         ? "gpt-5.6-sol"
-        : "grok-4.6";
+        : provider === "cursor"
+          ? "cursor-grok-4.6-xhigh"
+          : "grok-4.6";
   return {
     parent,
     provider,
     model,
-    effort: provider === "grok" ? "xhigh" : "max",
+    effort: provider === "grok" || provider === "cursor" ? "xhigh" : "max",
     mode: "read-only",
     promptPath: join(scratch, "prompt.md"),
     cwd: scratch,
@@ -224,7 +245,9 @@ beforeEach(() => {
   bin = join(scratch, "bin");
   mkdirSync(bin);
   writeFileSync(join(scratch, "prompt.md"), "Return the marker.");
-  for (const name of ["claude", "codex", "grok"]) makeExecutable(name);
+  for (const name of ["claude", "codex", "grok", "cursor-agent"]) {
+    makeExecutable(name);
+  }
   previousPath = process.env.PATH;
   process.env.PATH = `${bin}:${dirname(process.execPath)}:${previousPath ?? ""}`;
   delete process.env.FAKE_TIMEOUT;
@@ -246,6 +269,10 @@ beforeEach(() => {
   delete process.env.FAKE_GROK_TRANSIENT_UNAUTH_PATH;
   delete process.env.FAKE_GROK_PREFLIGHT_LOG_PATH;
   delete process.env.FAKE_GROK_MISSING_MODEL;
+  delete process.env.FAKE_CURSOR_UNAUTH;
+  delete process.env.FAKE_CURSOR_MISSING_MODEL;
+  delete process.env.FAKE_CURSOR_PREFLIGHT_LOG_PATH;
+  delete process.env.FAKE_CURSOR_REPORTED_MODEL;
   delete process.env.FAKE_DESCENDANT_HOLDS_PIPES_MS;
   delete process.env.FAKE_DESCENDANT_PID_PATH;
   delete process.env.FAKE_SELF_SIGNAL;
@@ -272,6 +299,10 @@ afterEach(() => {
   delete process.env.FAKE_GROK_TRANSIENT_UNAUTH_PATH;
   delete process.env.FAKE_GROK_PREFLIGHT_LOG_PATH;
   delete process.env.FAKE_GROK_MISSING_MODEL;
+  delete process.env.FAKE_CURSOR_UNAUTH;
+  delete process.env.FAKE_CURSOR_MISSING_MODEL;
+  delete process.env.FAKE_CURSOR_PREFLIGHT_LOG_PATH;
+  delete process.env.FAKE_CURSOR_REPORTED_MODEL;
   delete process.env.FAKE_DESCENDANT_HOLDS_PIPES_MS;
   delete process.env.FAKE_DESCENDANT_PID_PATH;
   delete process.env.FAKE_SELF_SIGNAL;
@@ -279,7 +310,7 @@ afterEach(() => {
 });
 
 describe("runLane", () => {
-  for (const provider of ["claude", "codex", "grok"] as const) {
+  for (const provider of ["claude", "codex", "grok", "cursor"] as const) {
     it(`executes and receipts the ${provider} external lane`, async () => {
       const input = options(provider);
       const result = await runLane(input);
@@ -472,6 +503,81 @@ describe("runLane", () => {
     expect(existsSync(modelStarted)).toBe(false);
     expect(receipt(input.receiptPath)).toMatchObject({
       status: "unavailable-model",
+      preflight: { status: "failed" },
+    });
+  });
+
+  it("proves the Cursor model from the display name its preflight listed", async () => {
+    const input = options("cursor");
+    const result = await runLane(input);
+    expect(result.exitCode).toBe(0);
+    expect(receipt(input.receiptPath)).toMatchObject({
+      status: "complete",
+      provider: "cursor",
+      model: "cursor-grok-4.6-xhigh",
+      reportedModel: "Cursor Grok 4.6 Extra High",
+      modelVerified: true,
+      modelEvidence: "provider-report",
+      sessionId: "cu1",
+      usage: {
+        inputTokens: 40,
+        outputTokens: 6,
+        cachedInputTokens: 8,
+        cacheCreationInputTokens: 2,
+      },
+      costUsd: null,
+      preflight: {
+        status: "passed",
+        evidence: "authenticated; model cursor-grok-4.6-xhigh available",
+      },
+    });
+  });
+
+  it("refuses a Cursor lane that reports another model", async () => {
+    process.env.FAKE_CURSOR_REPORTED_MODEL = "Cursor Grok 4.5";
+    const input = options("cursor", "cursor-wrong-model");
+    const result = await runLane(input);
+    expect(result.exitCode).toBe(65);
+    expect(existsSync(input.outputPath)).toBe(false);
+    const recorded = receipt(input.receiptPath);
+    expect(recorded.status).toBe("malformed-output");
+    expect(recorded.error?.message).toContain(
+      "requested model cursor-grok-4.6-xhigh was not reported by cursor"
+    );
+  });
+
+  it("classifies a Cursor listing without the requested slug as unavailable", async () => {
+    process.env.FAKE_CURSOR_MISSING_MODEL = "1";
+    const preflightLog = join(scratch, "cursor-missing-model.log");
+    process.env.FAKE_CURSOR_PREFLIGHT_LOG_PATH = preflightLog;
+    const modelStarted = join(scratch, "cursor-missing-model.started");
+    process.env.FAKE_MODEL_STARTED_PATH = modelStarted;
+    const input = options("cursor", "cursor-missing-model");
+    const result = await runLane(input);
+
+    expect(result.exitCode).toBe(69);
+    expect(readFileSync(preflightLog, "utf8")).toBe("attempt\n");
+    expect(existsSync(modelStarted)).toBe(false);
+    expect(receipt(input.receiptPath)).toMatchObject({
+      status: "unavailable-model",
+      preflight: { status: "failed" },
+    });
+  });
+
+  it("classifies an unauthenticated Cursor preflight without a retry", async () => {
+    process.env.FAKE_CURSOR_UNAUTH = "1";
+    const preflightLog = join(scratch, "cursor-unauthenticated.log");
+    process.env.FAKE_CURSOR_PREFLIGHT_LOG_PATH = preflightLog;
+    const modelStarted = join(scratch, "cursor-unauthenticated.started");
+    process.env.FAKE_MODEL_STARTED_PATH = modelStarted;
+    const input = options("cursor", "cursor-unauthenticated");
+    const result = await runLane(input);
+
+    expect(result.exitCode).toBe(77);
+    expect(readFileSync(preflightLog, "utf8")).toBe("attempt\n");
+    expect(existsSync(modelStarted)).toBe(false);
+    expect(receipt(input.receiptPath)).toMatchObject({
+      status: "unauthenticated",
       preflight: { status: "failed" },
     });
   });
