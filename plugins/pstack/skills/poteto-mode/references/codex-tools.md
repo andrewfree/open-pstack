@@ -13,6 +13,7 @@ pstack skills retain Claude Code tool language (`Skill`, `Agent`, `AskUserQuesti
 | Fetch a URL | `shell` with `curl` / `wget` |
 | Search the web | `web_search` |
 | Invoke a skill (the `Skill` tool, `/command`) | Skills load natively. Follow the instructions presented. |
+| `paths` frontmatter scopes automatic loading | Claude Code only. On Codex, invoke `pstack:typescript-best-practices` by name. |
 | Dispatch a subagent (the `Agent`/`Task` tool) | `spawn_agent` |
 | Dispatch N parallel subagents in one turn | N `spawn_agent` calls in one response |
 | Wait for a subagent result | `wait_agent` |
@@ -41,7 +42,7 @@ poteto-mode's Subagents section sets Claude-specific defaults (`subagent_type: "
 
 ## Models and providers
 
-Do not replace every configured entry with a Codex model. `/setup-pstack` writes portable descriptors such as `claude:claude-fable-5@max`, `codex:gpt-5.6-sol@max`, and `grok:grok-4.6@xhigh`. In a Codex parent, only `codex:*` is native. Route Claude and Grok descriptors through the external launcher exactly as `provider-dispatch.md` specifies. The current default panel intentionally keeps four-provider frontier diversity and contains no older GPT or Claude substitute.
+Do not replace every configured entry with a Codex model. `/setup-pstack` writes portable descriptors such as `claude:fable@max`, `codex:gpt-5.6-sol@max`, and `grok:grok-4.6@xhigh`. In a Codex parent, only `codex:*` is native. Route Claude and Grok descriptors through the external launcher exactly as `provider-dispatch.md` specifies. The current default panel intentionally keeps four-provider frontier diversity and contains no older GPT or Claude substitute.
 
 ## Claude built-in skills pstack references
 
