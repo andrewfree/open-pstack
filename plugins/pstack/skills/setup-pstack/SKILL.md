@@ -1,6 +1,6 @@
 ---
 name: setup-pstack
-description: Configure pstack's provider-qualified models, per-family requested effort, and parent-owned routes per role. Verifies native and external Claude, Codex, and Grok lanes before writing the override sheet. Use for /setup-pstack, "configure pstack models", or changing pstack's model choices.
+description: Configure pstack's provider-qualified models, per-family requested effort, and parent-owned routes per role. Verifies native and external Claude, Codex, Grok, and Cursor lanes before writing the override sheet. Use for /setup-pstack, "configure pstack models", or changing pstack's model choices.
 ---
 
 # Setup pstack
@@ -53,6 +53,8 @@ Probe only the four selected `provider:model@effort` pairs. Run one probe per fa
 | Sol | Sol matrix row + selected effort | `codex exec` | native `spawn_agent` | `codex login status` plus one-turn probe or native one-turn probe |
 | Grok | Grok matrix row + selected effort | Grok CLI | Grok CLI | `grok models` must list the requested model; one-turn probe |
 | Opus | Opus matrix row + selected effort | native Agent `pstack-opus-<effort>` | Claude CLI | native one-turn probe or `claude auth status --json` plus one-turn probe |
+
+A family whose matrix row names the `cursor` provider probes through the external runner with `cursor-agent`, and its availability proof is `cursor-agent models` listing the requested slug plus a one-turn probe. Cursor has no effort flag, so that family's Selectable efforts cell holds only the effort its slug names; changing its effort means changing the matrix row's Model cell, not the descriptor alone.
 
 Use a tiny read-only probe that returns a unique marker. A login-status command alone proves credentials, not that the requested model and effort flags run. Record native and external results separately. Never call the external launcher for the parent's own provider. On a Claude parent, the Fable and Opus probes are one-turn runs of the mapped `pstack-<stem>-<effort>` agent. On a Codex parent, the Sol probe is native `spawn_agent` with the selected `reasoning_effort`. Every other pair uses the external runner with the selected effort flag.
 
