@@ -113,6 +113,50 @@ describe("invocationCommand", () => {
     ]);
   });
 
+  it("pins the Cursor model, stream JSON, plan mode, workspace, and read tools", () => {
+    const spec = invocationCommand(
+      options({
+        provider: "cursor",
+        model: "cursor-grok-4.6-xhigh",
+        effort: "xhigh",
+      })
+    );
+    expect(spec.command).toBe("cursor-agent");
+    expect(spec.stdin).toBe("prompt");
+    expect(spec.args).toEqual([
+      "--print",
+      "--model",
+      "cursor-grok-4.6-xhigh",
+      "--output-format",
+      "stream-json",
+      "--mode",
+      "plan",
+      "--sandbox",
+      "enabled",
+      "--allowed-tools",
+      "read_tool_call,grep_tool_call,glob_tool_call,ls_tool_call,read_lints_tool_call",
+      "--workspace",
+      "/tmp/worktree",
+      "--trust",
+    ]);
+    expect(spec.args).not.toContain("--yolo");
+    expect(spec.args).not.toContain("--force");
+    expect(spec.args).not.toContain("--approve-mcps");
+  });
+
+  it("carries Cursor effort in the model slug because the CLI has no effort flag", () => {
+    for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
+      const spec = invocationCommand(
+        options({ provider: "cursor", model: "cursor-grok-4.6-high", effort })
+      );
+      expect(spec.args).not.toContain("--effort");
+      expect(spec.args).not.toContain("--reasoning-effort");
+      expect(spec.args).toEqual(
+        expect.arrayContaining(["--model", "cursor-grok-4.6-high"])
+      );
+    }
+  });
+
   it("keeps a read-only Grok lane clear of the shell tool its plan mode would stall on", () => {
     const grok = invocationCommand(options({ provider: "grok", model: "grok-4.6" }));
     expect(grok.args).not.toContain("run_terminal_cmd");
@@ -133,6 +177,13 @@ describe("invocationCommand", () => {
     expect(claude.args).toEqual(
       expect.arrayContaining(["--permission-mode", "plan"])
     );
+
+    const cursor = invocationCommand(
+      options({ provider: "cursor", model: "cursor-grok-4.6-xhigh" })
+    );
+    expect(cursor.args.join(" ")).not.toContain("shell_tool_call");
+    expect(cursor.args.join(" ")).not.toContain("edit_tool_call");
+    expect(cursor.args).toEqual(expect.arrayContaining(["--mode", "plan"]));
   });
 
   it("uses bounded write modes without blanket bypasses", () => {
@@ -166,6 +217,25 @@ describe("invocationCommand", () => {
         "Read,Write,Edit,Grep,Glob,Bash",
       ])
     );
+
+    const cursor = invocationCommand(
+      options({
+        provider: "cursor",
+        model: "cursor-grok-4.6-xhigh",
+        mode: "isolated-write",
+      })
+    );
+    expect(cursor.args).toEqual(
+      expect.arrayContaining([
+        "--force",
+        "--sandbox",
+        "enabled",
+        "--allowed-tools",
+        "read_tool_call,grep_tool_call,glob_tool_call,ls_tool_call,read_lints_tool_call,edit_tool_call,delete_tool_call,shell_tool_call",
+      ])
+    );
+    expect(cursor.args).not.toContain("--yolo");
+    expect(cursor.args).not.toContain("--mode");
   });
 
   it("covers low, medium, and high for every external provider", () => {
