@@ -2,6 +2,10 @@
 
 This port applies the Cursor → Claude Code substitutions in skill bodies. Earlier drafts left them flagged; this revision resolves them. A later pass added a Codex build that shares the same skills; see [Codex port](#codex-port) below.
 
+## 1.4.4 accepts Cursor context-tier model names
+
+Open Pstack 1.4.4 keeps the 0.15.1 sync point. The external runner now ignores context-tier tokens such as `1M` and `300K` and the mode word `thinking` when it checks the model Cursor reports, so Claude and GPT slugs served at a different tier than the listing names are accepted. `fast` still marks a different model.
+
 ## 1.4.3 runs Grok writers under bypassPermissions
 
 Open Pstack 1.4.3 keeps the 0.15.1 sync point. Isolated-write Grok lanes now pass `--permission-mode bypassPermissions` instead of `acceptEdits`, because Grok's acceptEdits still sends multi-line shell commands to an approver that a headless run cannot answer. The `workspace` sandbox is unchanged and remains the confinement for a Grok writer. Read-only Grok lanes keep plan mode.
