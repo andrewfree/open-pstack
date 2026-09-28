@@ -78,6 +78,13 @@ function permissionMode(mode: AccessMode): string {
   return mode === "read-only" ? "plan" : "acceptEdits";
 }
 
+// Grok's acceptEdits still routes multi-line shell commands (heredocs) to an
+// approver that a headless run cannot answer, which cancels the lane. The
+// workspace sandbox stays on, so bypassPermissions only removes the prompt.
+function grokPermissionMode(mode: AccessMode): string {
+  return mode === "read-only" ? "plan" : "bypassPermissions";
+}
+
 function effortOverride(effort: Effort): string {
   return `model_reasoning_effort=${JSON.stringify(effort)}`;
 }
@@ -148,7 +155,7 @@ export function invocationCommand(options: RunnerOptions): CommandSpec {
           "--reasoning-effort",
           options.effort,
           "--permission-mode",
-          permissionMode(options.mode),
+          grokPermissionMode(options.mode),
           "--sandbox",
           grokSandbox(options.mode),
           "--tools",
