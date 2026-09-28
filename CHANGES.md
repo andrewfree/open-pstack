@@ -2,6 +2,10 @@
 
 This port applies the Cursor → Claude Code substitutions in skill bodies. Earlier drafts left them flagged; this revision resolves them. A later pass added a Codex build that shares the same skills; see [Codex port](#codex-port) below.
 
+## 1.4.2 fixes the Grok shell tool name
+
+Open Pstack 1.4.2 keeps the 0.15.1 sync point. The external runner now allowlists Grok's shell tool as `run_terminal_command`, the name Grok CLI 1.0.41 uses. The old name `run_terminal_cmd` sent every isolated-write Grok shell call to the headless approver, which cancelled the lane on its first command. The dispatch reference and the runner tests use the new name.
+
 ## 1.4.1 syncs to Cursor pstack 0.15.1
 
 Open Pstack 1.4.1 tracks Cursor pstack 0.15.1 at `f8abeddd1862dc73704e3d719dd73df0d51b8c71`. Poteto-mode now requires each claim to include its evidence or a measured, inferred, or guess label in the same sentence. Agents also run any check they can run themselves instead of handing that check to the user. No playbook, model, runtime, or dependency changed.
