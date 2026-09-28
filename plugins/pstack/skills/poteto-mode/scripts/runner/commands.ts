@@ -59,9 +59,13 @@ function permissionMode(mode: AccessMode): string {
   return mode === "read-only" ? "plan" : "acceptEdits";
 }
 
-// Grok's acceptEdits still routes multi-line shell commands (heredocs) to an
-// approver that a headless run cannot answer, which cancels the lane. The
-// workspace sandbox stays on, so bypassPermissions only removes the prompt.
+// Grok's acceptEdits (grok 1.0.41) still routes multi-line shell commands
+// (heredocs) to an approver that a headless run cannot answer, which cancels
+// the lane. bypassPermissions is Grok's always-approve policy: ordinary tool
+// approvals are skipped (deny rules and hooks still apply), so the workspace
+// sandbox is what confines the writer: reads anywhere, writes only to the
+// lane's cwd, Grok's own state, and the system temp dirs; child network
+// stays open.
 function grokPermissionMode(mode: AccessMode): string {
   return mode === "read-only" ? "plan" : "bypassPermissions";
 }
