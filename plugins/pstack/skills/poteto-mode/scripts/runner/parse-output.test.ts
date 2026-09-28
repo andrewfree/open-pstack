@@ -307,7 +307,7 @@ describe("parseProviderOutput", () => {
         type: "result",
         subtype: "cancelled",
         is_error: true,
-        result: "run_terminal_cmd was denied by the headless approval policy",
+        result: "run_terminal_command was denied by the headless approval policy",
       }),
     ].join("\n");
     expect(() => parseProviderOutput("grok", cancelled, "", "grok-4.6")).toThrow(

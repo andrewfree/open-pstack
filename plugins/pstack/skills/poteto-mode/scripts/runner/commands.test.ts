@@ -159,7 +159,7 @@ describe("invocationCommand", () => {
 
   it("keeps a read-only Grok lane clear of the shell tool its plan mode would stall on", () => {
     const grok = invocationCommand(options({ provider: "grok", model: "grok-4.6" }));
-    expect(grok.args).not.toContain("run_terminal_cmd");
+    expect(grok.args).not.toContain("run_terminal_command");
     expect(grok.args).toEqual(
       expect.arrayContaining([
         "--permission-mode",
@@ -201,7 +201,7 @@ describe("invocationCommand", () => {
         "--sandbox",
         "workspace",
         "--tools",
-        "read_file,grep,list_dir,run_terminal_cmd,search_replace",
+        "read_file,grep,list_dir,run_terminal_command,search_replace",
       ])
     );
     expect(grok.args).not.toContain("--always-approve");

@@ -148,7 +148,7 @@ if (name === "claude") {
 } else {
   console.log(JSON.stringify({type:"assistant",message:{content:[{type:"text",text:"progress"}]}}));
   if (process.env.FAKE_GROK_CANCELLED === "1") {
-    console.log(JSON.stringify({type:"result",subtype:"cancelled",is_error:true,result:"run_terminal_cmd was denied by the headless approval policy"}));
+    console.log(JSON.stringify({type:"result",subtype:"cancelled",is_error:true,result:"run_terminal_command was denied by the headless approval policy"}));
     process.exit(0);
   }
   console.log(JSON.stringify({type:"result",subtype:"success",is_error:false,result:"GROK_OK",session_id:"g1",usage:{input_tokens:30,output_tokens:4,total_tokens:34},total_cost_usd:0.02,modelUsage:{[model + "-build"]:{}}}));
@@ -390,7 +390,7 @@ describe("runLane", () => {
     expect(recorded.status).toBe("malformed-output");
     expect(recorded.error?.message).toContain("subtype cancelled");
     expect(recorded.error?.message).toContain(
-      "run_terminal_cmd was denied by the headless approval policy"
+      "run_terminal_command was denied by the headless approval policy"
     );
     expect(recorded.error?.evidence).toContain("\"subtype\":\"cancelled\"");
   });
