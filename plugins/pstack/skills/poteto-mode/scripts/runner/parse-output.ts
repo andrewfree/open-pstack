@@ -163,6 +163,20 @@ function modelTokens(value: string): string[] {
     .filter((token) => token.length > 0);
 }
 
+/**
+ * Cursor serves a slug's model at whatever context tier the account gets and
+ * names the tier and the reasoning mode in the init event, so
+ * `claude-sonnet-5-thinking-high`, listed as `Claude Sonnet 5 1M Thinking`,
+ * arrives as `Claude Sonnet 5 300K High`. Tier tokens (`1m`, `300k`) and the
+ * mode word `thinking` say nothing about which model was served, so they are
+ * dropped before comparison. `fast` stays: it names a different model.
+ */
+function coreModelTokens(value: string): string[] {
+  return modelTokens(value).filter(
+    (token) => !/^\d+[km]$/.test(token) && token !== "thinking"
+  );
+}
+
 function sameTokens(left: string[], right: string[]): boolean {
   return (
     left.length === right.length &&
@@ -200,12 +214,12 @@ export function cursorReportedModelMatches(
   reported: string | null
 ): boolean {
   if (reported === null) return false;
-  const reportedTokens = modelTokens(reported);
+  const reportedTokens = coreModelTokens(reported);
   if (reportedTokens.length === 0) return false;
-  const requestedTokens = modelTokens(requested);
+  const requestedTokens = coreModelTokens(requested);
   if (sameTokens(reportedTokens, requestedTokens)) return true;
   if (listed === null) return false;
-  const listedTokens = modelTokens(listed);
+  const listedTokens = coreModelTokens(listed);
   if (listedTokens.join("") === reportedTokens.join("")) return true;
   const allowed = new Set([...requestedTokens, ...listedTokens]);
   return (

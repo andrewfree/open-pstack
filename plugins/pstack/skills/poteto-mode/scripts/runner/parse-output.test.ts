@@ -355,6 +355,25 @@ describe("parseProviderOutput", () => {
 });
 
 describe("cursorReportedModelMatches", () => {
+  it("ignores context tier and the thinking mode word, which Cursor changes per account", () => {
+    expect(
+      cursorReportedModelMatches(
+        "claude-sonnet-5-thinking-high",
+        "Claude Sonnet 5 1M Thinking",
+        "Claude Sonnet 5 300K High"
+      )
+    ).toBe(true);
+    expect(
+      cursorReportedModelMatches("gpt-5.6-sol-high", "GPT-5.6 Sol 1M High", "GPT-5.6 Sol 300K High")
+    ).toBe(true);
+    expect(
+      cursorReportedModelMatches("claude-opus-5-thinking-high", "Claude Opus 5 1M Thinking", "Claude Opus 5 300K High")
+    ).toBe(true);
+    expect(
+      cursorReportedModelMatches("cursor-grok-4.6-high", "Cursor Grok 4.6 High", "Cursor Grok 4.6 High Fast")
+    ).toBe(false);
+  });
+
   it("accepts the listed display name for the requested slug", () => {
     expect(
       cursorReportedModelMatches(
