@@ -2,6 +2,10 @@
 
 This port applies the Cursor → Claude Code substitutions in skill bodies. Earlier drafts left them flagged; this revision resolves them. A later pass added a Codex build that shares the same skills; see [Codex port](#codex-port) below.
 
+## 1.4.3 runs Grok writers under bypassPermissions
+
+Open Pstack 1.4.3 keeps the 0.15.1 sync point. Isolated-write Grok lanes now pass `--permission-mode bypassPermissions` instead of `acceptEdits`, because Grok's acceptEdits still sends multi-line shell commands to an approver that a headless run cannot answer. The `workspace` sandbox is unchanged and remains the confinement for a Grok writer. Read-only Grok lanes keep plan mode.
+
 ## 1.4.2 fixes the Grok shell tool name
 
 Open Pstack 1.4.2 keeps the 0.15.1 sync point. The external runner now allowlists Grok's shell tool as `run_terminal_command`, the name Grok CLI 1.0.41 uses. The old name `run_terminal_cmd` sent every isolated-write Grok shell call to the headless approver, which cancelled the lane on its first command. The dispatch reference and the runner tests use the new name.
