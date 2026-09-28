@@ -113,7 +113,7 @@ describe("invocationCommand", () => {
     ]);
   });
 
-  it("uses bounded write modes without blanket bypasses", () => {
+  it("confines writers with sandboxes rather than approvals", () => {
     const codex = invocationCommand(options({ mode: "isolated-write" }));
     expect(codex.args).toEqual(
       expect.arrayContaining(["--sandbox", "workspace-write"])
@@ -121,17 +121,29 @@ describe("invocationCommand", () => {
     const grok = invocationCommand(
       options({ provider: "grok", model: "grok-4.6", mode: "isolated-write" })
     );
-    expect(grok.args).toEqual(
-      expect.arrayContaining([
-        "--permission-mode",
-        "bypassPermissions",
-        "--sandbox",
-        "workspace",
-        "--tools",
-        "read_file,grep,list_dir,run_terminal_command,search_replace",
-      ])
-    );
-    expect(grok.args).not.toContain("--always-approve");
+    expect(grok.args).toEqual([
+      "--prompt-file",
+      "/tmp/prompt.md",
+      "--model",
+      "grok-4.6",
+      "--reasoning-effort",
+      "max",
+      "--permission-mode",
+      "bypassPermissions",
+      "--sandbox",
+      "workspace",
+      "--tools",
+      "read_file,grep,list_dir,run_terminal_command,search_replace",
+      "--disallowed-tools",
+      "Agent,search_tool,use_tool",
+      "--output-format",
+      "streaming-messages-json",
+      "--cwd",
+      "/tmp/worktree",
+      "--no-subagents",
+      "--disable-web-search",
+      "--verbatim",
+    ]);
 
     const claude = invocationCommand(
       options({ provider: "claude", model: "fable", mode: "isolated-write" })
