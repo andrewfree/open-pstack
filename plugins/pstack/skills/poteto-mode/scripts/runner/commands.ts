@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -149,6 +149,25 @@ function permissionMode(mode: AccessMode): string {
   return mode === "read-only" ? "plan" : "acceptEdits";
 }
 
+// Codex starts every [mcp_servers] entry in the user's config in every
+// session, read-only lanes included, and -c merges rather than clearing the
+// table, so each server is switched off by name. Naming a server no layer defines is a config error, so
+// only the always-loaded user config is read; an untrusted project's servers
+// never load.
+function codexMcpServerOverrides(env: NodeJS.ProcessEnv): string[] {
+  const path = join(env.CODEX_HOME ?? join(homedir(), ".codex"), "config.toml");
+  if (!existsSync(path)) return [];
+  const config = Bun.TOML.parse(readFileSync(path, "utf8")) as {
+    readonly mcp_servers?: Readonly<Record<string, unknown>>;
+  };
+  return Object.keys(config.mcp_servers ?? {}).flatMap((name) => {
+    if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+      throw new Error(`Codex MCP server ${JSON.stringify(name)} cannot be switched off with --config`);
+    }
+    return ["--config", `mcp_servers.${name}.enabled=false`];
+  });
+}
+
 function effortOverride(effort: Effort): string {
   return `model_reasoning_effort=${JSON.stringify(effort)}`;
 }
@@ -206,6 +225,9 @@ export function invocationCommand(
           "hooks",
           "--disable",
           "memories",
+          "--disable",
+          "apps",
+          ...codexMcpServerOverrides(env),
           "--json",
           "-",
         ],

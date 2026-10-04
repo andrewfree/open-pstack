@@ -153,6 +153,7 @@ if (stage === "model" && process.env.FAKE_SELF_SIGNAL) {
 if (name === "claude") {
   console.log(JSON.stringify({result:"CLAUDE_OK",session_id:"c1",usage:{input_tokens:10,output_tokens:2},total_cost_usd:0.01,modelUsage:{[reportedModel]:{}}}));
 } else if (name === "codex") {
+  if (process.env.FAKE_CODEX_ARGS_PATH) writeFileSync(process.env.FAKE_CODEX_ARGS_PATH, JSON.stringify(args));
   console.log(JSON.stringify({type:"thread.started",thread_id:"o1"}));
   console.log(JSON.stringify({type:"item.completed",item:{type:"agent_message",text:"CODEX_OK"}}));
   console.log(JSON.stringify({type:"turn.completed",usage:{input_tokens:20,cached_input_tokens:5,output_tokens:3,reasoning_output_tokens:1}}));
@@ -296,6 +297,7 @@ beforeEach(() => {
   }
   previousPath = process.env.PATH;
   process.env.PATH = `${bin}:${dirname(process.execPath)}:${previousPath ?? ""}`;
+  process.env.CODEX_HOME = join(scratch, "codex-home");
   delete process.env.FAKE_TIMEOUT;
   delete process.env.FAKE_INVALID_MODEL;
   delete process.env.FAKE_NOISY_FAILURE;
@@ -328,6 +330,7 @@ beforeEach(() => {
   delete process.env.FAKE_SANDBOX_ARGS_PATH;
   delete process.env.KIMI_CODE_HOME;
   delete process.env.FAKE_GROK_ENV_PATH;
+  delete process.env.FAKE_CODEX_ARGS_PATH;
 });
 
 afterEach(() => {
@@ -364,6 +367,8 @@ afterEach(() => {
   delete process.env.FAKE_SANDBOX_ARGS_PATH;
   delete process.env.KIMI_CODE_HOME;
   delete process.env.FAKE_GROK_ENV_PATH;
+  delete process.env.FAKE_CODEX_ARGS_PATH;
+  delete process.env.CODEX_HOME;
   rmSync(scratch, { recursive: true, force: true });
 });
 
@@ -390,6 +395,28 @@ describe("runLane", () => {
       }
     });
   }
+
+  it("starts Codex with the user's MCP servers and the ChatGPT apps switched off", async () => {
+    mkdirSync(join(scratch, "codex-home"));
+    writeFileSync(
+      join(scratch, "codex-home", "config.toml"),
+      '[mcp_servers.node_repl]\ncommand = "node_repl"\n[mcp_servers.forgejo]\ncommand = "forgejo-mcp"\n'
+    );
+    const argsPath = join(scratch, "codex-args.json");
+    process.env.FAKE_CODEX_ARGS_PATH = argsPath;
+    const input = options("codex", "codex-mcp-off");
+    const result = await runLane(input);
+    expect(result.exitCode).toBe(0);
+    const args = JSON.parse(readFileSync(argsPath, "utf8")) as string[];
+    expect(args).toEqual(expect.arrayContaining([
+      "--disable",
+      "apps",
+      "--config",
+      "mcp_servers.node_repl.enabled=false",
+      "--config",
+      "mcp_servers.forgejo.enabled=false",
+    ]));
+  });
 
   it("starts Grok with its imported MCP servers switched off", async () => {
     const envPath = join(scratch, "grok-env.json");
