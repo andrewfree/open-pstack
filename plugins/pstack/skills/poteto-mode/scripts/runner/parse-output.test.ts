@@ -302,6 +302,24 @@ describe("parseProviderOutput", () => {
     expect(reportedModelMatches("grok", "fable", "claude-fable-9-9")).toBe(false);
   });
 
+  it("ignores the zero-width spaces Cursor appends to some listed names", () => {
+    // xhigh is listed as "Extra High", so only the listed name can vouch for this report.
+    const listing = "grok-4.7-xhigh-fast - Grok 4.7  Extra High Fast\u200b\u200b";
+    const listed = cursorListedModel(listing, "grok-4.7-xhigh-fast");
+    expect(listed).toBe("Grok 4.7  Extra High Fast\u200b\u200b");
+    expect(
+      cursorReportedModelMatches("grok-4.7-xhigh-fast", listed, "Grok 4.7 Extra High Fast")
+    ).toBe(true);
+    expect(
+      cursorReportedModelMatches("grok-4.7-xhigh-fast", listed, "Grok 4.7 Extra High")
+    ).toBe(false);
+  });
+
+  it("accepts Cursor Auto's own report", () => {
+    const listed = cursorListedModel("auto - Auto (current, default)", "auto");
+    expect(cursorReportedModelMatches("auto", listed, "Auto")).toBe(true);
+  });
+
   it("takes Kimi's last assistant message as the answer and pins its model", () => {
     const stream = [
       { role: "meta", type: "system.version", version: "2.1.1" },
