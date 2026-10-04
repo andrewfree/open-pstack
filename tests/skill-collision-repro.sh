@@ -366,7 +366,7 @@ else
   note "ok: excluded upstream skills stay absent"
 fi
 
-routed_model_skills=(how why unslop typescript-best-practices)
+routed_model_skills=(how why unslop typescript-best-practices benchmark-checklist)
 routed_model_bad=""
 for name in "${routed_model_skills[@]}"; do
   routed_skill="$plugin/skills/$name/SKILL.md"

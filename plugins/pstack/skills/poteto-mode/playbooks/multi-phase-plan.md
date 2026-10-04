@@ -14,7 +14,7 @@
 
 **Driver skill.** Pick it by surface. Browser, Electron, and web UIs use Claude Code's **verify** skill. CLIs and TUIs use Claude Code's **run** skill. Native mobile uses whatever simulator-driving skill the repo has. On Codex, substitute per [`../references/codex-tools.md`](../references/codex-tools.md). A PR that touches two surfaces gets lanes on both. A surface with no driver skill is a risk in Appendix C, and its live block still names how each lane drives it.
 
-On Claude Code, arm the hourly audit tick as `/loop 1h` with the plan's tick prompt. On Codex, arm the same cadence per [`../references/codex-tools.md`](../references/codex-tools.md). Never leave the cadence to memory. Keep skill-relative links in this playbook body. Do not copy them into the plan file.
+On Claude Code, arm the hourly audit tick as `/loop 1h` with the plan's tick prompt. A recurring `/loop` lasts at most seven days and ends with the session, so re-arm it before it expires and after any session restart. On Codex, arm the same cadence per [`../references/codex-tools.md`](../references/codex-tools.md). Never leave the cadence to memory. Keep skill-relative links in this playbook body. Do not copy them into the plan file.
 
 ````markdown
 # <Program> plan
@@ -40,7 +40,7 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
   - [ ] `<driver skill path>`
   - [ ] `skills/poteto-mode/playbooks/opening-a-pr.md`
   - [ ] `skills/<each other leaf skill the program uses>/SKILL.md`
-- [ ] On the operator's go, arm the hourly audit tick as a real cadence with the tick prompt below. Never leave the cadence to memory.
+- [ ] On the operator's go, arm the hourly audit tick as a real cadence with the tick prompt below, and re-arm it before it expires and after a session restart. Never leave the cadence to memory.
 - [ ] Use this tick prompt, verbatim. "Re-read the execution playbook from the installed plugin. Audit the operation against it and fix drift in this tick. Probe every active lane and judge progress by side effects only. Stand down a lane only on affirmative failure evidence, and dispatch its replacement in the same tick. Then post a short status message to the operator in chat only when the audit found a tracked change that no earlier status message reported, such as a PR opened, a code-ready head, a round launched or closed, a verdict, a merge, a stuck agent and the action taken, a blocker added or cleared, or a decision only the operator can make. Name every such change and nothing else. Do not repeat a table, the merged list, or an unchanged blocker. If the audit found none, end the turn with no reply text. Either way, log this tick's row in your decision trail. The row names the items reported, or none."
 - [ ] On the operator's hold or stand-down, send every owner a zero-writes order at once.
 
