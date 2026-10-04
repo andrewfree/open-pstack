@@ -3,6 +3,10 @@
 Mergify auto-queue is live: ready PRs to main require passing verify, Unfret and exact-head live-gate; workflow changes require operator queueing.
 This port applies the Cursor → Claude Code substitutions in skill bodies. Earlier drafts left them flagged; this revision resolves them. A later pass added a Codex build that shares the same skills; see [Codex port](#codex-port) below.
 
+## 1.5.1-local.8 merges upstream #130
+
+Open Pstack 1.5.1-local.8 merges upstream Open Pstack main at `c3a177dccc2c54f0fe51caadde20ca269fb008d0` into 1.5.1-local.7. Upstream #130 (issue #58) lets the Claude parser read a `--output-format json` result that arrives as an array of events, using its last `result` event, and checks `is_error` before the result text. Grok preflight now also passes for an `XAI_API_KEY` login, matches the requested model as a whole token instead of any substring, and fails when the listing also carries an authentication or model error. "not authenticated" now counts as `unauthenticated`. The Kimi and Cursor preflight checks are unchanged.
+
 ## 1.5.1-local.7 merges upstream main after 1.5.0
 
 Open Pstack 1.5.1-local.7 merges upstream Open Pstack main at `cd43478bd6c9fa38d884f45b36a4202191a3b188` into 1.5.1-local.6. Upstream's Unreleased section below covers two of its four changes: the POSIX shell launcher that ignores the caller project's `.env`, `bunfig.toml`, `BUN_OPTIONS`, and `NODE_OPTIONS` (#25), and the Grok host prerequisite docs (#56). The other two have no upstream entry yet. #78 keeps private `<receipt>.stdout` and `<receipt>.stderr` copies of the model's raw output and lets Grok terminal failures keep their status, reason, model, session, usage, and cost. #124 makes setup check a Codex parent's permissions before any probe or write, and adds a hint to a plain `child-failed` receipt when a Codex parent has network disabled. The Cursor sync point stays 0.15.5.
