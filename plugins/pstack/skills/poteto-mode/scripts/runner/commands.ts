@@ -121,7 +121,8 @@ function realPath(path: string): string {
 }
 
 function kimiHome(env: NodeJS.ProcessEnv): string {
-  return realPath(env.KIMI_CODE_HOME ?? join(homedir(), ".kimi-code"));
+  // Kimi treats an empty KIMI_CODE_HOME as unset; Seatbelt rejects an empty subpath.
+  return realPath(env.KIMI_CODE_HOME || join(homedir(), ".kimi-code"));
 }
 
 function kimiSandbox(

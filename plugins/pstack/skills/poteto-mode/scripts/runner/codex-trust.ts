@@ -10,8 +10,9 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
+// Codex treats an empty CODEX_HOME as unset (codex-tools.md#harness-config-homes).
 export function codexConfigPath(env: NodeJS.ProcessEnv): string {
-  return join(env.CODEX_HOME ?? join(homedir(), ".codex"), "config.toml");
+  return join(env.CODEX_HOME || join(homedir(), ".codex"), "config.toml");
 }
 
 function realPath(path: string): string {

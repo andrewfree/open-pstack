@@ -5,7 +5,9 @@ This port applies the Cursor → Claude Code substitutions in skill bodies. Earl
 
 ## 1.5.1-local.9 merges upstream #123
 
-Open Pstack 1.5.1-local.9 merges upstream Open Pstack main at `e46bc891b81b356736f3ee7f312f175984d277af` into 1.5.1-local.8. Upstream #123 (issue #120) makes `/setup-pstack` read and write its model sheet and integration in the active harness's config home: a nonempty `CLAUDE_CONFIG_DIR` or `CODEX_HOME`, otherwise `~/.claude` or `~/.codex`. It is described under "Config-home port correction (#120)" below. Setup at the default homes is unchanged. The runner is unchanged from 1.5.1-local.8.
+Open Pstack 1.5.1-local.9 merges upstream Open Pstack main at `e46bc891b81b356736f3ee7f312f175984d277af` into 1.5.1-local.8. Upstream #123 (issue #120) makes `/setup-pstack` read and write its model sheet and integration in the active harness's config home: a nonempty `CLAUDE_CONFIG_DIR` or `CODEX_HOME`, otherwise `~/.claude` or `~/.codex`. It is described under "Config-home port correction (#120)" below. At the default homes setup keeps the same files, the same `@~/.claude/pstack-models.md` import, and the same Codex block, but it now behaves differently in three cases. On Codex it recovers the `AGENTS.md` block when the sheet is missing. When the sheet and its integration disagree, it shows both and asks which to use before any probe. It stops before writing when `CLAUDE.md` holds more than one `pstack-models.md` import. Confirmation also names the source and destination files.
+
+The runner now follows the same rule for its own homes: an empty `CODEX_HOME` or `KIMI_CODE_HOME` means the default home. Before, an empty `CODEX_HOME` made the Codex MCP switch-off and trust cleanup read `./config.toml` in the runner's directory. An empty `KIMI_CODE_HOME` made Seatbelt refuse the Kimi profile.
 
 ## 1.5.1-local.8 merges upstream #130
 
