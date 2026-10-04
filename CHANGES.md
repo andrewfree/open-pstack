@@ -3,6 +3,10 @@
 Mergify auto-queue is live: ready PRs to main require passing verify, Unfret and exact-head live-gate; workflow changes require operator queueing.
 This port applies the Cursor → Claude Code substitutions in skill bodies. Earlier drafts left them flagged; this revision resolves them. A later pass added a Codex build that shares the same skills; see [Codex port](#codex-port) below.
 
+## 1.5.1-local.4 stops Codex lanes from spawning subagents
+
+Codex lanes pass `--disable multi_agent`, but models whose catalog entry declares `multi_agent_version` v2 keep their `collaboration` tools anyway. That includes `gpt-5.6-sol`, the default Sol lane, and the GPT-6 family. A 1.5.1-local.3 read-only lane on either model spawned a real subagent thread. Disabling `multi_agent_v2`, `agents.max_depth = 0`, and code-mode namespace exclusion did not stop it. Codex lanes now pass `--config 'features.multi_agent_v2={enabled=false, max_concurrent_threads_per_session=1}'`, and Codex refuses every spawn with `agent thread limit reached`.
+
 ## 1.5.1-local.3 keeps MCP tools out of Codex lanes
 
 Codex starts every `[mcp_servers]` entry in the user's config in every `codex exec` session, and its ChatGPT apps feature adds connector tools. A 1.5.1-local.2 read-only Codex lane started nine local MCP servers and could reach 446 code-mode tools, 310 of them ChatGPT app connectors. `--config mcp_servers={}` does not help, because `--config` merges into the table. Codex lanes now pass `--disable apps` and `--config mcp_servers.<name>.enabled=false` for each server in `$CODEX_HOME/config.toml`, and the runner refuses a lane when a server name cannot be written that way.

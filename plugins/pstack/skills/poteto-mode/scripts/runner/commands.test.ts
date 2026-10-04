@@ -51,6 +51,8 @@ describe("invocationCommand", () => {
       "memories",
       "--disable",
       "apps",
+      "--config",
+      "features.multi_agent_v2={enabled=false, max_concurrent_threads_per_session=1}",
       "--json",
       "-",
     ]);
@@ -121,6 +123,17 @@ describe("invocationCommand", () => {
       "--disable-web-search",
       "--verbatim",
     ]);
+  });
+
+  it("caps every Codex lane at one thread so collaboration spawns are refused", () => {
+    for (const mode of ["read-only", "isolated-write"] as const) {
+      const spec = invocationCommand(options({ mode }), NO_CODEX_CONFIG);
+      const cap = spec.args.indexOf(
+        "features.multi_agent_v2={enabled=false, max_concurrent_threads_per_session=1}"
+      );
+      expect(spec.args[cap - 1]).toBe("--config");
+      expect(spec.args).toEqual(expect.arrayContaining(["--disable", "multi_agent"]));
+    }
   });
 
   it("switches off each MCP server in the user's Codex config and the ChatGPT apps", () => {

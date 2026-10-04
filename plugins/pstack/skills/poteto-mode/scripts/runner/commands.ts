@@ -168,6 +168,13 @@ function codexMcpServerOverrides(env: NodeJS.ProcessEnv): string[] {
   });
 }
 
+// Models whose catalog entry declares multi_agent_version v2 keep their
+// collaboration spawn tools even with multi_agent disabled. A one-thread session
+// cap makes Codex refuse every spawn ("agent thread limit reached");
+// enabled=false keeps the table from turning v2 on for other models.
+const CODEX_NO_SUBAGENTS =
+  "features.multi_agent_v2={enabled=false, max_concurrent_threads_per_session=1}";
+
 function effortOverride(effort: Effort): string {
   return `model_reasoning_effort=${JSON.stringify(effort)}`;
 }
@@ -227,6 +234,8 @@ export function invocationCommand(
           "memories",
           "--disable",
           "apps",
+          "--config",
+          CODEX_NO_SUBAGENTS,
           ...codexMcpServerOverrides(env),
           "--json",
           "-",

@@ -412,6 +412,8 @@ describe("runLane", () => {
       "--disable",
       "apps",
       "--config",
+      "features.multi_agent_v2={enabled=false, max_concurrent_threads_per_session=1}",
+      "--config",
       "mcp_servers.node_repl.enabled=false",
       "--config",
       "mcp_servers.forgejo.enabled=false",
