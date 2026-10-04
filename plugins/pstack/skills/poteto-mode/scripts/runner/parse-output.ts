@@ -88,10 +88,14 @@ const ERROR_DETAIL_LIMIT = 500;
 
 function providerErrorMessage(provider: Provider, result: JsonObject): string {
   const subtype = nullableString(result.subtype) ?? "unknown";
+  const errors = Array.isArray(result.errors)
+    ? result.errors.filter((entry): entry is string => typeof entry === "string")
+    : [];
   const detail = nullableString(object(result.error)?.message)
     ?? nullableString(result.error)
     ?? nullableString(result.result)
-    ?? nullableString(result.message);
+    ?? nullableString(result.message)
+    ?? (errors.length > 0 ? errors.join("; ") : null);
   const reason = detail === null
     ? ""
     : `: ${detail.trim().slice(0, ERROR_DETAIL_LIMIT)}`;

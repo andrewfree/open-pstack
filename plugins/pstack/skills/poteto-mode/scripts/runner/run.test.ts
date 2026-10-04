@@ -145,6 +145,10 @@ if (name === "claude") {
   console.log(JSON.stringify({type:"assistant",message:{role:"assistant",content:[{type:"text",text:"I have the citations; writing the answer now."}]},session_id:"cu1"}));
   console.log(JSON.stringify({type:"assistant",message:{role:"assistant",content:[{type:"text",text:"CURSOR_OK"}]},session_id:"cu1"}));
   console.log(JSON.stringify({type:"result",subtype:"success",is_error:false,duration_ms:5,duration_api_ms:5,result:"I'll read the runner files first.I have the citations; writing the answer now.CURSOR_OK",session_id:"cu1",request_id:"r1",usage:{inputTokens:40,outputTokens:6,cacheReadTokens:8,cacheWriteTokens:2}}));
+} else if (process.env.FAKE_GROK_ERROR_RESULT === "1") {
+  console.error("GROK_STDERR_HEAD");
+  console.log(JSON.stringify({type:"system",subtype:"init",skills:Array(500).fill("skill-name")}));
+  console.log(JSON.stringify({type:"result",subtype:"error_during_execution",is_error:true,stop_reason:"cancelled",errors:["cancelled"]}));
 } else {
   console.log(JSON.stringify({type:"assistant",message:{content:[{type:"text",text:"progress"}]}}));
   if (process.env.FAKE_GROK_CANCELLED === "1") {
@@ -283,6 +287,7 @@ beforeEach(() => {
   delete process.env.FAKE_DESCENDANT_HOLDS_PIPES_MS;
   delete process.env.FAKE_DESCENDANT_PID_PATH;
   delete process.env.FAKE_SELF_SIGNAL;
+  delete process.env.FAKE_GROK_ERROR_RESULT;
 });
 
 afterEach(() => {
@@ -313,6 +318,7 @@ afterEach(() => {
   delete process.env.FAKE_DESCENDANT_HOLDS_PIPES_MS;
   delete process.env.FAKE_DESCENDANT_PID_PATH;
   delete process.env.FAKE_SELF_SIGNAL;
+  delete process.env.FAKE_GROK_ERROR_RESULT;
   rmSync(scratch, { recursive: true, force: true });
 });
 
@@ -352,6 +358,25 @@ describe("runLane", () => {
     });
   });
 
+  it("keeps Grok's terminal error result in malformed-output evidence", async () => {
+    process.env.FAKE_GROK_ERROR_RESULT = "1";
+    const input = options("grok", "grok-error-result");
+    const result = await runLane(input);
+    expect(result.exitCode).toBe(65);
+    expect(existsSync(input.outputPath)).toBe(false);
+    const recorded = receipt(input.receiptPath);
+    expect(recorded).toMatchObject({
+      status: "malformed-output",
+      exitCode: 0,
+      error: {
+        message: "grok reported an error result (subtype error_during_execution): cancelled",
+      },
+    });
+    expect(recorded.error?.evidence).toStartWith("GROK_STDERR_HEAD");
+    expect(recorded.error?.evidence).toContain('"stop_reason":"cancelled","errors":["cancelled"]');
+    expect(recorded.error?.evidence.length).toBeLessThanOrEqual(4_000);
+  });
+
   it("classifies an unavailable model without falling back", async () => {
     process.env.FAKE_INVALID_MODEL = "1";
     const input = options("codex");
@@ -376,8 +401,8 @@ describe("runLane", () => {
     expect(recorded.status).toBe("child-failed");
     expect(recorded.error?.evidence).toStartWith("HEAD_MARKER");
     expect(recorded.error?.evidence).toEndWith("TAIL_MARKER");
-    expect(recorded.error?.evidence).toContain("[truncated 8022 characters]");
-    expect(recorded.error?.evidence.length).toBeLessThan(4_100);
+    expect(recorded.error?.evidence).toContain("[truncated 8052 characters]");
+    expect(recorded.error?.evidence.length).toBeLessThanOrEqual(4_000);
   });
 
   it("reports the Grok subtype and denial text when a headless approval cancels the lane", async () => {

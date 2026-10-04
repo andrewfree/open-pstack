@@ -53,12 +53,18 @@ export interface RunResult {
   readonly receipt: RunnerReceipt;
 }
 
+function truncationMarker(omitted: number): string {
+  return `\n[truncated ${omitted} characters]\n`;
+}
+
+// A provider's terminal event ends its stream, so evidence keeps both ends.
+// The marker counts against the limit.
 function boundedEvidence(value: string, limit: number): string {
   if (value.length <= limit) return value;
-  const head = Math.ceil(limit / 2);
-  const tail = limit - head;
-  const omitted = value.length - head - tail;
-  return `${value.slice(0, head)}\n[truncated ${omitted} characters]\n${value.slice(value.length - tail)}`;
+  const kept = Math.max(0, limit - truncationMarker(value.length).length);
+  const head = Math.ceil(kept / 2);
+  const tail = kept - head;
+  return `${value.slice(0, head)}${truncationMarker(value.length - kept)}${value.slice(value.length - tail)}`;
 }
 
 function evidence(value: string): string {
