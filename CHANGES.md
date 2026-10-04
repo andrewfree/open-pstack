@@ -3,6 +3,10 @@
 Mergify auto-queue is live: ready PRs to main require passing verify, Unfret and exact-head live-gate; workflow changes require operator queueing.
 This port applies the Cursor → Claude Code substitutions in skill bodies. Earlier drafts left them flagged; this revision resolves them. A later pass added a Codex build that shares the same skills; see [Codex port](#codex-port) below.
 
+## 1.5.1-local.3 keeps MCP tools out of Codex lanes
+
+Codex starts every `[mcp_servers]` entry in the user's config in every `codex exec` session, and its ChatGPT apps feature adds connector tools. A 1.5.1-local.2 read-only Codex lane started nine local MCP servers and could reach 446 code-mode tools, 310 of them ChatGPT app connectors. `--config mcp_servers={}` does not help, because `--config` merges into the table. Codex lanes now pass `--disable apps` and `--config mcp_servers.<name>.enabled=false` for each server in `$CODEX_HOME/config.toml`, and the runner refuses a lane when a server name cannot be written that way.
+
 ## 1.5.1-local.2 keeps MCP tools out of Grok lanes
 
 Grok imports MCP servers from Claude, Cursor, and Codex config by default, and its `--tools` allowlist does not filter their tools. Every 1.5.1-local.1 Grok lane started the user's Claude MCP servers, and one read-only lane listed 220 MCP tools, including Forgejo write and merge tools. Grok lanes now set `GROK_CLAUDE_MCPS_ENABLED`, `GROK_CURSOR_MCPS_ENABLED`, and `GROK_CODEX_MCPS_ENABLED` to `false` and pass `--deny 'MCPTool(*)'` for any server Grok's own or a trusted project's config still starts.

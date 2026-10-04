@@ -1,7 +1,12 @@
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { invocationCommand, preflightCommand } from "./commands.ts";
 import type { RunnerOptions } from "./types.ts";
+
+// Codex lanes read the user's MCP servers from CODEX_HOME; most tests want none.
+const NO_CODEX_CONFIG = { CODEX_HOME: "/nonexistent-codex-home" };
 
 function options(overrides: Partial<RunnerOptions> = {}): RunnerOptions {
   return {
@@ -21,7 +26,7 @@ function options(overrides: Partial<RunnerOptions> = {}): RunnerOptions {
 
 describe("invocationCommand", () => {
   it("pins Codex model, effort, sandbox, cwd, and JSONL output", () => {
-    const spec = invocationCommand(options());
+    const spec = invocationCommand(options(), NO_CODEX_CONFIG);
     expect(spec.command).toBe("codex");
     expect(spec.stdin).toBe("prompt");
     expect(spec.args).toEqual([
@@ -44,6 +49,8 @@ describe("invocationCommand", () => {
       "hooks",
       "--disable",
       "memories",
+      "--disable",
+      "apps",
       "--json",
       "-",
     ]);
@@ -114,6 +121,46 @@ describe("invocationCommand", () => {
       "--disable-web-search",
       "--verbatim",
     ]);
+  });
+
+  it("switches off each MCP server in the user's Codex config and the ChatGPT apps", () => {
+    const home = mkdtempSync(join(tmpdir(), "codex-home-"));
+    writeFileSync(
+      join(home, "config.toml"),
+      [
+        'model = "gpt-6.1-sol"',
+        "[mcp_servers.forgejo]",
+        'command = "/usr/local/bin/forgejo-mcp"',
+        "[mcp_servers.computer-use]",
+        'command = "computer-use"',
+        "enabled = false",
+        "[mcp_servers.docs]",
+        'url = "https://example.invalid/mcp"',
+      ].join("\n")
+    );
+    for (const mode of ["read-only", "isolated-write"] as const) {
+      const spec = invocationCommand(options({ mode }), { CODEX_HOME: home });
+      const overrides = spec.args.filter((arg) => arg.startsWith("mcp_servers."));
+      expect(overrides).toEqual([
+        "mcp_servers.forgejo.enabled=false",
+        "mcp_servers.computer-use.enabled=false",
+        "mcp_servers.docs.enabled=false",
+      ]);
+      for (const override of overrides) {
+        expect(spec.args[spec.args.indexOf(override) - 1]).toBe("--config");
+      }
+      expect(spec.args).toEqual(expect.arrayContaining(["--disable", "apps"]));
+      expect(spec.args.at(-1)).toBe("-");
+    }
+
+    const bare = invocationCommand(options(), NO_CODEX_CONFIG);
+    expect(bare.args.filter((arg) => arg.startsWith("mcp_servers."))).toEqual([]);
+
+    // -c cannot address a quoted TOML key, so such a server stops the lane instead of leaking.
+    writeFileSync(join(home, "config.toml"), '[mcp_servers."a.b"]\ncommand = "x"\n');
+    expect(() => invocationCommand(options(), { CODEX_HOME: home })).toThrow(
+      'Codex MCP server "a.b" cannot be switched off with --config'
+    );
   });
 
   it("keeps imported and configured MCP servers out of both Grok modes", () => {
@@ -212,7 +259,7 @@ describe("invocationCommand", () => {
   });
 
   it("uses bounded write modes without blanket bypasses", () => {
-    const codex = invocationCommand(options({ mode: "isolated-write" }));
+    const codex = invocationCommand(options({ mode: "isolated-write" }), NO_CODEX_CONFIG);
     expect(codex.args).toEqual(
       expect.arrayContaining(["--sandbox", "workspace-write"])
     );
@@ -351,7 +398,7 @@ describe("invocationCommand", () => {
     ];
     for (const { provider, model, flag } of cases) {
       for (const effort of ["low", "medium", "high"] as const) {
-        const spec = invocationCommand(options({ provider, model, effort }));
+        const spec = invocationCommand(options({ provider, model, effort }), NO_CODEX_CONFIG);
         expect(spec.args).toEqual(expect.arrayContaining(flag(effort)));
       }
     }
