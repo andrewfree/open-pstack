@@ -160,9 +160,11 @@ export function cursorListedModel(
   return null;
 }
 
+// Cursor's listing pads some display names with zero-width spaces, which \s misses.
 function modelTokens(value: string): string[] {
   return value
     .toLowerCase()
+    .replace(/\p{Cf}/gu, "")
     .split(/[\s-]+/)
     .filter((token) => token.length > 0);
 }
