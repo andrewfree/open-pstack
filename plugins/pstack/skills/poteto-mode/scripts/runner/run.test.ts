@@ -154,6 +154,9 @@ if (name === "claude") {
   console.log(JSON.stringify({result:"CLAUDE_OK",session_id:"c1",usage:{input_tokens:10,output_tokens:2},total_cost_usd:0.01,modelUsage:{[reportedModel]:{}}}));
 } else if (name === "codex") {
   if (process.env.FAKE_CODEX_ARGS_PATH) writeFileSync(process.env.FAKE_CODEX_ARGS_PATH, JSON.stringify(args));
+  if (process.env.FAKE_CODEX_TRUST_BLOCK) {
+    appendFileSync(process.env.CODEX_HOME + "/config.toml", process.env.FAKE_CODEX_TRUST_BLOCK);
+  }
   console.log(JSON.stringify({type:"thread.started",thread_id:"o1"}));
   console.log(JSON.stringify({type:"item.completed",item:{type:"agent_message",text:"CODEX_OK"}}));
   console.log(JSON.stringify({type:"turn.completed",usage:{input_tokens:20,cached_input_tokens:5,output_tokens:3,reasoning_output_tokens:1}}));
@@ -331,6 +334,7 @@ beforeEach(() => {
   delete process.env.KIMI_CODE_HOME;
   delete process.env.FAKE_GROK_ENV_PATH;
   delete process.env.FAKE_CODEX_ARGS_PATH;
+  delete process.env.FAKE_CODEX_TRUST_BLOCK;
 });
 
 afterEach(() => {
@@ -368,6 +372,7 @@ afterEach(() => {
   delete process.env.KIMI_CODE_HOME;
   delete process.env.FAKE_GROK_ENV_PATH;
   delete process.env.FAKE_CODEX_ARGS_PATH;
+  delete process.env.FAKE_CODEX_TRUST_BLOCK;
   delete process.env.CODEX_HOME;
   rmSync(scratch, { recursive: true, force: true });
 });
@@ -395,6 +400,61 @@ describe("runLane", () => {
       }
     });
   }
+
+  describe("Codex project trust", () => {
+    function gitWorktree(): { readonly repo: string; readonly worktree: string } {
+      const repo = join(scratch, "trust-repo");
+      const worktree = join(scratch, "trust-worktree");
+      const git = (...args: string[]) => {
+        const run = Bun.spawnSync(["git", ...args], { stdout: "ignore", stderr: "pipe" });
+        if (run.exitCode !== 0) throw new Error(run.stderr.toString());
+      };
+      git("init", "-q", "-b", "main", repo);
+      writeFileSync(join(repo, "README.md"), "x\n");
+      git("-C", repo, "add", ".");
+      git("-C", repo, "-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "-qm", "init");
+      git("-C", repo, "worktree", "add", "-q", "--detach", worktree);
+      return { repo: realpathSync(repo), worktree };
+    }
+
+    function codexConfig(text: string): string {
+      mkdirSync(join(scratch, "codex-home"), { recursive: true });
+      const path = join(scratch, "codex-home", "config.toml");
+      writeFileSync(path, text);
+      return path;
+    }
+
+    const original = 'model = "gpt-6.1-sol"\n\n[projects."/Users/someone/own-repo"]\ntrust_level = "trusted"\n';
+
+    it("removes the trust a Codex writer lane records for its project", async () => {
+      const { repo, worktree } = gitWorktree();
+      const config = codexConfig(original);
+      process.env.FAKE_CODEX_TRUST_BLOCK = `\n[projects.${JSON.stringify(repo)}]\ntrust_level = "trusted"\n`;
+      const input = { ...options("codex", "codex-trust"), mode: "isolated-write" as const, cwd: worktree };
+      const result = await runLane(input);
+      expect(result.exitCode).toBe(0);
+      expect(readFileSync(config, "utf8")).toBe(original);
+    });
+
+    it("keeps trust the user had already given the project", async () => {
+      const { repo, worktree } = gitWorktree();
+      const trusted = `${original}\n[projects.${JSON.stringify(repo)}]\ntrust_level = "trusted"\n`;
+      const config = codexConfig(trusted);
+      const input = { ...options("codex", "codex-trust-kept"), mode: "isolated-write" as const, cwd: worktree };
+      expect((await runLane(input)).exitCode).toBe(0);
+      expect(readFileSync(config, "utf8")).toBe(trusted);
+    });
+
+    it("leaves a trust entry it cannot match exactly", async () => {
+      const { repo, worktree } = gitWorktree();
+      const config = codexConfig(original);
+      const unusual = `\n[projects.${JSON.stringify(repo)}]\ntrust_level = "trusted"\nnote = "kept"\n`;
+      process.env.FAKE_CODEX_TRUST_BLOCK = unusual;
+      const input = { ...options("codex", "codex-trust-odd"), mode: "isolated-write" as const, cwd: worktree };
+      expect((await runLane(input)).exitCode).toBe(0);
+      expect(readFileSync(config, "utf8")).toBe(`${original}${unusual}`);
+    });
+  });
 
   it("starts Codex with the user's MCP servers and the ChatGPT apps switched off", async () => {
     mkdirSync(join(scratch, "codex-home"));

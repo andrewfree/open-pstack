@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { guardCodexProjectTrust } from "./codex-trust.ts";
 import { invocationCommand, preflightCommand, type CommandSpec } from "./commands.ts";
 import { versionedClaudeAlias } from "./model-aliases.ts";
 import {
@@ -886,16 +887,24 @@ async function executeLane(
     return finishWithoutChild("timed-out", "before model execution");
   }
 
-  const result = await runProcess(
-    executable,
-    sandboxExecutable,
-    invocation,
-    options.cwd,
-    env,
-    prompt,
-    deadlineAt,
-    cancellation
-  );
+  const restoreCodexTrust = options.provider === "codex"
+    ? guardCodexProjectTrust(options.cwd, env)
+    : () => {};
+  let result: ProcessResult;
+  try {
+    result = await runProcess(
+      executable,
+      sandboxExecutable,
+      invocation,
+      options.cwd,
+      env,
+      prompt,
+      deadlineAt,
+      cancellation
+    );
+  } finally {
+    restoreCodexTrust();
+  }
   const completed = Date.now();
   const base = {
     startedAt,

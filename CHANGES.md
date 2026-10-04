@@ -3,6 +3,10 @@
 Mergify auto-queue is live: ready PRs to main require passing verify, Unfret and exact-head live-gate; workflow changes require operator queueing.
 This port applies the Cursor → Claude Code substitutions in skill bodies. Earlier drafts left them flagged; this revision resolves them. A later pass added a Codex build that shares the same skills; see [Codex port](#codex-port) below.
 
+## 1.5.1-local.5 undoes the project trust Codex writer lanes record
+
+A `codex exec` session with a `workspace-write` sandbox writes `trust_level = "trusted"` for its git project into `$CODEX_HOME/config.toml`, keyed by the main checkout for a linked worktree. A trusted project's own `.codex/config.toml`, including its MCP servers and hooks, then loads in later sessions. No flag, `--config` override, `--ignore-user-config`, or approval policy stops the write; a persisted `untrusted` entry is the only thing Codex leaves alone. The runner now records the project's trust entries before each Codex lane and afterwards removes an exact trusted table that first appeared during the lane, rereading the file if another writer changed it. This is a workaround for Codex behavior, not a Codex setting.
+
 ## 1.5.1-local.4 stops Codex lanes from spawning subagents
 
 Codex lanes pass `--disable multi_agent`, but models whose catalog entry declares `multi_agent_version` v2 keep their `collaboration` tools anyway. That includes `gpt-5.6-sol`, the default Sol lane, and the GPT-6 family. A 1.5.1-local.3 read-only lane on either model spawned a real subagent thread. Disabling `multi_agent_v2`, `agents.max_depth = 0`, and code-mode namespace exclusion did not stop it. Codex lanes now pass `--config 'features.multi_agent_v2={enabled=false, max_concurrent_threads_per_session=1}'`, and Codex refuses every spawn with `agent thread limit reached`.
