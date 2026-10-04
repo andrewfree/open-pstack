@@ -437,6 +437,11 @@ function kimiEffortSupported(listing: string, model: string, effort: Effort): bo
   return kimiSupportedEfforts(listing, model)?.includes(effort) ?? false;
 }
 
+function grokModelAvailable(value: string, model: string): boolean {
+  const escaped = model.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^A-Za-z0-9_.-])${escaped}($|[^A-Za-z0-9_.-])`).test(value);
+}
+
 function preflightPassed(
   provider: Provider,
   model: string,
@@ -461,7 +466,9 @@ function preflightPassed(
     case "codex":
       return /logged in/i.test(combined);
     case "grok":
-      return /logged in/i.test(combined) && combined.includes(model);
+      return unavailableStatus(combined) === "child-failed"
+        && /\blogged in\b|\bYou are using XAI_API_KEY\./i.test(combined)
+        && grokModelAvailable(combined, model);
     case "cursor":
       return cursorListedModel(combined, model) !== null;
     case "kimi":
@@ -483,7 +490,7 @@ function successfulPreflightEvidence(
 }
 
 function unavailableStatus(value: string): ReceiptStatus {
-  if (/not logged in|unauthenticated|authentication|sign in|login required/i.test(value)) {
+  if (/not logged in|not authenticated|unauthenticated|authentication|sign in|login required/i.test(value)) {
     return "unauthenticated";
   }
   if (/model.{0,40}(not found|unknown|unavailable|unsupported|not supported|invalid)|invalid.{0,20}model/i.test(value)) {
@@ -521,7 +528,7 @@ function preflightFailureStatus(
       ? "unavailable-model"
       : "unauthenticated";
   }
-  return provider === "grok" && !value.includes(model)
+  return provider === "grok" && !grokModelAvailable(value, model)
     ? "unavailable-model"
     : "unauthenticated";
 }
