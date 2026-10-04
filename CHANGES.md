@@ -3,6 +3,10 @@
 Mergify auto-queue is live: ready PRs to main require passing verify, Unfret and exact-head live-gate; workflow changes require operator queueing.
 This port applies the Cursor → Claude Code substitutions in skill bodies. Earlier drafts left them flagged; this revision resolves them. A later pass added a Codex build that shares the same skills; see [Codex port](#codex-port) below.
 
+## 1.5.1-local.9 merges upstream #123
+
+Open Pstack 1.5.1-local.9 merges upstream Open Pstack main at `e46bc891b81b356736f3ee7f312f175984d277af` into 1.5.1-local.8. Upstream #123 (issue #120) makes `/setup-pstack` read and write its model sheet and integration in the active harness's config home: a nonempty `CLAUDE_CONFIG_DIR` or `CODEX_HOME`, otherwise `~/.claude` or `~/.codex`. It is described under "Config-home port correction (#120)" below. Setup at the default homes is unchanged. The runner is unchanged from 1.5.1-local.8.
+
 ## 1.5.1-local.8 merges upstream #130
 
 Open Pstack 1.5.1-local.8 merges upstream Open Pstack main at `c3a177dccc2c54f0fe51caadde20ca269fb008d0` into 1.5.1-local.7. Upstream #130 (issue #58) lets the Claude parser read a `--output-format json` result that arrives as an array of events, using its last `result` event, and checks `is_error` before the result text. Grok preflight now also passes for an `XAI_API_KEY` login, matches the requested model as a whole token instead of any substring, and fails when the listing also carries an authentication or model error. "not authenticated" now counts as `unauthenticated`. The Kimi and Cursor preflight checks are unchanged.
@@ -49,6 +53,12 @@ The external runner adds a `kimi` provider for Moonshot's Kimi Code CLI, such as
 The shipped `pstack-runner` no longer loads the caller project's environment files or `bunfig.toml` at startup. Its POSIX shell launcher clears inherited `BUN_OPTIONS` and `NODE_OPTIONS`, then executes Bun with env-file loading disabled and project Bun configuration ignored while preserving ordinary parent-provided environment variables. It needs no `env -S` or directory-resolution helpers. The TypeScript entry keeps the first-statement deadline capture, and `exec` preserves signal behavior. Direct-executable regressions cover startup isolation, inherited environment, and preflight cancellation.
 
 - Document Linux Landlock and bubblewrap prerequisites for bounded Grok lanes, including affected Claude Code cloud hosts, and link setup failures to the shared host and parent prerequisites without changing runner behavior (#56).
+
+## Config-home port correction (#120)
+
+Setup resolves the active harness's config home through `poteto-mode/references/codex-tools.md`: nonempty `CLAUDE_CONFIG_DIR` or `CODEX_HOME`, falling back to `$HOME/.claude` or `$HOME/.codex` for unset or empty values. The model sheet, global instruction integration, current-state reads, snapshots, restoration, and readback all use that directory. Claude keeps the literal `@~/.claude/pstack-models.md` import at the default home and renders exactly `@./pstack-models.md` for a redirected home, keeping spaces and `#` in the config-directory name out of the import line. It identifies the existing import by the target basename `pstack-models.md`, replaces one matching line in place, appends when none exist, and stops before writing if more than one exists. Codex retains its exact-byte bounded block. Default-home behavior, role defaults, probes, and confirmation are unchanged.
+
+This is an intentional Claude Code/Codex port divergence from Cursor's `~/.cursor/rules/` destination, recorded in `UPSTREAM.md` for the port-patch ledger (#105). The named config-home invariant in `tests/skill-collision-repro.sh` rejects literal default-home destinations outside the legacy import, requires the literal default-home rendering and zero/one/many import rules, and checks unset, empty, and space-containing resolution without writing daily files. `tests/setup-config-home-repro.sh` prepares private redirected directories while preserving real `HOME` and `USER`, and checks artifacts and unchanged daily targets; it does not substitute for installed-harness invocation, receipts, or fresh-session loading proof. The operator supplies that evidence on the final PR head and posts the live gate.
 
 ## 1.5.0 syncs to Cursor pstack 0.15.5
 
