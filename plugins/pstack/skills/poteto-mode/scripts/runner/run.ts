@@ -973,9 +973,16 @@ async function executeLane(
       : result.timedOut
         ? "timed-out"
         : providerFailure?.status ?? unavailableStatus(rawFailureEvidence);
-    const sandboxHint = status === "child-failed" && providerFailure === null && parentNetworkDisabled
-      ? "likely cause: Codex parent sandbox has network disabled; see provider-dispatch.md#host-and-parent-prerequisites"
-      : null;
+    // A sandbox-exec profile cannot start inside another Seatbelt sandbox, whatever the parent's network access.
+    const nestedSeatbelt = invocation.sandbox !== undefined
+      && rawFailureEvidence.includes("sandbox_apply: Operation not permitted");
+    const sandboxHint = status !== "child-failed" || providerFailure !== null
+      ? null
+      : nestedSeatbelt
+        ? "likely cause: the parent already runs in a sandbox and sandbox-exec profiles do not nest; see provider-dispatch.md#the-kimi-route"
+        : parentNetworkDisabled
+          ? "likely cause: Codex parent sandbox has network disabled; see provider-dispatch.md#host-and-parent-prerequisites"
+          : null;
     const failureEvidence = evidence(providerFailure !== null
       ? `${providerFailure.message}\n${rawFailureEvidence}`
       : sandboxHint !== null

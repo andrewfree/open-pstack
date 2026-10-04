@@ -21,6 +21,7 @@ import type { Provider, RunnerOptions, RunnerReceipt } from "./types.ts";
 let scratch = "";
 let bin = "";
 let previousPath: string | undefined;
+let ambientNetworkDisabled: string | undefined;
 
 function streamPath(path: string | null): string {
   if (path === null) throw new Error("expected a reserved stream artifact path");
@@ -32,6 +33,10 @@ import { appendFileSync, existsSync, unlinkSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
 const name = process.argv[1].split("/").at(-1);
 if (name === "sandbox-exec") {
+  if (process.env.FAKE_SANDBOX_NESTED === "1") {
+    console.error("sandbox-exec: sandbox_apply: Operation not permitted");
+    process.exit(71);
+  }
   const profileIndex = args.indexOf("-p");
   if (process.env.FAKE_SANDBOX_ARGS_PATH) {
     writeFileSync(process.env.FAKE_SANDBOX_ARGS_PATH, JSON.stringify(args.slice(0, profileIndex + 2)));
@@ -307,6 +312,9 @@ beforeEach(() => {
   previousPath = process.env.PATH;
   process.env.PATH = `${bin}:${dirname(process.execPath)}:${previousPath ?? ""}`;
   process.env.CODEX_HOME = join(scratch, "codex-home");
+  // A Codex sandboxed shell exports this; the runner would then add its parent-sandbox hint to every failure.
+  ambientNetworkDisabled = process.env.CODEX_SANDBOX_NETWORK_DISABLED;
+  delete process.env.CODEX_SANDBOX_NETWORK_DISABLED;
   delete process.env.FAKE_TIMEOUT;
   delete process.env.FAKE_INVALID_MODEL;
   delete process.env.FAKE_NOISY_FAILURE;
@@ -341,6 +349,7 @@ beforeEach(() => {
   delete process.env.FAKE_GROK_ENV_PATH;
   delete process.env.FAKE_CODEX_ARGS_PATH;
   delete process.env.FAKE_CODEX_TRUST_BLOCK;
+  delete process.env.FAKE_SANDBOX_NESTED;
 });
 
 afterEach(() => {
@@ -380,6 +389,12 @@ afterEach(() => {
   delete process.env.FAKE_CODEX_ARGS_PATH;
   delete process.env.FAKE_CODEX_TRUST_BLOCK;
   delete process.env.CODEX_HOME;
+  delete process.env.FAKE_SANDBOX_NESTED;
+  if (ambientNetworkDisabled === undefined) {
+    delete process.env.CODEX_SANDBOX_NETWORK_DISABLED;
+  } else {
+    process.env.CODEX_SANDBOX_NETWORK_DISABLED = ambientNetworkDisabled;
+  }
   rmSync(scratch, { recursive: true, force: true });
 });
 
@@ -790,6 +805,8 @@ describe("runLane", () => {
       const nodePreload = join(scratch, "node-preload.ran");
       const env: Record<string, string> = {
         PATH: process.env.PATH!,
+        // The local Codex MCP overrides read $CODEX_HOME/config.toml; keep the developer's out of these tests.
+        CODEX_HOME: process.env.CODEX_HOME!,
         PSTACK_ENV_CAPTURE: captured,
         PSTACK_PROMPT_CAPTURE: capturedPrompt,
         PSTACK_INHERITED_ENV_SENTINEL: "inherited-from-parent",
@@ -1355,6 +1372,47 @@ echo '{"role":"assistant","content":"KIMI_OK"}'
       "requested model cursor-grok-4.6-xhigh was not reported by cursor"
     );
   });
+
+  it("keeps both ends of a long malformed-output failure", async () => {
+    // Grok exits 0 with a terminal event that has no status: malformed-output, not a provider failure.
+    writeFileSync(join(bin, "grok"), `#!/usr/bin/env bun
+if (process.argv[2] === "models") {
+  console.log("You are logged in with grok.com.\\nAvailable models:\\n  * grok-4.6 (default)");
+  process.exit(0);
+}
+console.error("MALFORMED_STDERR_HEAD");
+console.error("x".repeat(9000));
+console.log(JSON.stringify({ type: "result", result: "MALFORMED_TERMINAL_EVENT" }));
+`);
+    const input = options("grok", "grok-malformed-long");
+    const result = await runLane(input);
+    expect(result.exitCode).toBe(65);
+    const recorded = receipt(input.receiptPath);
+    expect(recorded.status).toBe("malformed-output");
+    expect(recorded.error?.message).toContain("valid terminal status");
+    expect(recorded.error?.evidence).toStartWith("MALFORMED_STDERR_HEAD");
+    expect(recorded.error?.evidence).toContain("MALFORMED_TERMINAL_EVENT");
+    expect(recorded.error?.evidence).toContain("[truncated ");
+    expect(recorded.error?.evidence.length).toBeLessThanOrEqual(4_000);
+  });
+
+  for (const parent of ["codex", "claude"] as const) {
+    it(`names nested Seatbelt when a Kimi lane's sandbox cannot start under a ${parent} parent`, async () => {
+      process.env.FAKE_SANDBOX_NESTED = "1";
+      // Codex's sandboxed shell also reports network disabled; nesting is still the cause.
+      process.env.CODEX_SANDBOX_NETWORK_DISABLED = "1";
+      const input = { ...options("kimi", `kimi-nested-${parent}`), parent };
+      const result = await runLane(input);
+      expect(result.exitCode).toBe(70);
+      const recorded = receipt(input.receiptPath);
+      expect(recorded).toMatchObject({ status: "child-failed", exitCode: 71 });
+      expect(recorded.error?.message).toBe(
+        "child exited with status 71; likely cause: the parent already runs in a sandbox and sandbox-exec profiles do not nest; see provider-dispatch.md#the-kimi-route"
+      );
+      expect(recorded.error?.evidence).toContain("sandbox_apply: Operation not permitted");
+      expect(recorded.error?.message).not.toContain("network disabled");
+    });
+  }
 
   it("refuses a Cursor lane that reports another model", async () => {
     process.env.FAKE_CURSOR_REPORTED_MODEL = "Cursor Grok 4.5";
