@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -24,11 +25,20 @@ const fake = `#!/usr/bin/env bun
 import { appendFileSync, existsSync, unlinkSync, writeFileSync } from "node:fs";
 const args = process.argv.slice(2);
 const name = process.argv[1].split("/").at(-1);
+if (name === "sandbox-exec") {
+  const profileIndex = args.indexOf("-p");
+  if (process.env.FAKE_SANDBOX_ARGS_PATH) {
+    writeFileSync(process.env.FAKE_SANDBOX_ARGS_PATH, JSON.stringify(args.slice(0, profileIndex + 2)));
+  }
+  const child = Bun.spawn(args.slice(profileIndex + 2), { stdio: ["inherit", "inherit", "inherit"] });
+  process.exit(await child.exited);
+}
 const isPreflight =
   (name === "claude" && args[0] === "auth") ||
   (name === "codex" && args[0] === "login") ||
   (name === "grok" && args[0] === "models") ||
-  (name === "cursor-agent" && args[0] === "models");
+  (name === "cursor-agent" && args[0] === "models") ||
+  (name === "kimi" && args[0] === "provider");
 const stage = isPreflight ? "preflight" : "model";
 const startedPath = isPreflight
   ? process.env.FAKE_PREFLIGHT_STARTED_PATH
@@ -102,6 +112,13 @@ if (name === "cursor-agent" && args[0] === "models") {
   console.log("Available models\\n\\nauto - Auto (current, default)\\n" + listed);
   process.exit(0);
 }
+if (name === "kimi" && args[0] === "provider") {
+  const models = process.env.FAKE_KIMI_MISSING_MODEL === "1"
+    ? {"kimi-code/kimi-for-coding": {supportEfforts: ["low", "high", "max"]}}
+    : {"kimi-code/k3": {model: "k3", displayName: "K3", supportEfforts: ["low", "high", "max"]}};
+  console.log(JSON.stringify({providers: {"managed:kimi-code": {type: "kimi"}}, models}));
+  process.exit(0);
+}
 const modelIndex = args.findIndex((value) => value === "--model");
 const model = modelIndex >= 0 ? args[modelIndex + 1] : "unknown";
 const reportedModel = model === "fable"
@@ -145,6 +162,15 @@ if (name === "claude") {
   console.log(JSON.stringify({type:"assistant",message:{role:"assistant",content:[{type:"text",text:"I have the citations; writing the answer now."}]},session_id:"cu1"}));
   console.log(JSON.stringify({type:"assistant",message:{role:"assistant",content:[{type:"text",text:"CURSOR_OK"}]},session_id:"cu1"}));
   console.log(JSON.stringify({type:"result",subtype:"success",is_error:false,duration_ms:5,duration_api_ms:5,result:"I'll read the runner files first.I have the citations; writing the answer now.CURSOR_OK",session_id:"cu1",request_id:"r1",usage:{inputTokens:40,outputTokens:6,cacheReadTokens:8,cacheWriteTokens:2}}));
+} else if (name === "kimi") {
+  if (process.env.FAKE_KIMI_ARGS_PATH) {
+    writeFileSync(process.env.FAKE_KIMI_ARGS_PATH, JSON.stringify({args, effort: process.env.KIMI_MODEL_THINKING_EFFORT}));
+  }
+  console.log(JSON.stringify({role:"meta",type:"system.version",version:"2.1.1"}));
+  console.log(JSON.stringify({role:"assistant",content:"Reading the files first.",tool_calls:[{type:"function",id:"t1",function:{name:"Bash",arguments:"{}"}}]}));
+  console.log(JSON.stringify({role:"tool",tool_call_id:"t1",content:"./README.md"}));
+  console.log(JSON.stringify({role:"assistant",content:"KIMI_OK"}));
+  console.log(JSON.stringify({role:"meta",type:"session.resume_hint",session_id:"session_k1",command:"kimi -r session_k1"}));
 } else if (process.env.FAKE_GROK_ERROR_RESULT === "1") {
   console.error("GROK_STDERR_HEAD");
   console.log(JSON.stringify({type:"system",subtype:"init",skills:Array(500).fill("skill-name")}));
@@ -177,12 +203,18 @@ function options(provider: Provider, suffix: string = provider): RunnerOptions {
         ? "gpt-5.6-sol"
         : provider === "cursor"
           ? "cursor-grok-4.6-xhigh"
-          : "grok-4.6";
+          : provider === "kimi"
+            ? "kimi-code/k3"
+            : "grok-4.6";
   return {
     parent,
     provider,
     model,
-    effort: provider === "grok" || provider === "cursor" ? "xhigh" : "max",
+    effort: provider === "grok" || provider === "cursor"
+      ? "xhigh"
+      : provider === "kimi"
+        ? "high"
+        : "max",
     mode: "read-only",
     promptPath: join(scratch, "prompt.md"),
     cwd: scratch,
@@ -256,7 +288,7 @@ beforeEach(() => {
   bin = join(scratch, "bin");
   mkdirSync(bin);
   writeFileSync(join(scratch, "prompt.md"), "Return the marker.");
-  for (const name of ["claude", "codex", "grok", "cursor-agent"]) {
+  for (const name of ["claude", "codex", "grok", "cursor-agent", "kimi", "sandbox-exec"]) {
     makeExecutable(name);
   }
   previousPath = process.env.PATH;
@@ -288,6 +320,10 @@ beforeEach(() => {
   delete process.env.FAKE_DESCENDANT_PID_PATH;
   delete process.env.FAKE_SELF_SIGNAL;
   delete process.env.FAKE_GROK_ERROR_RESULT;
+  delete process.env.FAKE_KIMI_ARGS_PATH;
+  delete process.env.FAKE_KIMI_MISSING_MODEL;
+  delete process.env.FAKE_SANDBOX_ARGS_PATH;
+  delete process.env.KIMI_CODE_HOME;
 });
 
 afterEach(() => {
@@ -319,11 +355,15 @@ afterEach(() => {
   delete process.env.FAKE_DESCENDANT_PID_PATH;
   delete process.env.FAKE_SELF_SIGNAL;
   delete process.env.FAKE_GROK_ERROR_RESULT;
+  delete process.env.FAKE_KIMI_ARGS_PATH;
+  delete process.env.FAKE_KIMI_MISSING_MODEL;
+  delete process.env.FAKE_SANDBOX_ARGS_PATH;
+  delete process.env.KIMI_CODE_HOME;
   rmSync(scratch, { recursive: true, force: true });
 });
 
 describe("runLane", () => {
-  for (const provider of ["claude", "codex", "grok", "cursor"] as const) {
+  for (const provider of ["claude", "codex", "grok", "cursor", "kimi"] as const) {
     it(`executes and receipts the ${provider} external lane`, async () => {
       const input = options(provider);
       const result = await runLane(input);
@@ -331,12 +371,13 @@ describe("runLane", () => {
       expect(readFileSync(input.outputPath, "utf8")).toContain(
         provider.toUpperCase()
       );
+      const pinned = provider === "codex" || provider === "kimi";
       expect(receipt(input.receiptPath)).toMatchObject({
         status: "complete",
         provider,
         model: input.model,
-        modelVerified: provider !== "codex",
-        modelEvidence: provider === "codex" ? "pinned-argv" : "provider-report",
+        modelVerified: !pinned,
+        modelEvidence: pinned ? "pinned-argv" : "provider-report",
         preflight: { status: "passed" },
       });
       if (provider === "claude") {
@@ -344,6 +385,130 @@ describe("runLane", () => {
       }
     });
   }
+
+  it("runs Kimi inside the sandbox wrapper with its effort, agent file, and prompt", async () => {
+    const kimiArgs = join(scratch, "kimi-args.json");
+    const sandboxArgs = join(scratch, "sandbox-args.json");
+    process.env.FAKE_KIMI_ARGS_PATH = kimiArgs;
+    process.env.FAKE_SANDBOX_ARGS_PATH = sandboxArgs;
+    const kimiHome = join(scratch, "kimi-home");
+    mkdirSync(kimiHome);
+    process.env.KIMI_CODE_HOME = kimiHome;
+    const input = { ...options("kimi"), mode: "isolated-write" as const };
+    const result = await runLane(input);
+    expect(result.exitCode).toBe(0);
+    expect(readFileSync(input.outputPath, "utf8")).toBe("KIMI_OK");
+
+    const ran = JSON.parse(readFileSync(kimiArgs, "utf8")) as { args: string[]; effort: string };
+    expect(ran.effort).toBe("high");
+    expect(ran.args.at(-1)).toBe("--prompt=Return the marker.");
+    expect(ran.args).toEqual(expect.arrayContaining([
+      "--model",
+      "kimi-code/k3",
+      "--agent-file",
+      join(import.meta.dir, "kimi", "isolated-write.md"),
+    ]));
+    const wrapper = JSON.parse(readFileSync(sandboxArgs, "utf8")) as string[];
+    // Seatbelt matches resolved paths, and the test scratch sits under a symlinked /var.
+    expect(wrapper).toContain(`KIMI_HOME=${realpathSync(kimiHome)}`);
+    expect(wrapper).toContain(`WRITE_ROOT=${realpathSync(scratch)}`);
+    expect(wrapper.at(-1)).toContain('(allow file-write* (subpath (param "WRITE_ROOT")))');
+
+    const recorded = receipt(input.receiptPath);
+    expect(recorded.argv[0]).toBe(join(bin, "sandbox-exec"));
+    expect(recorded.argv).toContain(join(bin, "kimi"));
+    expect(recorded.argv.at(-1)).toBe(`--prompt=<contents of ${input.promptPath}>`);
+    expect(recorded).toMatchObject({
+      sessionId: "session_k1",
+      reportedModel: null,
+      preflight: {
+        argv: [join(bin, "kimi"), "provider", "list", "--json"],
+        evidence: "model kimi-code/k3 configured with effort high; local config, credentials are checked by the model call",
+      },
+    });
+  });
+
+  it("rejects a Kimi effort its model does not accept before any model call", async () => {
+    const started = join(scratch, "kimi-model-started");
+    process.env.FAKE_MODEL_STARTED_PATH = started;
+    const input = { ...options("kimi", "kimi-medium"), effort: "medium" as const };
+    const result = await runLane(input);
+    expect(result.exitCode).toBe(69);
+    expect(existsSync(started)).toBe(false);
+    expect(existsSync(input.outputPath)).toBe(false);
+    expect(receipt(input.receiptPath)).toMatchObject({
+      status: "unavailable-model",
+      preflight: {
+        status: "failed",
+        evidence: "kimi model kimi-code/k3 accepts efforts low, high, max, not medium",
+      },
+    });
+  });
+
+  it("names a missing Kimi model alias as unavailable", async () => {
+    process.env.FAKE_KIMI_MISSING_MODEL = "1";
+    const input = options("kimi", "kimi-missing");
+    const result = await runLane(input);
+    expect(result.exitCode).toBe(69);
+    expect(receipt(input.receiptPath)).toMatchObject({
+      status: "unavailable-model",
+      preflight: { status: "failed", evidence: "kimi config has no model alias kimi-code/k3" },
+    });
+  });
+
+  it("refuses a Kimi lane when sandbox-exec is missing instead of running it unconfined", async () => {
+    rmSync(join(bin, "sandbox-exec"));
+    process.env.PATH = `${bin}:${dirname(process.execPath)}`;
+    const preflightStarted = join(scratch, "kimi-preflight-started");
+    process.env.FAKE_PREFLIGHT_STARTED_PATH = preflightStarted;
+    const input = options("kimi", "kimi-no-sandbox");
+    const result = await runLane(input);
+    expect(result.exitCode).toBe(69);
+    expect(existsSync(preflightStarted)).toBe(false);
+    expect(receipt(input.receiptPath)).toMatchObject({
+      status: "unavailable-cli",
+      executable: join(bin, "kimi"),
+      error: { message: "sandbox-exec executable not found; kimi lanes need it to confine writes" },
+    });
+  });
+
+  it.skipIf(process.platform !== "darwin")(
+    "confines a Kimi writer to its directory with the real Seatbelt profile",
+    async () => {
+      // Seatbelt allows the temporary directories, so this check needs a root outside them.
+      const root = mkdtempSync(join(import.meta.dir, ".seatbelt-test-"));
+      try {
+        const worktree = join(root, "worktree");
+        mkdirSync(worktree);
+        process.env.KIMI_CODE_HOME = join(root, "kimi-home");
+        mkdirSync(process.env.KIMI_CODE_HOME);
+        rmSync(join(bin, "sandbox-exec"));
+        writeFileSync(join(bin, "kimi"), `#!/bin/sh
+if [ "$1" = provider ]; then
+  echo '{"models":{"kimi-code/k3":{"supportEfforts":["high"]}}}'
+  exit 0
+fi
+echo inside > inside.txt
+echo outside > ../outside.txt 2>/dev/null || echo '{"role":"tool","content":"outside denied"}'
+echo '{"role":"assistant","content":"KIMI_OK"}'
+`);
+        chmodSync(join(bin, "kimi"), 0o755);
+        process.env.PATH = `${bin}:/usr/bin:/bin`;
+        const input = {
+          ...options("kimi", "kimi-seatbelt"),
+          mode: "isolated-write" as const,
+          cwd: worktree,
+        };
+        const result = await runLane(input);
+        expect(result.exitCode).toBe(0);
+        expect(receipt(input.receiptPath).argv[0]).toBe("/usr/bin/sandbox-exec");
+        expect(readFileSync(join(worktree, "inside.txt"), "utf8")).toBe("inside\n");
+        expect(existsSync(join(root, "outside.txt"))).toBe(false);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  );
 
   it("records Codex's exact argv without fabricating a reported model", async () => {
     const input = options("codex");

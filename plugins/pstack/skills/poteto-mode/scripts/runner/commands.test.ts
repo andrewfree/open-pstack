@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { invocationCommand } from "./commands.ts";
+import { readFileSync } from "node:fs";
+import { invocationCommand, preflightCommand } from "./commands.ts";
 import type { RunnerOptions } from "./types.ts";
 
 function options(overrides: Partial<RunnerOptions> = {}): RunnerOptions {
@@ -245,6 +246,68 @@ describe("invocationCommand", () => {
     );
     expect(cursor.args).not.toContain("--yolo");
     expect(cursor.args).not.toContain("--mode");
+  });
+
+  it("confines Kimi with Seatbelt, an allowlisting agent file, and its effort variable", () => {
+    const env = { KIMI_CODE_HOME: "/kimi-home" };
+    const reader = invocationCommand(
+      options({ provider: "kimi", model: "kimi-code/k3", effort: "high" }),
+      env
+    );
+    expect(preflightCommand("kimi")).toEqual({
+      command: "kimi",
+      args: ["provider", "list", "--json"],
+      stdin: "none",
+    });
+    expect(reader.command).toBe("kimi");
+    expect(reader.stdin).toBe("none");
+    expect(reader.promptFlag).toBe("--prompt");
+    expect(reader.env).toEqual({ KIMI_MODEL_THINKING_EFFORT: "high" });
+    expect(reader.args).toEqual([
+      "--output-format",
+      "stream-json",
+      "--model",
+      "kimi-code/k3",
+      "--agent-file",
+      `${import.meta.dir}/kimi/read-only.md`,
+    ]);
+    // Prompt mode is always Never Ask, and Kimi rejects --auto alongside --prompt.
+    expect(reader.args).not.toContain("--auto");
+    expect(reader.args).not.toContain("--yolo");
+    expect(reader.sandbox?.command).toBe("sandbox-exec");
+    expect(reader.sandbox?.args.slice(0, 2)).toEqual(["-D", "KIMI_HOME=/kimi-home"]);
+    const readerProfile = reader.sandbox?.args.at(-1) ?? "";
+    expect(readerProfile).toContain("(deny file-write*)");
+    expect(readerProfile).not.toContain("WRITE_ROOT");
+    expect(reader.sandbox?.args.join(" ")).not.toContain("WRITE_ROOT=");
+
+    const writer = invocationCommand(
+      options({ provider: "kimi", model: "kimi-code/k3", effort: "max", mode: "isolated-write" }),
+      env
+    );
+    expect(writer.env).toEqual({ KIMI_MODEL_THINKING_EFFORT: "max" });
+    expect(writer.args).toContain(`${import.meta.dir}/kimi/isolated-write.md`);
+    expect(writer.sandbox?.args).toEqual(
+      expect.arrayContaining(["-D", "WRITE_ROOT=/tmp/worktree", "-p"])
+    );
+    expect(writer.sandbox?.args.at(-1)).toContain(
+      '(allow file-write* (subpath (param "WRITE_ROOT")))'
+    );
+  });
+
+  it("gives each Kimi agent file only its mode's tools and no subagents", () => {
+    const frontmatter = (mode: string): string =>
+      readFileSync(`${import.meta.dir}/kimi/${mode}.md`, "utf8").split("---")[1] ?? "";
+    expect(frontmatter("read-only")).toContain("tools: Read, Grep, Glob, Bash\n");
+    expect(frontmatter("isolated-write")).toContain(
+      "tools: Read, Write, Edit, Grep, Glob, Bash\n"
+    );
+    for (const mode of ["read-only", "isolated-write"]) {
+      expect(frontmatter(mode)).toContain("subagents: []\n");
+      expect(readFileSync(`${import.meta.dir}/kimi/${mode}.md`, "utf8")).toEndWith(
+        "${base_prompt}\n"
+      );
+    }
   });
 
   it("covers low, medium, and high for every external provider", () => {

@@ -339,6 +339,73 @@ function parseCodex(stdout: string): ParsedOutput {
   };
 }
 
+// `kimi provider list --json` reads local config; it lists each model alias and
+// the efforts it accepts. Returns null when the alias is not configured.
+export function kimiSupportedEfforts(listing: string, model: string): readonly string[] | null {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(listing);
+  } catch {
+    return null;
+  }
+  const entry = object(object(object(raw)?.models)?.[model]);
+  if (entry === null) return null;
+  const efforts = Array.isArray(entry.supportEfforts) ? entry.supportEfforts : [];
+  return efforts.filter((effort): effort is string => typeof effort === "string");
+}
+
+function kimiText(content: unknown): string | null {
+  if (typeof content === "string") return content.trim().length > 0 ? content : null;
+  if (!Array.isArray(content)) return null;
+  const text = content
+    .map((part) => {
+      const value = object(part);
+      return value?.type === "text" ? nullableString(value.text) ?? "" : "";
+    })
+    .join("");
+  return text.trim().length > 0 ? text : null;
+}
+
+// Kimi's stream carries no terminal event or served-model report. Its last
+// assistant event is the final answer, so a run whose last assistant event is
+// only tool calls stopped before answering.
+function parseKimi(stdout: string): ParsedOutput {
+  let finalText: string | null = null;
+  let sawAssistant = false;
+  let sessionId: string | null = null;
+
+  for (const line of stdout.split("\n")) {
+    if (line.trim().length === 0) continue;
+    let raw: unknown;
+    try {
+      raw = JSON.parse(line);
+    } catch {
+      throw new Error("kimi emitted a non-JSON event");
+    }
+    const event = object(raw);
+    if (event === null) continue;
+    if (event.role === "assistant") {
+      sawAssistant = true;
+      finalText = kimiText(event.content);
+    }
+    if (event.role === "meta" && event.type === "session.resume_hint") {
+      sessionId = nullableString(event.session_id) ?? sessionId;
+    }
+  }
+
+  if (!sawAssistant) throw new Error("kimi stream did not contain an assistant message");
+  if (finalText === null) {
+    throw new Error("kimi's last assistant message carried no final text");
+  }
+  return {
+    text: finalText,
+    reportedModel: null,
+    sessionId,
+    usage: null,
+    costUsd: null,
+  };
+}
+
 export function parseProviderOutput(
   provider: Provider,
   stdout: string,
@@ -354,6 +421,8 @@ export function parseProviderOutput(
       return parseGrok(stdout, requestedModel);
     case "cursor":
       return parseCursor(stdout);
+    case "kimi":
+      return parseKimi(stdout);
   }
 }
 

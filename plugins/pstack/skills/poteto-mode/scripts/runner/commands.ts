@@ -1,3 +1,6 @@
+import { existsSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type {
   AccessMode,
   Effort,
@@ -9,6 +12,11 @@ export interface CommandSpec {
   readonly command: string;
   readonly args: readonly string[];
   readonly stdin: "prompt" | "none";
+  // Kimi reads its prompt only from this flag's value, never from stdin or a file.
+  readonly promptFlag?: string;
+  readonly env?: Readonly<Record<string, string>>;
+  // The provider CLI runs as the last argument of this confining command.
+  readonly sandbox?: { readonly command: string; readonly args: readonly string[] };
 }
 
 export function preflightCommand(provider: Provider): CommandSpec {
@@ -29,6 +37,8 @@ export function preflightCommand(provider: Provider): CommandSpec {
       return { command: "grok", args: ["models"], stdin: "none" };
     case "cursor":
       return { command: "cursor-agent", args: ["models"], stdin: "none" };
+    case "kimi":
+      return { command: "kimi", args: ["provider", "list", "--json"], stdin: "none" };
   }
 }
 
@@ -76,6 +86,56 @@ function cursorAccess(mode: AccessMode): readonly string[] {
   return mode === "read-only" ? ["--mode", "plan"] : ["--force"];
 }
 
+// Kimi has no sandbox of its own and its prompt mode always auto-approves tools,
+// so Seatbelt confines its writes. Kimi needs its home and the temporary
+// directories; a writer also gets its assigned directory.
+const KIMI_READ_ONLY_PROFILE = `(version 1)
+(allow default)
+(deny file-write*)
+(allow file-write*
+  (literal "/dev/null")
+  (literal "/dev/zero")
+  (literal "/dev/dtracehelper")
+  (regex #"^/dev/tty")
+  (regex #"^/dev/fd/")
+  (subpath "/private/tmp")
+  (subpath "/private/var/folders")
+  (subpath (param "KIMI_HOME")))`;
+
+const KIMI_WRITE_PROFILE = `${KIMI_READ_ONLY_PROFILE}
+(allow file-write* (subpath (param "WRITE_ROOT")))`;
+
+// Seatbelt matches resolved paths, so a symlinked directory must be resolved first.
+function realPath(path: string): string {
+  return existsSync(path) ? realpathSync(path) : path;
+}
+
+function kimiHome(env: NodeJS.ProcessEnv): string {
+  return realPath(env.KIMI_CODE_HOME ?? join(homedir(), ".kimi-code"));
+}
+
+function kimiSandbox(
+  options: RunnerOptions,
+  env: NodeJS.ProcessEnv
+): NonNullable<CommandSpec["sandbox"]> {
+  const writer = options.mode === "isolated-write";
+  return {
+    command: "sandbox-exec",
+    args: [
+      "-D",
+      `KIMI_HOME=${kimiHome(env)}`,
+      ...(writer ? ["-D", `WRITE_ROOT=${realPath(options.cwd)}`] : []),
+      "-p",
+      writer ? KIMI_WRITE_PROFILE : KIMI_READ_ONLY_PROFILE,
+    ],
+  };
+}
+
+// Each agent file allowlists Kimi's tools and names no subagents.
+function kimiAgentFile(mode: AccessMode): string {
+  return join(import.meta.dir, "kimi", `${mode}.md`);
+}
+
 function permissionMode(mode: AccessMode): string {
   return mode === "read-only" ? "plan" : "acceptEdits";
 }
@@ -84,7 +144,10 @@ function effortOverride(effort: Effort): string {
   return `model_reasoning_effort=${JSON.stringify(effort)}`;
 }
 
-export function invocationCommand(options: RunnerOptions): CommandSpec {
+export function invocationCommand(
+  options: RunnerOptions,
+  env: NodeJS.ProcessEnv = process.env
+): CommandSpec {
   switch (options.provider) {
     case "claude":
       return {
@@ -189,6 +252,22 @@ export function invocationCommand(options: RunnerOptions): CommandSpec {
           "--trust",
         ],
         stdin: "prompt",
+      };
+    case "kimi":
+      return {
+        command: "kimi",
+        args: [
+          "--output-format",
+          "stream-json",
+          "--model",
+          options.model,
+          "--agent-file",
+          kimiAgentFile(options.mode),
+        ],
+        stdin: "none",
+        promptFlag: "--prompt",
+        env: { KIMI_MODEL_THINKING_EFFORT: options.effort },
+        sandbox: kimiSandbox(options, env),
       };
   }
 }
