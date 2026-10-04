@@ -70,6 +70,15 @@ function grokTools(mode: AccessMode): string {
   return [...readonly, ...(mode === "isolated-write" ? ["search_replace"] : [])].join(",");
 }
 
+// Grok imports MCP servers from Claude, Cursor, and Codex config, and --tools
+// does not filter their tools. These switches stop the imports; the deny rule
+// blocks tools from any server Grok's own or a trusted project's config starts.
+const GROK_NO_IMPORTED_MCPS = {
+  GROK_CLAUDE_MCPS_ENABLED: "false",
+  GROK_CURSOR_MCPS_ENABLED: "false",
+  GROK_CODEX_MCPS_ENABLED: "false",
+} as const;
+
 function cursorTools(mode: AccessMode): string {
   const readonly = [
     "read_tool_call",
@@ -223,6 +232,8 @@ export function invocationCommand(
           grokTools(options.mode),
           "--disallowed-tools",
           "Agent,search_tool,use_tool",
+          "--deny",
+          "MCPTool(*)",
           "--output-format",
           "streaming-messages-json",
           "--cwd",
@@ -232,6 +243,7 @@ export function invocationCommand(
           "--verbatim",
         ],
         stdin: "none",
+        env: GROK_NO_IMPORTED_MCPS,
       };
     case "cursor":
       return {

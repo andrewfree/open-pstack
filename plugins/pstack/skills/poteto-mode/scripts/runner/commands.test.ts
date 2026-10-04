@@ -104,6 +104,8 @@ describe("invocationCommand", () => {
       "read_file,grep,list_dir,run_terminal_cmd",
       "--disallowed-tools",
       "Agent,search_tool,use_tool",
+      "--deny",
+      "MCPTool(*)",
       "--output-format",
       "streaming-messages-json",
       "--cwd",
@@ -112,6 +114,19 @@ describe("invocationCommand", () => {
       "--disable-web-search",
       "--verbatim",
     ]);
+  });
+
+  it("keeps imported and configured MCP servers out of both Grok modes", () => {
+    for (const mode of ["read-only", "isolated-write"] as const) {
+      const grok = invocationCommand(options({ provider: "grok", model: "grok-4.7", mode }));
+      expect(grok.env).toEqual({
+        GROK_CLAUDE_MCPS_ENABLED: "false",
+        GROK_CURSOR_MCPS_ENABLED: "false",
+        GROK_CODEX_MCPS_ENABLED: "false",
+      });
+      const deny = grok.args.indexOf("--deny");
+      expect(grok.args[deny + 1]).toBe("MCPTool(*)");
+    }
   });
 
   it("pins the Cursor model, stream JSON, plan mode, workspace, and read tools", () => {

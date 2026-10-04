@@ -171,6 +171,9 @@ if (name === "claude") {
   console.log(JSON.stringify({role:"tool",tool_call_id:"t1",content:"./README.md"}));
   console.log(JSON.stringify({role:"assistant",content:"KIMI_OK"}));
   console.log(JSON.stringify({role:"meta",type:"session.resume_hint",session_id:"session_k1",command:"kimi -r session_k1"}));
+} else if (name === "grok" && process.env.FAKE_GROK_ENV_PATH) {
+  writeFileSync(process.env.FAKE_GROK_ENV_PATH, JSON.stringify(Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("GROK_")))));
+  console.log(JSON.stringify({type:"result",subtype:"success",is_error:false,result:"GROK_OK",session_id:"g1",modelUsage:{[model + "-build"]:{}}}));
 } else if (process.env.FAKE_GROK_ERROR_RESULT === "1") {
   console.error("GROK_STDERR_HEAD");
   console.log(JSON.stringify({type:"system",subtype:"init",skills:Array(500).fill("skill-name")}));
@@ -324,6 +327,7 @@ beforeEach(() => {
   delete process.env.FAKE_KIMI_MISSING_MODEL;
   delete process.env.FAKE_SANDBOX_ARGS_PATH;
   delete process.env.KIMI_CODE_HOME;
+  delete process.env.FAKE_GROK_ENV_PATH;
 });
 
 afterEach(() => {
@@ -359,6 +363,7 @@ afterEach(() => {
   delete process.env.FAKE_KIMI_MISSING_MODEL;
   delete process.env.FAKE_SANDBOX_ARGS_PATH;
   delete process.env.KIMI_CODE_HOME;
+  delete process.env.FAKE_GROK_ENV_PATH;
   rmSync(scratch, { recursive: true, force: true });
 });
 
@@ -385,6 +390,24 @@ describe("runLane", () => {
       }
     });
   }
+
+  it("starts Grok with its imported MCP servers switched off", async () => {
+    const envPath = join(scratch, "grok-env.json");
+    process.env.FAKE_GROK_ENV_PATH = envPath;
+    process.env.GROK_CLAUDE_MCPS_ENABLED = "true";
+    try {
+      const input = options("grok", "grok-mcp-env");
+      const result = await runLane(input);
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(readFileSync(envPath, "utf8"))).toEqual({
+        GROK_CLAUDE_MCPS_ENABLED: "false",
+        GROK_CURSOR_MCPS_ENABLED: "false",
+        GROK_CODEX_MCPS_ENABLED: "false",
+      });
+    } finally {
+      delete process.env.GROK_CLAUDE_MCPS_ENABLED;
+    }
+  });
 
   it("runs Kimi inside the sandbox wrapper with its effort, agent file, and prompt", async () => {
     const kimiArgs = join(scratch, "kimi-args.json");
