@@ -96,11 +96,11 @@ describe("invocationCommand", () => {
       "--reasoning-effort",
       "xhigh",
       "--permission-mode",
-      "plan",
+      "auto",
       "--sandbox",
       "read-only",
       "--tools",
-      "read_file,grep,list_dir",
+      "read_file,grep,list_dir,run_terminal_cmd",
       "--disallowed-tools",
       "Agent,search_tool,use_tool",
       "--output-format",
@@ -157,17 +157,26 @@ describe("invocationCommand", () => {
     }
   });
 
-  it("keeps a read-only Grok lane clear of the shell tool its plan mode would stall on", () => {
+  it("gives read-only Grok its shell under auto mode while Claude and Cursor stay in plan mode", () => {
+    for (const mode of ["read-only", "isolated-write"] as const) {
+      const grok = invocationCommand(
+        options({ provider: "grok", model: "grok-4.6", mode })
+      );
+      expect(grok.args).not.toContain("plan");
+      expect(grok.args).not.toContain("acceptEdits");
+      expect(grok.args).not.toContain("bypassPermissions");
+      // Grok's runtime shell name is not an allowlist name; passing it drops the allowlist.
+      expect(grok.args.join(" ")).not.toContain("run_terminal_command");
+    }
     const grok = invocationCommand(options({ provider: "grok", model: "grok-4.6" }));
-    expect(grok.args).not.toContain("run_terminal_command");
     expect(grok.args).toEqual(
       expect.arrayContaining([
         "--permission-mode",
-        "plan",
+        "auto",
         "--sandbox",
         "read-only",
         "--tools",
-        "read_file,grep,list_dir",
+        "read_file,grep,list_dir,run_terminal_cmd",
       ])
     );
 
@@ -197,11 +206,11 @@ describe("invocationCommand", () => {
     expect(grok.args).toEqual(
       expect.arrayContaining([
         "--permission-mode",
-        "bypassPermissions",
+        "auto",
         "--sandbox",
         "workspace",
         "--tools",
-        "read_file,grep,list_dir,run_terminal_command,search_replace",
+        "read_file,grep,list_dir,run_terminal_cmd,search_replace",
       ])
     );
     expect(grok.args).not.toContain("--always-approve");

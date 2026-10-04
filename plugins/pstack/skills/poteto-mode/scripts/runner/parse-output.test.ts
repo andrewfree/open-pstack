@@ -326,6 +326,19 @@ describe("parseProviderOutput", () => {
     expect(() => parseProviderOutput("grok", errored, "", "grok-4.6")).toThrow(
       "(subtype error_during_execution): upstream refused the request"
     );
+
+    // Grok 1.0.46's terminal event for a cancelled turn carries its reason only in errors.
+    const cancelledTurn = JSON.stringify({
+      type: "result",
+      subtype: "error_during_execution",
+      is_error: true,
+      stop_reason: "cancelled",
+      modelUsage: { "grok-4.7-build": {} },
+      errors: ["cancelled"],
+    });
+    expect(() => parseProviderOutput("grok", cancelledTurn, "", "grok-4.7")).toThrow(
+      "grok reported an error result (subtype error_during_execution): cancelled"
+    );
   });
 
   it("rejects malformed or textless responses", () => {

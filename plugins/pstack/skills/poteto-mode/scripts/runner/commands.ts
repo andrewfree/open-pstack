@@ -52,10 +52,12 @@ function grokSandbox(mode: AccessMode): string {
   return mode === "read-only" ? "read-only" : "workspace";
 }
 
+// --tools takes Grok's allowlist names. Grok 1.0.46 drops the whole allowlist
+// when one name is unrecognized, and its runtime shell name
+// run_terminal_command is one of those, so the shell stays run_terminal_cmd.
 function grokTools(mode: AccessMode): string {
-  const readonly = ["read_file", "grep", "list_dir"];
-  const write = ["run_terminal_command", "search_replace"];
-  return [...readonly, ...(mode === "isolated-write" ? write : [])].join(",");
+  const readonly = ["read_file", "grep", "list_dir", "run_terminal_cmd"];
+  return [...readonly, ...(mode === "isolated-write" ? ["search_replace"] : [])].join(",");
 }
 
 function cursorTools(mode: AccessMode): string {
@@ -76,13 +78,6 @@ function cursorAccess(mode: AccessMode): readonly string[] {
 
 function permissionMode(mode: AccessMode): string {
   return mode === "read-only" ? "plan" : "acceptEdits";
-}
-
-// Grok's acceptEdits still routes multi-line shell commands (heredocs) to an
-// approver that a headless run cannot answer, which cancels the lane. The
-// workspace sandbox stays on, so bypassPermissions only removes the prompt.
-function grokPermissionMode(mode: AccessMode): string {
-  return mode === "read-only" ? "plan" : "bypassPermissions";
 }
 
 function effortOverride(effort: Effort): string {
@@ -154,8 +149,11 @@ export function invocationCommand(options: RunnerOptions): CommandSpec {
           options.model,
           "--reasoning-effort",
           options.effort,
+          // Headless Grok cancels the whole turn on a permission prompt, in both access modes.
+          // Auto mode reports a blocked call to the model instead; the sandbox still confines
+          // writes (read-only, or workspace for isolated-write).
           "--permission-mode",
-          grokPermissionMode(options.mode),
+          "auto",
           "--sandbox",
           grokSandbox(options.mode),
           "--tools",
