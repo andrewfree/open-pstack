@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
-import { codexConfigPath } from "./codex-trust.ts";
+import { dirname, join, resolve } from "node:path";
+import { codexConfigPath, gitProjectRoot } from "./codex-trust.ts";
 import type {
   AccessMode,
   Effort,
@@ -150,23 +150,74 @@ function permissionMode(mode: AccessMode): string {
   return mode === "read-only" ? "plan" : "acceptEdits";
 }
 
-// Codex starts every [mcp_servers] entry in the user's config in every
-// session, read-only lanes included, and -c merges rather than clearing the
-// table, so each server is switched off by name. Naming a server no layer defines is a config error, so
-// only the always-loaded user config is read; an untrusted project's servers
-// never load.
-function codexMcpServerOverrides(env: NodeJS.ProcessEnv): string[] {
-  const path = codexConfigPath(env);
-  if (!existsSync(path)) return [];
-  const config = Bun.TOML.parse(readFileSync(path, "utf8")) as {
-    readonly mcp_servers?: Readonly<Record<string, unknown>>;
-  };
-  return Object.keys(config.mcp_servers ?? {}).flatMap((name) => {
-    if (!/^[A-Za-z0-9_-]+$/.test(name)) {
-      throw new Error(`Codex MCP server ${JSON.stringify(name)} cannot be switched off with --config`);
+type McpServers = Readonly<Record<string, unknown>>;
+
+function mcpServersIn(path: string): McpServers {
+  const config = Bun.TOML.parse(readFileSync(path, "utf8")) as { readonly mcp_servers?: McpServers };
+  return config.mcp_servers ?? {};
+}
+
+function addressable(name: string): string {
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+    throw new Error(`Codex MCP server ${JSON.stringify(name)} cannot be switched off with --config`);
+  }
+  return name;
+}
+
+// Every .codex/config.toml a lane's project could contribute: the lane
+// directory and its ancestors, and the main checkout of a linked worktree.
+function codexProjectConfigPaths(cwd: string, env: NodeJS.ProcessEnv): string[] {
+  const dirs: string[] = [];
+  for (let dir = resolve(cwd); ; dir = dirname(dir)) {
+    dirs.push(dir);
+    if (dirname(dir) === dir) break;
+  }
+  const root = gitProjectRoot(cwd, env);
+  if (root !== null) dirs.push(root);
+  const user = realPath(codexConfigPath(env));
+  return [...new Set(dirs.map((dir) => join(dir, ".codex", "config.toml")))]
+    .filter((path) => existsSync(path) && realPath(path) !== user);
+}
+
+// Codex starts every [mcp_servers] entry it loads, read-only lanes included,
+// and -c merges rather than clearing the table, so each server is switched off
+// by name. The user's config always loads. A project's .codex/config.toml loads
+// once the project is trusted, and a writer lane trusts its project when it
+// starts, so a repository's own servers would start too. Codex rejects an
+// override for a server no loaded layer defines, so each project server's
+// override also carries a dead transport of the same kind; it is valid whether
+// or not Codex loads that file. A project file that does not parse is skipped:
+// Codex either never loads it or fails on it too.
+function codexMcpServerOverrides(cwd: string, env: NodeJS.ProcessEnv): string[] {
+  const userPath = codexConfigPath(env);
+  const userServers = existsSync(userPath) ? mcpServersIn(userPath) : {};
+  const overrides = Object.keys(userServers).flatMap((name) => [
+    "--config",
+    `mcp_servers.${addressable(name)}.enabled=false`,
+  ]);
+  const seen = new Set(Object.keys(userServers));
+  for (const path of codexProjectConfigPaths(cwd, env)) {
+    let servers: McpServers;
+    try {
+      servers = mcpServersIn(path);
+    } catch {
+      continue;
     }
-    return ["--config", `mcp_servers.${name}.enabled=false`];
-  });
+    for (const [name, server] of Object.entries(servers)) {
+      if (seen.has(name)) continue;
+      seen.add(name);
+      const usesUrl = typeof server === "object" && server !== null && "url" in server;
+      overrides.push(
+        "--config",
+        `mcp_servers.${addressable(name)}.enabled=false`,
+        "--config",
+        usesUrl
+          ? `mcp_servers.${name}.url="http://127.0.0.1:9/"`
+          : `mcp_servers.${name}.command="/usr/bin/false"`
+      );
+    }
+  }
+  return overrides;
 }
 
 // Models whose catalog entry declares multi_agent_version v2 keep their
@@ -237,7 +288,7 @@ export function invocationCommand(
           "apps",
           "--config",
           CODEX_NO_SUBAGENTS,
-          ...codexMcpServerOverrides(env),
+          ...codexMcpServerOverrides(options.cwd, env),
           "--json",
           "-",
         ],

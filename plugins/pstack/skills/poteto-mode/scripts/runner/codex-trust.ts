@@ -20,7 +20,7 @@ function realPath(path: string): string {
 
 // Codex keys trust by the git project root; for a linked worktree that is the
 // main checkout, the parent of the shared .git directory.
-function gitProjectRoot(cwd: string, env: NodeJS.ProcessEnv): string | null {
+export function gitProjectRoot(cwd: string, env: NodeJS.ProcessEnv): string | null {
   const result = Bun.spawnSync(
     ["git", "-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"],
     { env, stdout: "pipe", stderr: "ignore" }
