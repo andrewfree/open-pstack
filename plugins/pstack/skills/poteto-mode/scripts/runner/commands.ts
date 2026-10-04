@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { codexConfigPath } from "./codex-trust.ts";
 import type {
   AccessMode,
   Effort,
@@ -155,7 +156,7 @@ function permissionMode(mode: AccessMode): string {
 // only the always-loaded user config is read; an untrusted project's servers
 // never load.
 function codexMcpServerOverrides(env: NodeJS.ProcessEnv): string[] {
-  const path = join(env.CODEX_HOME ?? join(homedir(), ".codex"), "config.toml");
+  const path = codexConfigPath(env);
   if (!existsSync(path)) return [];
   const config = Bun.TOML.parse(readFileSync(path, "utf8")) as {
     readonly mcp_servers?: Readonly<Record<string, unknown>>;
