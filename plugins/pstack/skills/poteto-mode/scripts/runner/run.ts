@@ -14,10 +14,12 @@ import { versionedClaudeAlias } from "./model-aliases.ts";
 import {
   cursorListedModel,
   cursorReportedModelMatches,
+  kimiSupportedEfforts,
   parseProviderOutput,
   reportedModelMatches,
 } from "./parse-output.ts";
 import type {
+  Effort,
   Provider,
   ReceiptStatus,
   RunnerOptions,
@@ -234,8 +236,38 @@ type ProcessEvent =
   | { readonly kind: "cancelled"; readonly signal: CancellationSignal }
   | { readonly kind: "timed-out" };
 
+function spawnArgv(
+  executable: string,
+  sandboxExecutable: string | null,
+  spec: CommandSpec,
+  prompt: string
+): string[] {
+  return [
+    ...(spec.sandbox === undefined
+      ? []
+      : [sandboxExecutable ?? spec.sandbox.command, ...spec.sandbox.args]),
+    executable,
+    ...spec.args,
+    ...(spec.promptFlag === undefined ? [] : [`${spec.promptFlag}=${prompt}`]),
+  ];
+}
+
+// Receipts record the prompt's path, not its contents.
+function receiptArgv(
+  executable: string,
+  sandboxExecutable: string | null,
+  spec: CommandSpec,
+  promptPath: string
+): string[] {
+  const argv = spawnArgv(executable, sandboxExecutable, { ...spec, promptFlag: undefined }, "");
+  return spec.promptFlag === undefined
+    ? argv
+    : [...argv, `${spec.promptFlag}=<contents of ${promptPath}>`];
+}
+
 async function runProcess(
   executable: string,
+  sandboxExecutable: string | null,
   spec: CommandSpec,
   cwd: string,
   env: NodeJS.ProcessEnv,
@@ -243,9 +275,9 @@ async function runProcess(
   deadlineAt: number | null,
   cancellation: RunCancellation
 ): Promise<ProcessResult> {
-  const child = Bun.spawn([executable, ...spec.args], {
+  const child = Bun.spawn(spawnArgv(executable, sandboxExecutable, spec, prompt), {
     cwd,
-    env,
+    env: { ...env, ...spec.env },
     stdin: spec.stdin === "prompt" ? "pipe" : "ignore",
     stdout: "pipe",
     stderr: "pipe",
@@ -369,7 +401,16 @@ async function waitForGrokPreflightRetry(
   }
 }
 
-function preflightPassed(provider: Provider, model: string, result: ProcessResult): boolean {
+function kimiEffortSupported(listing: string, model: string, effort: Effort): boolean {
+  return kimiSupportedEfforts(listing, model)?.includes(effort) ?? false;
+}
+
+function preflightPassed(
+  provider: Provider,
+  model: string,
+  effort: Effort,
+  result: ProcessResult
+): boolean {
   if (result.exitCode !== 0 || result.timedOut) return false;
   const combined = `${result.stdout}\n${result.stderr}`;
   switch (provider) {
@@ -391,10 +432,19 @@ function preflightPassed(provider: Provider, model: string, result: ProcessResul
       return /logged in/i.test(combined) && combined.includes(model);
     case "cursor":
       return cursorListedModel(combined, model) !== null;
+    case "kimi":
+      return kimiEffortSupported(result.stdout, model, effort);
   }
 }
 
-function successfulPreflightEvidence(provider: Provider, model: string): string {
+function successfulPreflightEvidence(
+  provider: Provider,
+  model: string,
+  effort: Effort
+): string {
+  if (provider === "kimi") {
+    return `model ${model} configured with effort ${effort}; local config, credentials are checked by the model call`;
+  }
   return provider === "grok" || provider === "cursor"
     ? `authenticated; model ${model} available`
     : "authenticated";
@@ -410,13 +460,30 @@ function unavailableStatus(value: string): ReceiptStatus {
   return "child-failed";
 }
 
+function kimiPreflightFailure(listing: string, model: string, effort: Effort): string {
+  const efforts = kimiSupportedEfforts(listing, model);
+  if (efforts !== null) {
+    return `kimi model ${model} accepts efforts ${efforts.join(", ") || "none"}, not ${effort}`;
+  }
+  try {
+    JSON.parse(listing);
+  } catch {
+    return `kimi provider list --json did not print JSON: ${evidence(listing)}`;
+  }
+  return `kimi config has no model alias ${model}`;
+}
+
 function preflightFailureStatus(
   provider: Provider,
   model: string,
-  value: string
+  value: string,
+  exitCode: number | null
 ): ReceiptStatus {
   const status = unavailableStatus(value);
   if (status !== "child-failed") return status;
+  // Kimi's preflight reads local config, not credentials: a listing without the
+  // model or effort means the pair is unavailable, and anything else failed.
+  if (provider === "kimi") return exitCode === 0 ? "unavailable-model" : status;
   if (provider === "cursor") {
     return cursorListedModel(value, model) === null
       ? "unavailable-model"
@@ -487,7 +554,7 @@ function modelProof(
       modelEvidence: "provider-report",
     };
   }
-  if (provider === "codex" && reported === null) {
+  if ((provider === "codex" || provider === "kimi") && reported === null) {
     return {
       reportedModel: null,
       modelVerified: false,
@@ -576,8 +643,17 @@ async function executeLane(
     PATH: env.PATH,
     cwd: options.cwd,
   });
+  const sandboxExecutable = invocation.sandbox === undefined
+    ? null
+    : Bun.which(invocation.sandbox.command, { PATH: env.PATH, cwd: options.cwd });
+  const argv = receiptArgv(
+    executable ?? invocation.command,
+    sandboxExecutable,
+    invocation,
+    options.promptPath
+  );
   progress.executable = executable;
-  progress.argv = [executable ?? invocation.command, ...invocation.args];
+  progress.argv = argv;
 
   let preflightState = progress.preflight;
   let receipt: RunnerReceipt;
@@ -598,7 +674,7 @@ async function executeLane(
       elapsedMs: completed - started,
       executable,
       preflight: terminalPreflight,
-      argv: [executable ?? invocation.command, ...invocation.args],
+      argv,
       exitCode: null,
       signal: null,
       reportedModel: null,
@@ -626,16 +702,17 @@ async function executeLane(
     return finishWithoutChild("timed-out", "before authentication preflight");
   }
 
-  if (executable === null) {
+  const missingSandbox = invocation.sandbox !== undefined && sandboxExecutable === null;
+  if (executable === null || missingSandbox) {
     const completed = Date.now();
     receipt = completeReceipt(options, {
       status: "unavailable-cli",
       startedAt,
       completedAt: new Date(completed).toISOString(),
       elapsedMs: completed - started,
-      executable: null,
+      executable,
       preflight: preflightState,
-      argv: [invocation.command, ...invocation.args],
+      argv,
       exitCode: null,
       signal: null,
       reportedModel: null,
@@ -645,7 +722,9 @@ async function executeLane(
       usage: null,
       costUsd: null,
       error: {
-        message: `${invocation.command} executable not found`,
+        message: executable === null
+          ? `${invocation.command} executable not found`
+          : `${invocation.sandbox?.command} executable not found; ${options.provider} lanes need it to confine writes`,
         evidence: "",
       },
     });
@@ -657,6 +736,7 @@ async function executeLane(
   const preflightExecutable = executable;
   let preflightResult = await runProcess(
     preflightExecutable,
+    null,
     preflight,
     options.cwd,
     env,
@@ -665,18 +745,29 @@ async function executeLane(
     cancellation
   );
   let rawPreflightEvidence = evidence(`${preflightResult.stdout}\n${preflightResult.stderr}`);
-  let passed = preflightPassed(options.provider, options.model, preflightResult);
+  let passed = preflightPassed(
+    options.provider,
+    options.model,
+    options.effort,
+    preflightResult
+  );
   let preflightEvidence = passed
-    ? successfulPreflightEvidence(options.provider, options.model)
-    : rawPreflightEvidence;
+    ? successfulPreflightEvidence(options.provider, options.model, options.effort)
+    : options.provider === "kimi" && preflightResult.exitCode === 0
+      ? kimiPreflightFailure(preflightResult.stdout, options.model, options.effort)
+      : rawPreflightEvidence;
 
   if (
     options.provider === "grok" &&
     !passed &&
     preflightResult.cancelledBy === null &&
     !preflightResult.timedOut &&
-    preflightFailureStatus(options.provider, options.model, rawPreflightEvidence) ===
-      "unauthenticated"
+    preflightFailureStatus(
+      options.provider,
+      options.model,
+      rawPreflightEvidence,
+      preflightResult.exitCode
+    ) === "unauthenticated"
   ) {
     preflightState = {
       argv: [preflightExecutable, ...preflight.args],
@@ -701,6 +792,7 @@ async function executeLane(
     const firstPreflightEvidence = rawPreflightEvidence;
     preflightResult = await runProcess(
       preflightExecutable,
+      null,
       preflight,
       options.cwd,
       env,
@@ -709,11 +801,16 @@ async function executeLane(
       cancellation
     );
     rawPreflightEvidence = evidence(`${preflightResult.stdout}\n${preflightResult.stderr}`);
-    passed = preflightPassed(options.provider, options.model, preflightResult);
+    passed = preflightPassed(
+      options.provider,
+      options.model,
+      options.effort,
+      preflightResult
+    );
     preflightEvidence = retriedPreflightEvidence(
       firstPreflightEvidence,
       passed
-        ? successfulPreflightEvidence(options.provider, options.model)
+        ? successfulPreflightEvidence(options.provider, options.model, options.effort)
         : rawPreflightEvidence,
       passed
     );
@@ -744,7 +841,8 @@ async function executeLane(
     const preflightFailure = preflightFailureStatus(
       options.provider,
       options.model,
-      rawPreflightEvidence
+      rawPreflightEvidence,
+      preflightResult.exitCode
     );
     const status: ReceiptStatus = preflightResult.cancelledBy !== null
       ? "cancelled"
@@ -758,7 +856,7 @@ async function executeLane(
       elapsedMs: completed - started,
       executable,
       preflight: preflightState,
-      argv: [executable, ...invocation.args],
+      argv,
       exitCode: preflightResult.exitCode,
       signal: preflightResult.signal,
       reportedModel: null,
@@ -790,6 +888,7 @@ async function executeLane(
 
   const result = await runProcess(
     executable,
+    sandboxExecutable,
     invocation,
     options.cwd,
     env,
@@ -804,7 +903,7 @@ async function executeLane(
     elapsedMs: completed - started,
     executable,
     preflight: preflightState,
-    argv: [executable, ...invocation.args],
+    argv,
     exitCode: result.exitCode,
     signal: result.signal,
   } as const;
@@ -908,7 +1007,7 @@ export async function runLane(
       status: "not-run",
       evidence: "",
     },
-    argv: [invocation.command, ...invocation.args],
+    argv: receiptArgv(invocation.command, null, invocation, options.promptPath),
   };
   const cancellation = installRunCancellation();
   try {

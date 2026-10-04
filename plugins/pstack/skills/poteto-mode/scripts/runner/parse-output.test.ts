@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
   cursorListedModel,
   cursorReportedModelMatches,
+  kimiSupportedEfforts,
   parseProviderOutput,
   reportedModelMatches,
 } from "./parse-output.ts";
@@ -299,6 +300,53 @@ describe("parseProviderOutput", () => {
     expect(reportedModelMatches("claude", "fable", "fable")).toBe(false);
     expect(reportedModelMatches("claude", "fable", "fable-preview")).toBe(false);
     expect(reportedModelMatches("grok", "fable", "claude-fable-9-9")).toBe(false);
+  });
+
+  it("takes Kimi's last assistant message as the answer and pins its model", () => {
+    const stream = [
+      { role: "meta", type: "system.version", version: "2.1.1" },
+      { role: "assistant", content: "Checking first.", tool_calls: [{ id: "t1" }] },
+      { role: "tool", tool_call_id: "t1", content: "./README.md\n" },
+      { role: "assistant", content: [{ type: "text", text: "KIMI_" }, { type: "text", text: "OK" }] },
+      { role: "meta", type: "session.resume_hint", session_id: "session_k1" },
+    ].map((event) => JSON.stringify(event)).join("\n");
+    expect(parseProviderOutput("kimi", stream, "", "kimi-code/k3")).toEqual({
+      text: "KIMI_OK",
+      reportedModel: null,
+      sessionId: "session_k1",
+      usage: null,
+      costUsd: null,
+    });
+  });
+
+  it("rejects a Kimi stream that stops on tool calls or has no answer", () => {
+    const stopped = [
+      { role: "assistant", content: "Working on it." },
+      { role: "assistant", tool_calls: [{ id: "t2" }] },
+    ].map((event) => JSON.stringify(event)).join("\n");
+    expect(() => parseProviderOutput("kimi", stopped, "", "kimi-code/k3")).toThrow(
+      "kimi's last assistant message carried no final text"
+    );
+    const silent = JSON.stringify({ role: "meta", type: "system.version" });
+    expect(() => parseProviderOutput("kimi", silent, "", "kimi-code/k3")).toThrow(
+      "kimi stream did not contain an assistant message"
+    );
+    expect(() => parseProviderOutput("kimi", "not json", "", "kimi-code/k3")).toThrow(
+      "kimi emitted a non-JSON event"
+    );
+  });
+
+  it("reads the efforts each configured Kimi model accepts", () => {
+    const listing = JSON.stringify({
+      models: {
+        "kimi-code/k3": { supportEfforts: ["low", "high", "max"] },
+        "kimi-code/kimi-for-coding-highspeed": { model: "kimi-for-coding-highspeed" },
+      },
+    });
+    expect(kimiSupportedEfforts(listing, "kimi-code/k3")).toEqual(["low", "high", "max"]);
+    expect(kimiSupportedEfforts(listing, "kimi-code/kimi-for-coding-highspeed")).toEqual([]);
+    expect(kimiSupportedEfforts(listing, "kimi-code/k9")).toBeNull();
+    expect(kimiSupportedEfforts("Default model: k3", "kimi-code/k3")).toBeNull();
   });
 
   it("names the Grok result subtype and the provider's own error text", () => {

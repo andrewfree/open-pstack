@@ -31,10 +31,10 @@ This read-time rule makes an older installed sheet use the latest family revisio
 
 The top-level harness resolves the route once. A child receives an assigned provider, model, effort, access mode, prompt, working directory, and output path. A child never detects the harness, chooses a provider, or launches another model. Environment markers may corroborate the top-level harness before fan-out, but nested processes inherit parent markers and must not use them for routing.
 
-| Parent | `claude:*` | `codex:*` | `grok:*` | `cursor:*` |
-|---|---|---|---|---|
-| Claude Code | native `Agent` | external runner | external runner | external runner |
-| Codex | external runner | native `spawn_agent` | external runner | external runner |
+| Parent | `claude:*` | `codex:*` | `grok:*` | `cursor:*` | `kimi:*` |
+|---|---|---|---|---|---|
+| Claude Code | native `Agent` | external runner | external runner | external runner | external runner |
+| Codex | external runner | native `spawn_agent` | external runner | external runner | external runner |
 
 `inherit-parent` and `auto` remain aliases. They use the parent's current model and effort through its native subagent primitive. In a panel they still consume one lane, but they reduce provider diversity; say so in the synthesis record.
 
@@ -54,7 +54,7 @@ The launcher lives at `skills/poteto-mode/scripts/runner/pstack-runner` under th
 ```text
 pstack-runner \
   --parent <claude|codex> \
-  --provider <claude|codex|grok|cursor> \
+  --provider <claude|codex|grok|cursor|kimi> \
   --model <real CLI model> \
   --effort <low|medium|high|xhigh|max> \
   --mode <read-only|isolated-write> \
@@ -100,18 +100,32 @@ Cursor reports the served model by display name rather than by slug, in the `sys
 
 No model-matrix family routes through Cursor yet. The provider is available to any lane that pins a Cursor slug explicitly.
 
+## The Kimi route
+
+`kimi` is Moonshot's Kimi Code CLI. A Kimi lane pins a model alias from that CLI's config, such as `kimi-code/k3` for Kimi K3. `kimi provider list --json` lists the account's aliases.
+
+Preflight is `kimi provider list --json`. It reads local config, so it proves only that the alias exists and accepts the requested effort. A lapsed login surfaces as the model call's own error. Kimi accepts fewer efforts than pstack: K3 takes `low`, `high`, and `max`. The runner refuses any other effort at preflight with `unavailable-model` instead of mapping it to a neighbor. The CLI has no effort flag, so the runner passes the effort in `KIMI_MODEL_THINKING_EFFORT`.
+
+Kimi has no sandbox, and its prompt mode approves every tool call without asking. It also rejects `--auto` next to `--prompt`, because prompt mode already runs that way. The runner therefore launches Kimi under macOS Seatbelt (`sandbox-exec`). Both modes may write only Kimi's home (`KIMI_CODE_HOME`, default `~/.kimi-code`) and the system temporary directories. `isolated-write` may also write its assigned directory. As with Grok, point a read-only lane at a checkout outside the temporary directories. A host without `sandbox-exec` gets an `unavailable-cli` receipt, never an unconfined run.
+
+The lane also passes `--agent-file` with the runner's `kimi/<mode>.md`. Each file allowlists Kimi's tools (`Read`, `Grep`, `Glob`, and `Bash`, plus `Write` and `Edit` for a writer), names no subagents, and keeps Kimi's own system prompt through `${base_prompt}`. That removes Kimi's subagent, web, scheduling, and MCP tools from the lane.
+
+Kimi reads no prompt file or stdin, so the prompt travels as the `--prompt` value, and macOS's 1 MiB argument limit bounds it. The receipt's argv shows `--prompt=<contents of PATH>` in its place. Kimi's stream-json output has no terminal event, served-model report, usage, or cost. The lane output is the last assistant message, and a stream whose last assistant event carries only tool calls is `malformed-output`. A Kimi receipt records its model the way Codex does, with `modelEvidence: "pinned-argv"`.
+
+No model-matrix family routes through Kimi yet. The provider is available to any lane that pins a Kimi alias explicitly.
+
 ## Completion and dropouts
 
 Success requires all of these:
 
 1. Exit status `0`.
 2. Receipt status `complete`.
-3. Either `modelVerified: true` with `modelEvidence: "provider-report"`, or a Codex receipt with `reportedModel: null`, `modelVerified: false`, and `modelEvidence: "pinned-argv"`. For Claude's `fable` and `opus` aliases, the concrete provider report must belong to the requested family. Codex 0.149.0 accepts the exact `--model` argument but does not report the served model in its JSONL stream. A Cursor receipt's `reportedModel` is the served model's display name; `provider-report` there means that name matched the requested slug under the display-name rules above.
+3. Either `modelVerified: true` with `modelEvidence: "provider-report"`, or a Codex or Kimi receipt with `reportedModel: null`, `modelVerified: false`, and `modelEvidence: "pinned-argv"`. For Claude's `fable` and `opus` aliases, the concrete provider report must belong to the requested family. Codex 0.149.0 accepts the exact `--model` argument but does not report the served model in its JSONL stream. A Cursor receipt's `reportedModel` is the served model's display name; `provider-report` there means that name matched the requested slug under the display-name rules above.
 4. A non-empty output file.
 
 The receipt also carries elapsed time, token usage when the CLI exposes it, and cost when available. Keep it with the arena or review artifacts so parent-harness comparisons are evidence-based.
 
-A failure receipt's `error.evidence` keeps both ends of the captured output within 4000 characters: half from the start, half from the end, and a `[truncated N characters]` marker between them that counts against the limit. The provider's terminal event is usually the last thing it prints, so read the tail before deciding what went wrong. A `malformed-output` receipt from Grok or Cursor also names the result subtype and the provider's own error text in `error.message`.
+A failure receipt's `error.evidence` keeps both ends of the captured output within 4000 characters: half from the start, half from the end, and a `[truncated N characters]` marker between them that counts against the limit. The provider's terminal event is usually the last thing it prints, so read the tail before deciding what went wrong. A `malformed-output` receipt from Grok or Cursor also names the result subtype and the provider's own error text in `error.message`. Kimi prints no error result: a failed Kimi call exits non-zero with its error on stderr.
 
 Any missing CLI, failed login, unavailable model, explicit timeout, cancellation, catchable post-reservation launcher failure, non-zero child exit, malformed result, or model mismatch is a receipt-bearing dropout. Record it and apply the calling skill's existing dropout policy. A `cancelled` receipt proves that the runner received the signal; its `signal` field is non-null only when the runner sent that signal to a still-active direct CLI child, and remains null when cancellation only stopped a post-exit pipe drain. The provider CLI owns any processes it starts beneath that direct child; the receipt does not claim a process-tree kill. Do not delete or overwrite the receipt. Never substitute the parent model, retry another provider, or reinterpret an external descriptor as a native model slug.
 
