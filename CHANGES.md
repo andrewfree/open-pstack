@@ -3,6 +3,10 @@
 Mergify auto-queue is live: ready PRs to main require passing verify, Unfret and exact-head live-gate; workflow changes require operator queueing.
 This port applies the Cursor → Claude Code substitutions in skill bodies. Earlier drafts left them flagged; this revision resolves them. A later pass added a Codex build that shares the same skills; see [Codex port](#codex-port) below.
 
+## 1.5.1-local.6 keeps a repository's own MCP servers out of Codex lanes
+
+A `workspace-write` Codex session trusts its project when it starts and then loads the project's `.codex/config.toml`. A 1.5.1-local.5 writer lane on a repository that declared an MCP server in that file started the server's command. The runner now reads every `.codex/config.toml` from the lane directory up to the filesystem root, plus the main checkout of a linked worktree, and switches each declared server off. Because Codex rejects an override for a server no loaded layer defines, each override also carries a dead transport of the same kind, which keeps read-only lanes on untrusted repositories valid.
+
 ## 1.5.1-local.5 undoes the project trust Codex writer lanes record
 
 A `codex exec` session with a `workspace-write` sandbox writes `trust_level = "trusted"` for its git project into `$CODEX_HOME/config.toml`, keyed by the main checkout for a linked worktree. A trusted project's own `.codex/config.toml`, including its MCP servers and hooks, then loads in later sessions. No flag, `--config` override, `--ignore-user-config`, or approval policy stops the write; a persisted `untrusted` entry is the only thing Codex leaves alone. The runner now records the project's trust entries before each Codex lane and afterwards removes an exact trusted table that first appeared during the lane, rereading the file if another writer changed it. This is a workaround for Codex behavior, not a Codex setting.

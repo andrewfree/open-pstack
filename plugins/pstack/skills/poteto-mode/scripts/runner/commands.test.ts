@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { invocationCommand, preflightCommand } from "./commands.ts";
@@ -123,6 +123,64 @@ describe("invocationCommand", () => {
       "--disable-web-search",
       "--verbatim",
     ]);
+  });
+
+  it("gives each project MCP server a self-contained switch-off", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "codex-project-")));
+    const home = join(root, "home");
+    mkdirSync(home);
+    writeFileSync(join(home, "config.toml"), '[mcp_servers.forgejo]\ncommand = "forgejo-mcp"\n');
+    mkdirSync(join(root, "proj", ".codex"), { recursive: true });
+    mkdirSync(join(root, "proj", "sub"));
+    writeFileSync(
+      join(root, "proj", ".codex", "config.toml"),
+      [
+        "[mcp_servers.repo_tool]",
+        'command = "./start-me.sh"',
+        "[mcp_servers.repo_http]",
+        'url = "https://example.invalid/mcp"',
+        "[mcp_servers.forgejo]",
+        'command = "other"',
+      ].join("\n")
+    );
+    mkdirSync(join(root, "proj", "sub", ".codex"));
+    writeFileSync(join(root, "proj", "sub", ".codex", "config.toml"), "[[[ not toml");
+
+    const spec = invocationCommand(
+      options({ mode: "isolated-write", cwd: join(root, "proj", "sub") }),
+      { CODEX_HOME: home }
+    );
+    const overrides = spec.args.filter((arg) => arg.startsWith("mcp_servers."));
+    expect(overrides).toEqual([
+      "mcp_servers.forgejo.enabled=false",
+      "mcp_servers.repo_tool.enabled=false",
+      'mcp_servers.repo_tool.command="/usr/bin/false"',
+      "mcp_servers.repo_http.enabled=false",
+      'mcp_servers.repo_http.url="http://127.0.0.1:9/"',
+    ]);
+  });
+
+  it("finds a project MCP server in a linked worktree's main checkout", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "codex-worktree-")));
+    const repo = join(root, "repo");
+    const git = (...args: string[]) => {
+      const run = Bun.spawnSync(["git", ...args], { stdout: "ignore", stderr: "pipe" });
+      if (run.exitCode !== 0) throw new Error(run.stderr.toString());
+    };
+    git("init", "-q", "-b", "main", repo);
+    writeFileSync(join(repo, "README.md"), "x\n");
+    git("-C", repo, "add", ".");
+    git("-C", repo, "-c", "user.email=t@example.invalid", "-c", "user.name=t", "commit", "-qm", "init");
+    git("-C", repo, "worktree", "add", "-q", "--detach", join(root, "wt"));
+    // Untracked, so only the main checkout carries it.
+    mkdirSync(join(repo, ".codex"));
+    writeFileSync(join(repo, ".codex", "config.toml"), '[mcp_servers.main_only]\ncommand = "x"\n');
+
+    const spec = invocationCommand(
+      options({ mode: "isolated-write", cwd: join(root, "wt") }),
+      NO_CODEX_CONFIG
+    );
+    expect(spec.args).toContain('mcp_servers.main_only.command="/usr/bin/false"');
   });
 
   it("caps every Codex lane at one thread so collaboration spawns are refused", () => {
