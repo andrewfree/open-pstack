@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { codexConfigPath } from "./codex-trust.ts";
 import { invocationCommand, preflightCommand } from "./commands.ts";
 import type { RunnerOptions } from "./types.ts";
 
@@ -379,6 +380,22 @@ describe("invocationCommand", () => {
     );
     expect(cursor.args).not.toContain("--yolo");
     expect(cursor.args).not.toContain("--mode");
+  });
+
+  it("reads the default Codex config when CODEX_HOME is empty, like Codex", () => {
+    expect(codexConfigPath({ CODEX_HOME: "" })).toBe(join(homedir(), ".codex", "config.toml"));
+    expect(codexConfigPath({})).toBe(join(homedir(), ".codex", "config.toml"));
+    expect(codexConfigPath({ CODEX_HOME: "/codex home #1" })).toBe("/codex home #1/config.toml");
+  });
+
+  it("gives Seatbelt Kimi's default home when KIMI_CODE_HOME is empty", () => {
+    const fallback = join(homedir(), ".kimi-code");
+    const expected = existsSync(fallback) ? realpathSync(fallback) : fallback;
+    const spec = invocationCommand(
+      options({ provider: "kimi", model: "kimi-code/k3", effort: "high" }),
+      { KIMI_CODE_HOME: "" }
+    );
+    expect(spec.sandbox?.args.slice(0, 2)).toEqual(["-D", `KIMI_HOME=${expected}`]);
   });
 
   it("confines Kimi with Seatbelt, an allowlisting agent file, and its effort variable", () => {
