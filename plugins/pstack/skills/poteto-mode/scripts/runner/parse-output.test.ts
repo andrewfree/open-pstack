@@ -367,44 +367,71 @@ describe("parseProviderOutput", () => {
     expect(kimiSupportedEfforts("Default model: k3", "kimi-code/k3")).toBeNull();
   });
 
-  it("names the Grok result subtype and the provider's own error text", () => {
-    const cancelled = [
-      JSON.stringify({
-        type: "result",
-        subtype: "cancelled",
-        is_error: true,
-        result: "run_terminal_command was denied by the headless approval policy",
-      }),
-    ].join("\n");
-    expect(() => parseProviderOutput("grok", cancelled, "", "grok-4.6")).toThrow(
-      "subtype cancelled"
-    );
-    expect(() => parseProviderOutput("grok", cancelled, "", "grok-4.6")).toThrow(
-      "denied by the headless approval policy"
-    );
-
-    const errored = JSON.stringify({
+  it("keeps the provider's own Grok error text and classifies cancelled subtypes", () => {
+    const failure = (terminal: Record<string, unknown>): unknown => {
+      try {
+        parseProviderOutput("grok", JSON.stringify(terminal), "", "grok-4.6");
+      } catch (error) {
+        return error;
+      }
+      return null;
+    };
+    expect(failure({
+      type: "result",
+      subtype: "cancelled",
+      is_error: true,
+      result: "run_terminal_command was denied by the headless approval policy",
+    })).toMatchObject({
+      message: "run_terminal_command was denied by the headless approval policy",
+      status: "cancelled",
+    });
+    expect(failure({
       type: "result",
       subtype: "error_during_execution",
       is_error: true,
       error: { message: "upstream refused the request" },
-    });
-    expect(() => parseProviderOutput("grok", errored, "", "grok-4.6")).toThrow(
-      "(subtype error_during_execution): upstream refused the request"
-    );
+    })).toMatchObject({ message: "upstream refused the request", status: "child-failed" });
+  });
 
-    // Grok 1.0.46's terminal event for a cancelled turn carries its reason only in errors.
-    const cancelledTurn = JSON.stringify({
-      type: "result",
-      subtype: "error_during_execution",
-      is_error: true,
-      stop_reason: "cancelled",
-      modelUsage: { "grok-4.7-build": {} },
-      errors: ["cancelled"],
+  for (const [stopReason, expectedStatus] of [
+    ["cancelled", "cancelled"], ["canceled", "cancelled"], ["end_turn", "child-failed"],
+  ]) {
+    it(`issue78 retains terminal metadata for ${stopReason}`, () => {
+      let failure: unknown;
+      try {
+        parseProviderOutput("grok", JSON.stringify({
+          type: "result", subtype: "error_during_execution", is_error: true,
+          stop_reason: stopReason, errors: ["Exact provider reason"],
+          session_id: "terminal-session", modelUsage: { "grok-4.6-build": {} },
+          usage: { input_tokens: 30, output_tokens: 4 }, total_cost_usd: 0.02,
+        }), "", "grok-4.6");
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toMatchObject({
+        message: "Exact provider reason", status: expectedStatus,
+        metadata: {
+          reportedModel: "grok-4.6-build", sessionId: "terminal-session",
+          usage: { inputTokens: 30, outputTokens: 4 }, costUsd: 0.02,
+        },
+      });
     });
-    expect(() => parseProviderOutput("grok", cancelledTurn, "", "grok-4.7")).toThrow(
-      "grok reported an error result (subtype error_during_execution): cancelled"
-    );
+  }
+
+  it("issue78 rejects incomplete terminal status", () => {
+    for (const terminal of [
+      { type: "result", result: "text" },
+      { type: "result", subtype: "success", result: "text" },
+      { type: "result", subtype: "", is_error: true },
+      { type: "result", subtype: "api_error", is_error: "true" },
+    ]) {
+      expect(() => parseProviderOutput("grok", JSON.stringify(terminal), "", "grok-4.6"))
+        .toThrow("valid terminal status");
+    }
+    expect(() => parseProviderOutput("grok", "not-json", "", "grok-4.6"))
+      .toThrow("non-JSON event");
+    expect(() => parseProviderOutput("grok", '{"type":"assistant"}', "", "grok-4.6"))
+      .toThrow("terminal event");
   });
 
   it("rejects malformed or textless responses", () => {

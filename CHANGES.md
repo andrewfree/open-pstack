@@ -3,6 +3,12 @@
 Mergify auto-queue is live: ready PRs to main require passing verify, Unfret and exact-head live-gate; workflow changes require operator queueing.
 This port applies the Cursor → Claude Code substitutions in skill bodies. Earlier drafts left them flagged; this revision resolves them. A later pass added a Codex build that shares the same skills; see [Codex port](#codex-port) below.
 
+## 1.5.1-local.7 merges upstream main after 1.5.0
+
+Open Pstack 1.5.1-local.7 merges upstream Open Pstack main at `cd43478bd6c9fa38d884f45b36a4202191a3b188` into 1.5.1-local.6. That brings the runner work for #25, #56, #78, and #124 described under Unreleased below: the POSIX shell launcher that ignores the caller project's `.env`, `bunfig.toml`, `BUN_OPTIONS`, and `NODE_OPTIONS`; the private `<receipt>.stdout` and `<receipt>.stderr` stream copies; Grok terminal failures that keep their status, reason, model, session, usage, and cost; setup probes that cannot write or block; and a sandbox hint for a Codex parent with network disabled. The Cursor sync point stays 0.15.5.
+
+Upstream's Grok failure handling replaces the local one from 1.5.1-local.1. A well-formed Grok error result is now `child-failed` or `cancelled` with the provider's own text as `error.message`, instead of `malformed-output` with the subtype in front of that text. Cursor error results keep the local message. Failure evidence still keeps both ends of the output within 4000 characters, now with the provider's reason first. The Kimi, Cursor, and Codex lane changes from 1.5.1-local.1 through 1.5.1-local.6 are unchanged.
+
 ## 1.5.1-local.6 keeps a repository's own MCP servers out of Codex lanes
 
 A `workspace-write` Codex session trusts its project when it starts and then loads the project's `.codex/config.toml`. A 1.5.1-local.5 writer lane on a repository that declared an MCP server in that file started the server's command. The runner now reads every `.codex/config.toml` from the lane directory up to the filesystem root, plus the main checkout of a linked worktree, and switches each declared server off. Because Codex rejects an override for a server no loaded layer defines, each override also carries a dead transport of the same kind, which keeps read-only lanes on untrusted repositories valid.
@@ -32,6 +38,11 @@ Grok lanes pass `--permission-mode auto` in both access modes, from PR #116. Thi
 Failure evidence keeps both ends of the output within 4000 characters, and the truncation marker now counts against that limit. Malformed-output receipts use the same rule instead of PR #116's tail-only evidence, so the start of stderr survives along with the terminal event. A Grok error result's `errors` text now follows its subtype in `error.message`. The Cursor provider route is unchanged, except that its model-name check now ignores the zero-width spaces Cursor's listing appends to Grok 4.7 Fast names.
 
 The external runner adds a `kimi` provider for Moonshot's Kimi Code CLI, such as `kimi:kimi-code/k3@high` for Kimi K3. Kimi has no sandbox and its prompt mode approves every tool call, so the runner launches it under macOS Seatbelt. Both modes may write only Kimi's home and the temporary directories, and `isolated-write` may also write its assigned directory. A runner agent file limits Kimi to read, search, and shell tools, plus write and edit for writers, with no subagents. Preflight reads `kimi provider list --json` and refuses an effort the alias does not accept. Kimi reports no served model, so its receipts use `pinned-argv` like Codex. No model-matrix family routes through Kimi yet.
+## Unreleased
+
+The shipped `pstack-runner` no longer loads the caller project's environment files or `bunfig.toml` at startup. Its POSIX shell launcher clears inherited `BUN_OPTIONS` and `NODE_OPTIONS`, then executes Bun with env-file loading disabled and project Bun configuration ignored while preserving ordinary parent-provided environment variables. It needs no `env -S` or directory-resolution helpers. The TypeScript entry keeps the first-statement deadline capture, and `exec` preserves signal behavior. Direct-executable regressions cover startup isolation, inherited environment, and preflight cancellation.
+
+- Document Linux Landlock and bubblewrap prerequisites for bounded Grok lanes, including affected Claude Code cloud hosts, and link setup failures to the shared host and parent prerequisites without changing runner behavior (#56).
 
 ## 1.5.0 syncs to Cursor pstack 0.15.5
 
