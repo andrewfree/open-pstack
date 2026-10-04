@@ -3,6 +3,10 @@
 Mergify auto-queue is live: ready PRs to main require passing verify, Unfret and exact-head live-gate; workflow changes require operator queueing.
 This port applies the Cursor → Claude Code substitutions in skill bodies. Earlier drafts left them flagged; this revision resolves them. A later pass added a Codex build that shares the same skills; see [Codex port](#codex-port) below.
 
+## 1.5.1-local.2 keeps MCP tools out of Grok lanes
+
+Grok imports MCP servers from Claude, Cursor, and Codex config by default, and its `--tools` allowlist does not filter their tools. Every 1.5.1-local.1 Grok lane started the user's Claude MCP servers, and one read-only lane listed 220 MCP tools, including Forgejo write and merge tools. Grok lanes now set `GROK_CLAUDE_MCPS_ENABLED`, `GROK_CURSOR_MCPS_ENABLED`, and `GROK_CODEX_MCPS_ENABLED` to `false` and pass `--deny 'MCPTool(*)'` for any server Grok's own or a trusted project's config still starts.
+
 ## 1.5.1-local.1 merges upstream Grok auto mode into the local build
 
 Open Pstack 1.5.1-local.1 is a local build. It merges upstream Open Pstack main at `be66d68e33fd7aeb4d8fe5aa39b4838bab3f208c` into the 1.4.4 line. That main holds the 0.15.5 sync and PR #116, which the `v1.5.0` tag predates. The Cursor sync point stays 0.15.5.
