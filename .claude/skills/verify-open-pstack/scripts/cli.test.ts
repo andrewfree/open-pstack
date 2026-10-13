@@ -6,10 +6,21 @@ import { join } from 'node:path';
 import { doctor } from './doctor.ts';
 import type { Command } from './io.ts';
 import type { GitHub } from './types.ts';
-import { REPO } from './types.ts';
 import { verify } from './verify.ts';
 import { validateRegistry } from './core.ts';
 import registry from '../features/registry.json';
+
+const REPO = 'ericlitman/open-pstack';
+
+test('run requires one explicit repository before any work', () => {
+  expect(() => parse(['run', '--pr', '1', '--output', '/fresh/run'])).toThrow('repository');
+  expect(parse(['run', '--repo', 'andrewfree/open-pstack', '--pr', '1', '--output', '/fresh/run']))
+    .toMatchObject({ repo: 'andrewfree/open-pstack', pr: 1 });
+  expect(() => parse(['run', '--repo', REPO, '--repo', 'andrewfree/open-pstack', '--pr', '1', '--output', '/fresh/run'])).toThrow('Duplicate option');
+  for (const repo of ['open-pstack', 'https://github.com/a/b', 'a/b.git', 'a/../b', 'a/b?x', 'a/b#x', '-a/b', 'a/b\n', 'a/..']) {
+    expect(() => parse(['run', '--repo', repo, '--pr', '1', '--output', '/fresh/run'])).toThrow('OWNER/REPO');
+  }
+});
 
 test('publisher revision is recorded independently of candidate proof', async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'pstack-publisher-revision-')));
@@ -21,7 +32,7 @@ test('publisher revision is recorded independently of candidate proof', async ()
     async status() {},
   };
   try {
-    const receipt = await verify({ pr: 111, selfTest: false, root, publisherRevision, registry: validateRegistry(registry), github,
+    const receipt = await verify({ repo: REPO, pr: 111, selfTest: false, root, publisherRevision, registry: validateRegistry(registry), github,
       driver: { async prepare() { throw new Error('Docs must not prepare harnesses'); }, async exercise() { throw new Error('Docs must not exercise harnesses'); } }, persist: async () => {} });
     expect(receipt.sha).toBe(candidate);
     expect(receipt.publisherRevision).toBe(publisherRevision);
@@ -31,7 +42,7 @@ test('publisher revision is recorded independently of candidate proof', async ()
 test('candidate mode is an explicit doctor-only flag', () => {
   expect(parse(['doctor', '--candidate', '--output', '/fresh/probe'])).toEqual({ mode: 'doctor', output: '/fresh/probe', pr: 0, selfTest: false, candidate: true });
   expect(() => parse(['doctor', '--candidate', '--candidate', '--output', '/fresh/probe'])).toThrow('Duplicate option');
-  expect(() => parse(['run', '--candidate', '--pr', '111', '--output', '/fresh/run'])).toThrow('Unknown option');
+  expect(() => parse(['run', '--repo', REPO, '--candidate', '--pr', '111', '--output', '/fresh/run'])).toThrow('Unknown option');
 });
 test('candidate doctor probes only help and versions with private roots already present', async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'pstack-doctor-'))), calls: string[][] = [];
@@ -54,26 +65,27 @@ test('candidate doctor probes only help and versions with private roots already 
     await doctor(root, run, 'darwin', true);
     const report = JSON.parse(await readFile(join(root, 'doctor.json'), 'utf8'));
     expect(report.candidate).toBe(true); expect(report.result).toBe('pass');
+    expect(report.liveReadiness).toBe('blocked'); expect(report.scope).toBe('capability-probe');
     expect(calls.every(args => args.includes('--version') || args.includes('--help'))).toBe(true);
-    expect(calls.some(args => args[0] === 'gh' || args.includes('auth') || args.includes('login'))).toBe(false);
+    expect(calls.some(args => args[0] === 'claude' || args[0] === 'gh' || args.includes('auth') || args.includes('login'))).toBe(false);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 test('run and parent doctor need no credential flags', () => {
   expect(parse(['doctor', '--output', '/fresh/probe'])).toEqual({ mode: 'doctor', output: '/fresh/probe', pr: 0, selfTest: false, candidate: false });
-  expect(parse(['run', '--pr', '123', '--self-test', '--output', '/fresh/run'])).toEqual({ mode: 'run', output: '/fresh/run', pr: 123, selfTest: true, routes: [] });
-  for (const args of [[], ['wat'], ['run', '--pr', '0', '--output', '/tmp/a'], ['run', '--pr', '1.5', '--output', '/tmp/a'], ['run', '--pr', '9007199254740992', '--output', '/tmp/a'], ['doctor', '--pr', '1', '--output', '/tmp/a'], ['doctor', '--output', '/tmp/a', '--output', '/tmp/b'], ['run', '--pr', '1'], ['doctor', '--output', '--self-test'], ['doctor', '--output', '/tmp/a', '--publish']]) expect(() => parse(args)).toThrow();
+  expect(parse(['run', '--repo', REPO, '--pr', '123', '--self-test', '--output', '/fresh/run'])).toEqual({ mode: 'run', repo: REPO, output: '/fresh/run', pr: 123, selfTest: true, routes: [] });
+  for (const args of [[], ['wat'], ['run', '--repo', REPO, '--pr', '0', '--output', '/tmp/a'], ['run', '--repo', REPO, '--pr', '1.5', '--output', '/tmp/a'], ['run', '--repo', REPO, '--pr', '9007199254740992', '--output', '/tmp/a'], ['doctor', '--pr', '1', '--output', '/tmp/a'], ['doctor', '--output', '/tmp/a', '--output', '/tmp/b'], ['run', '--repo', REPO, '--pr', '1'], ['doctor', '--output', '--self-test'], ['doctor', '--output', '/tmp/a', '--publish']]) expect(() => parse(args)).toThrow();
 });
 test('credential-directory and account options are removed', () => {
   for (const option of ['--claude-config', '--codex-home', '--claude-account', '--codex-account']) {
-    for (const args of [['run', '--pr', '111'], ['doctor'], ['doctor', '--candidate']]) {
+    for (const args of [['run', '--repo', REPO, '--pr', '111'], ['doctor'], ['doctor', '--candidate']]) {
       expect(() => parse([...args, '--output', '/fresh/run', option, '/operator/config'])).toThrow(`Unknown option: ${option}`);
     }
   }
 });
 test('runner routes are explicit, repeatable, and distinct', () => {
-  expect(parse(['run', '--pr', '1', '--runner-route', 'codex:gpt-6.1-sol@max', '--runner-route', 'codex:gpt-6.1-sol@ultra', '--output', '/fresh/run']))
+  expect(parse(['run', '--repo', REPO, '--pr', '1', '--runner-route', 'codex:gpt-6.1-sol@max', '--runner-route', 'codex:gpt-6.1-sol@ultra', '--output', '/fresh/run']))
     .toMatchObject({ routes: ['codex:gpt-6.1-sol@max', 'codex:gpt-6.1-sol@ultra'] });
   for (const args of [['--runner-route', 'gpt-6.1-sol'], ['--runner-route', 'codex:a@max', '--runner-route', 'codex:a@max']]) {
-    expect(() => parse(['run', '--pr', '1', '--output', '/fresh/run', ...args])).toThrow();
+    expect(() => parse(['run', '--repo', REPO, '--pr', '1', '--output', '/fresh/run', ...args])).toThrow();
   }
 });

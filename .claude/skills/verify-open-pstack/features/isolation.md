@@ -9,7 +9,7 @@ Verifier-changing PRs run from their reviewed candidate head, with publisher rev
 ## Candidate process state
 
 - Preserve real `HOME`, `USER`, and `LOGNAME`.
-- Claude uses normal operator login/config with `claude --plugin-dir <exact-head checkout>/plugins/pstack --settings '{"enabledPlugins":{"pstack@open-pstack":false}}'`. These flags load only the candidate for that session, without persistent installation or settings changes.
+- Claude must use normal operator login through the app Agent route, with only the exact candidate loaded for that session. Current T3 delegation has no candidate-plugin/session-settings selector, so this surface is blocked before preparation. Do not change the daily installation or invoke a headless CLI to bypass it.
 - Codex installs the exact-head marketplace with `codex plugin marketplace add … --ref <sha>` and `codex plugin add` in a run-owned `CODEX_HOME`. Symlink its `auth.json` to the operator's `${CODEX_HOME:-$HOME/.codex}/auth.json`, resolving the daily home before overriding the environment.
 - If the daily home has no `auth.json`, fail closed: this tool needs file-based Codex auth. Do not read credentials, copy them, or start login. Native refresh writes through the symlink to the single existing login file.
 - Keep temporary, GitHub, and fixture state run-owned; disable global/system Git configuration and credential helpers for candidate commands. Provider descendants use the same native-login arrangement, never publisher credentials.
@@ -30,6 +30,6 @@ After merge, archive retained evidence and let the operator delete only the name
 
 Confirm a real Mac session loads only the candidate in Claude, Codex authenticates through the symlink, daily Codex still works after any refresh, and setup restoration is byte-exact. If Codex replaces the symlink or installed pstack leaks into Claude's candidate session, stop and reopen the design rather than improvise.
 
-## Headless
+## Native transport
 
-Headless sessions use the same candidate environment. `recipes.ts` describes each case; the trusted parent records the session streams under `sessions/` in the private run root.
+Supported Codex sessions use the candidate environment. Claude app execution is unavailable until session-only candidate selection and native evidence capture are implemented. `recipes.ts` describes each case; the trusted parent records the session streams under `sessions/` in the private run root.

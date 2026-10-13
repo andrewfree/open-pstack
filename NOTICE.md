@@ -31,6 +31,7 @@ Summary of structural changes:
 
 - Plugin content lives at `plugins/pstack/` (with its own `.claude-plugin/plugin.json`). The repo root holds `.claude-plugin/marketplace.json` and the LICENSE / NOTICE / README / CHANGES docs.
 - `.claude-plugin/marketplace.json` added at repo root so the repo is installable via `/plugin marketplace add`. The marketplace's single plugin entry sources from `./plugins/pstack`.
+- The repository-local verifier rejects unsupported Claude app verification before preparation, requires explicit repository binding, and preserves the exact-candidate live gate. Its native-consumer guard and portable subprocess failure fixtures are port-authored.
 - The native `plugins/pstack/skills/` tree is the only user-facing workflow surface. Claude Code and Codex invoke those skills directly.
 - Seven skills imported from `cursor-team-kit`: `deslop`, `thermo-nuclear-code-quality-review`, `make-pr-easy-to-review`, `fix-ci`, `fix-merge-conflicts`, `get-pr-comments`, `what-did-i-get-done`. All copied verbatim — no rewiring needed.
 - `plugins/pstack/skills/babysit/` is independently authored as the Claude Code analog of Cursor's `/babysit` built-in. It has no upstream pstack equivalent; its workflow is informed by Cursor's public `/babysit` behavior. No code or prose was copied from any source.

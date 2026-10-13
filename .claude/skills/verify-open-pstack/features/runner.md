@@ -14,10 +14,14 @@ Read the candidate's `pstack-runner --help` and installed mapping through the na
 
 ## Gotchas
 
-Provider children retain real `HOME`, `USER`, and `LOGNAME` and the native-login arrangement in `isolation.md`: normal Claude config/login with session-only candidate plugin flags, and run-owned Codex config with auth symlinked to the daily login. Temporary and GitHub state remain run-owned; never pass publisher credentials. No credential reading/copying, source flags, or extra login is required. Missing file-based Codex auth fails closed. State separation is not an OS access-denial guarantee.
+Provider children retain real `HOME`, `USER`, and `LOGNAME` and the native-login arrangement in `isolation.md`: normal Claude app login with session-only candidate plugin selection, currently unavailable, and run-owned Codex config with auth symlinked to the daily login. Temporary and GitHub state remain run-owned; never pass publisher credentials. No credential reading/copying, source flags, or extra login is required. Missing file-based Codex auth fails closed. State separation is not an OS access-denial guarantee.
 
 Do not add implicit timeouts or weaker-model fallbacks. A model assertion that a child ran is insufficient; inspect the actual receipt and output. Never reuse output from another SHA or run.
 
-## Headless
+## Native recipes
 
-The runner recipe in `recipes.ts` has the installed `poteto-mode` parent launch the candidate `pstack-runner` for one external lane: `codex:gpt-6.1-sol@max` from Claude and `claude:opus@max` from Codex. It asserts the launcher command ran from the installed plugin, the receipt reports `complete` with the requested parent, provider, model, effort, and mode, and this session wrote the output. `verify.sh run --runner-route PROVIDER:MODEL@EFFORT` replaces the route for each parent whose provider differs.
+The legacy runner recipe cannot verify the changed Codex-to-Claude route. The candidate intentionally refuses headless Claude with `route-refused`; a shell recipe expecting a completed Claude response is invalid. Passing another `--runner-route` does not cover that changed behavior.
+
+The required app recipe must retain the installed parent's skill load, live T3 capability selection, `delegate_task` receipt, terminal `task_status` result with no pending children, and concrete fixture output. It must bind those observations to this candidate and invocation. The rejected shell route needs separate refusal coverage. Neither a model's final claim nor a generic successful Claude app task replaces these assertions.
+
+Until exact-candidate app loading and this recipe exist, runner coverage is blocked. Do not substitute a different provider to manufacture a passing gate.

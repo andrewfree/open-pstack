@@ -1,4 +1,4 @@
-import { HARNESSES, REPO, type ChangedFile, type Harness, type Receipt, type Registry, type Selection } from './types.ts';
+import { HARNESSES, type ChangedFile, type Harness, type Receipt, type Registry, type Selection } from './types.ts';
 
 export function validateRegistry(value: unknown): Registry {
   if (!value || typeof value !== 'object') throw new Error('Invalid feature registry');
@@ -11,6 +11,11 @@ export function validateRegistry(value: unknown): Registry {
   }
   if (!r.skills.length || r.skills.some(v => !/^[a-z][a-z0-9-]+$/.test(v))) throw new Error('Invalid skills');
   return r;
+}
+
+export function repositoryName(value: string): string {
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\/[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(value) || value.endsWith('.git')) throw new Error('Repository must be OWNER/REPO');
+  return value;
 }
 
 // Only a terminal /** is supported: unknown paths cannot match an accidental broad glob.
@@ -50,10 +55,11 @@ export function classify(files: ChangedFile[], registry: Registry): Selection {
   return { paths, skills: [...skills].sort(), features: [...features].sort(), noRuntime: !features.size };
 }
 
-export function newReceipt(pr: number, sha: string, base: string, selfTest: boolean, artifactRoot: string, publisherRevision?: string): Receipt {
+export function newReceipt(repo: string, pr: number, sha: string, base: string, selfTest: boolean, artifactRoot: string, publisherRevision?: string): Receipt {
+  repositoryName(repo);
   if (!Number.isSafeInteger(pr) || pr < 1 || !/^[a-f0-9]{40}$/.test(sha) || !/^[a-f0-9]{40}$/.test(base)) throw new Error('Invalid PR/SHA');
   if (publisherRevision !== undefined && !/^[a-f0-9]{40}$/.test(publisherRevision)) throw new Error('Invalid publisher revision');
-  return { schema: 1, repo: REPO, pr, sha, base, selfTest, artifactRoot, ...(publisherRevision ? { publisherRevision } : {}), phase: 'resolve',
+  return { schema: 1, repo, pr, sha, base, selfTest, artifactRoot, ...(publisherRevision ? { publisherRevision } : {}), phase: 'resolve',
     selection: { paths: [], skills: [], features: [], noRuntime: false }, installations: [], observations: [],
     started: new Date().toISOString(), cleanup: 'Run state retained; operator owns cleanup.' };
 }
