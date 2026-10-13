@@ -1,27 +1,21 @@
 import { copyFile, mkdir, readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import { CLAUDE_TOOLS, recipe, type Fixture } from '../features/recipes.ts';
+import { recipe, type Fixture } from '../features/recipes.ts';
 import { requiredFeatures, requiredHarnesses } from './core.ts';
 import { command, isolatedEnv, retainedFile, save, session, treeHash, type Command, type Session } from './io.ts';
 import { doctor } from './doctor.ts';
+import { assertNativeConsumers } from './native-consumer.ts';
 import { assertCodexAuth, linkCodexAuth, removeCodexHome, restoreSetup, snapshotSetup, type SetupSnapshot } from './isolation.ts';
 import { sourceDigest, sourceHash } from './provenance.ts';
 import { publishable } from './verify.ts';
-import { REPO, type Driver, type Harness, type Installation, type Observation, type Receipt, type SessionRecord } from './types.ts';
+import { type Driver, type Harness, type Installation, type Observation, type Receipt, type SessionRecord } from './types.ts';
 
 const setupFeature = (feature: string): boolean => feature === 'setup' || feature === 'skill-invocation:setup-pstack';
-export function launch(harness: Harness, workspace: string, options: { cwd: string; addDirs: string[]; codexSandbox?: 'danger-full-access' }): string[] {
+export function launch(harness: Harness, options: { cwd: string; addDirs: string[]; codexSandbox?: 'danger-full-access' }): string[] {
+  assertNativeConsumers([harness]);
   const addDirs = options.addDirs.flatMap(dir => ['--add-dir', dir]);
-  return harness === 'claude'
-    ? ['claude', '-p', '--input-format', 'stream-json', '--replay-user-messages', '--output-format', 'stream-json', '--verbose', '--no-session-persistence',
-      '--plugin-dir', join(workspace, 'plugins/pstack'), '--settings', '{"enabledPlugins":{"pstack@open-pstack":false}}',
-      '--permission-mode', 'dontAsk', ...addDirs, '--allowedTools', CLAUDE_TOOLS]
-    : ['codex', 'exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-hook-trust', '-c', 'approval_policy="never"',
-      '--sandbox', options.codexSandbox ?? 'workspace-write', '--cd', options.cwd, ...addDirs, '-'];
-}
-/** Claude reads its prompt as one stream-json user message so the replayed message shows the slash expansion. */
-export function sessionInput(harness: Harness, prompt: string): string {
-  return harness === 'claude' ? JSON.stringify({ type: 'user', message: { role: 'user', content: prompt } }) + '\n' : prompt;
+  return ['codex', 'exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-hook-trust', '-c', 'approval_policy="never"', '-c', 'analytics.enabled=false',
+    '--sandbox', options.codexSandbox ?? 'workspace-write', '--cd', options.cwd, ...addDirs, '-'];
 }
 type Event = Record<string, any>;
 /** Normalize a recorded native stream into the skills it loaded and the commands it completed. */
@@ -77,25 +71,27 @@ export class MacDriver implements Driver {
     return (args, options = {}) => this.run(args, { ...options, env: isolatedEnv(home) });
   }
   async prepare(receipt: Receipt): Promise<Installation[]> {
+    const harnesses = requiredHarnesses(receipt);
+    assertNativeConsumers(harnesses);
     const root = receipt.artifactRoot;
-    await doctor(root, this.run);
+    await doctor(root, this.run, process.platform, false, harnesses);
     // Fetch a separate immutable reference for pinned-source comparisons.
     const referenceHome = join(root, 'source-home'), reference = join(referenceHome, 'workspace');
     await mkdir(join(referenceHome, 'tmp'), { recursive: true, mode: 0o700 });
     const trustedRun: Command = (args, options = {}) => this.run(args, { ...options, env: isolatedEnv(referenceHome) });
-    await trustedRun(['git', 'clone', '--no-checkout', '--', `https://github.com/${REPO}.git`, reference]);
+    await trustedRun(['git', 'clone', '--no-checkout', '--', `https://github.com/${receipt.repo}.git`, reference]);
     await trustedRun(['git', 'fetch', 'origin', receipt.sha], { cwd: reference });
     await trustedRun(['git', '-c', 'core.hooksPath=/dev/null', 'checkout', '--detach', receipt.sha], { cwd: reference });
     const pinnedSource = await sourceHash(reference, receipt.sha, trustedRun);
     if (process.platform !== 'darwin') throw new Error('Live proof requires the operator Mac');
     const installs: Installation[] = [];
-    for (const harness of requiredHarnesses(receipt)) {
+    for (const harness of harnesses) {
       const home = join(root, 'state', harness), workspace = join(home, 'workspace');
       await mkdir(join(home, 'tmp'), { recursive: true, mode: 0o700 });
       for (const dir of ['.codex', '.config/gh', '.cache']) await mkdir(join(home, dir), { recursive: true, mode: 0o700 });
       const env = isolatedEnv(home, harness);
       const candidateRun = this.candidate(home);
-      await candidateRun(['git', 'clone', '--no-checkout', '--', `https://github.com/${REPO}.git`, workspace], { env });
+      await candidateRun(['git', 'clone', '--no-checkout', '--', `https://github.com/${receipt.repo}.git`, workspace], { env });
       await candidateRun(['git', 'fetch', 'origin', receipt.sha], { cwd: workspace, env });
       await candidateRun(['git', 'checkout', '--detach', receipt.sha], { cwd: workspace, env });
       if ((await candidateRun(['git', 'rev-parse', 'HEAD'], { cwd: workspace, env })).trim() !== receipt.sha) throw new Error('Candidate checkout SHA mismatch');
@@ -132,6 +128,7 @@ export class MacDriver implements Driver {
     return readFile(copy, 'utf8');
   }
   async exercise(receipt: Receipt): Promise<Observation[]> {
+    assertNativeConsumers(receipt.installations.map(installation => installation.harness));
     // Every selected feature needs a recipe in every harness before the first session starts.
     const plans = receipt.installations.map(installation => ({ installation,
       // Setup rewrites the harness's model sheet, so it runs last and later checks see the default configuration.
@@ -154,8 +151,8 @@ export class MacDriver implements Driver {
             await c.prepare?.(fixture);
             const stdout = join(records, `${c.id}.jsonl`), stderr = join(records, `${c.id}.stderr`), cwd = c.cwd === 'workspace' ? workspace : dir;
             const started = Date.now();
-            const exitCode = await this.record(launch(harness, workspace, { cwd, addDirs: cwd === dir ? [] : [dir], codexSandbox: c.codexSandbox }),
-              { cwd, env, input: sessionInput(harness, c.prompt(fixture)), stdout, stderr });
+            const exitCode = await this.record(launch(harness, { cwd, addDirs: cwd === dir ? [] : [dir], codexSandbox: c.codexSandbox }),
+              { cwd, env, input: c.prompt(fixture), stdout, stderr });
             evidence.push(stdout, ...(await stat(stderr)).size ? [stderr] : []);
             let record: SessionRecord, result;
             try {
@@ -180,7 +177,7 @@ export class MacDriver implements Driver {
         const [transcript, ...artifacts] = await Promise.all(evidence.map(path => retainedFile(receipt.artifactRoot, path)));
         const passed = `passed: ${assertions.join(' ')}`;
         observations.push({ harness, feature, reviewer: 'recipe', assertions,
-          surface: harness === 'claude' ? 'claude -p stream-json with the candidate plugin-dir' : 'codex exec --json with the run-owned candidate installation',
+          surface: 'codex exec --json with the run-owned candidate installation',
           action: `recipe ${feature}: ${cases.map(c => c.id).join(', ')}`,
           observed: publishable(passed) ? passed : `passed ${assertions.length} assertions; ids retained privately`,
           transcript: transcript!.path, transcriptHash: transcript!.sha256, artifacts });

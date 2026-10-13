@@ -41,16 +41,16 @@ describe('private values and retained file boundaries', () => {
   });
 
   test('uses real account metadata, run-owned config paths, and normal PATH', () => {
-    const previous = { HOME: process.env.HOME, USER: process.env.USER, LOGNAME: process.env.LOGNAME, PATH: process.env.PATH, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR };
+    const previous = { HOME: process.env.HOME, USER: process.env.USER, LOGNAME: process.env.LOGNAME, PATH: process.env.PATH, DO_NOT_TRACK: process.env.DO_NOT_TRACK, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR };
     process.env.HOME = '/Users/operator'; process.env.USER = 'operator-user'; process.env.LOGNAME = 'operator-login';
-    process.env.PATH = '/usr/local/bin:/usr/bin:/bin';
+    process.env.PATH = '/usr/local/bin:/usr/bin:/bin'; process.env.DO_NOT_TRACK = '0';
     try {
       expect(() => isolatedEnv('relative/home')).toThrow('absolute run-owned');
       const env = isolatedEnv('/run/home', 'claude');
       expect(env).toMatchObject({ HOME: '/Users/operator', USER: 'operator-user', LOGNAME: 'operator-login',
         PATH: '/usr/local/bin:/usr/bin:/bin', TMPDIR: '/run/home/tmp', XDG_CONFIG_HOME: '/run/home/.config',
         XDG_CACHE_HOME: '/run/home/.cache', GH_CONFIG_DIR: '/run/home/.config/gh',
-        CODEX_HOME: '/run/home/.codex' });
+        CODEX_HOME: '/run/home/.codex', DO_NOT_TRACK: '1' });
       delete process.env.CLAUDE_CONFIG_DIR;
       expect(isolatedEnv('/run/home').CLAUDE_CONFIG_DIR).toBeUndefined();
       process.env.CLAUDE_CONFIG_DIR = '/Users/operator/custom-claude';
@@ -66,7 +66,7 @@ describe('private values and retained file boundaries', () => {
       process.env.HOME = '/Users/operator'; delete process.env.USER;
       expect(() => isolatedEnv('/run/home', 'codex')).toThrow('Real USER and LOGNAME are required');
     } finally {
-      for (const name of ['HOME', 'USER', 'LOGNAME', 'PATH', 'CLAUDE_CONFIG_DIR'] as const) {
+      for (const name of ['HOME', 'USER', 'LOGNAME', 'PATH', 'DO_NOT_TRACK', 'CLAUDE_CONFIG_DIR'] as const) {
         if (previous[name] === undefined) delete process.env[name]; else process.env[name] = previous[name];
       }
     }

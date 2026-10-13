@@ -18,6 +18,8 @@ A logo-only change currently requires Codex installed-surface evidence only. If 
 
 Repository file existence alone is not installed behavior. Do not select every skill merely because an asset lives under `plugins/pstack`. Do not claim Claude coverage for the current logo when its manifest does not consume it. Direct image inspection may supplement, but cannot replace, the actual installed consumer observation.
 
-## Headless
+## Native recipes
 
 No recipe exists yet; `assets:codex` fails as `unsupported-native-consumer` before any session starts.
+
+Any required Claude consumer remains blocked pending exact-candidate app transport; these recipes do not authorize headless Claude.

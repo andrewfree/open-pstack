@@ -27,8 +27,10 @@ The feature documents below define sub-features, user entry points, driving inst
 - `runner.md`: parent-to-child provider dispatch and receipts.
 - `shipped-tools.md`: orchestration, watch, plan checks, audit, and evidence logging.
 - `assets.md`: manifest-declared installed assets on actual consuming harnesses.
-- `recipes.ts`: the headless cases and machine-checked assertions for every selectable feature. A selected feature without one fails the run before any session starts.
+- `recipes.ts`: the native cases and machine-checked assertions for every selectable feature. A selected feature without one fails the run before any session starts.
 
 Consumed `AGENTS.md`/`CLAUDE.md` instructions and `tests/skill-collision-repro.sh` select `project-skill`. `.mergify.yml` is explicitly `nonRuntime`. There are no blanket no-runtime exemptions for `.github/**`, `tests/**`, or `scripts/**`: unregistered instruction/enforcement paths fail closed until their ownership is reviewed and mapped.
 
 Explicit non-runtime repository changes are `no runtime change`. Changes to this verifier always select `project-skill`; they cannot bypass native proof. `--self-test` also selects that exercise, deduplicated in each harness, and is mandatory for this skill's delivery PR. Plugin-runtime proof and local CLI proof remain separate.
+
+Claude app transport is currently unsupported because T3 delegation cannot select a session-only exact-candidate plugin. The verifier refuses that selection before installation. Capability-only doctor checks, fake-session unit tests, and direct app model probes never open the live gate. The runner recipe also needs app-owned delegation evidence for Codex-to-Claude routing; see `runner.md`.

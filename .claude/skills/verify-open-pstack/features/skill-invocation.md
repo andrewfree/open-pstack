@@ -10,7 +10,7 @@ In a fresh Claude session invoke `/pstack:<name>`. In Codex use the installed sk
 
 ## Driving it with verify-open-pstack
 
-Launch with real `HOME`, `USER`, and `LOGNAME`, run-owned temporary/GitHub state, and no publisher credentials. Claude uses normal operator login/config with `claude --plugin-dir <exact-head checkout>/plugins/pstack --settings '{"enabledPlugins":{"pstack@open-pstack":false}}'`. Codex installs the exact-head candidate in a run-owned `CODEX_HOME` with `auth.json` symlinked to the daily `${CODEX_HOME:-$HOME/.codex}/auth.json`. Missing file-based auth fails closed. No source flags, credential reading/copying, or extra login; see `isolation.md`.
+Launch with real `HOME`, `USER`, and `LOGNAME`, run-owned temporary/GitHub state, and no publisher credentials. Claude requires an app Agent session that loads only the exact candidate. This transport is currently unavailable and fails closed before preparation; headless Claude is prohibited. Codex installs the exact-head candidate in a run-owned `CODEX_HOME` with `auth.json` symlinked to the daily `${CODEX_HOME:-$HOME/.codex}/auth.json`. Missing file-based auth fails closed. No source flags, credential reading/copying, or extra login; see `isolation.md`.
 
 For each selected name, use a disposable fixture appropriate to its documented input, invoke the installed surface, and exercise every changed sub-feature. Observe native tool/skill loading and a concrete fixture effect, not the assistant saying it passed. Save the raw transcript and an artifact showing the actual result (diff, generated file, tool receipt, or UI capture) under the private mode-0700 evidence root.
 
@@ -20,6 +20,8 @@ For `project-skill`, invoke the discovered skill and ask it to run `verify.sh do
 
 A generic prompt about a skill is not native invocation evidence. A list of discovered skills is not behavioral proof. Environment/config separation does not establish Seatbelt, daily-home, Keychain, or source-write denial, and no such claim belongs in evidence. If an invocation would merge, queue, release, mutate a PR, or write daily state, use a safe disposable fixture or record failure; do not weaken the gate. Never use the child verifier to publish a comment or status.
 
-## Headless
+## Native recipes
 
 `recipes.ts` gives every `skill-invocation:<name>` one default case: a disposable Git fixture holding a small task in `TASK.md`, a native invocation (`/pstack:<name>` in Claude, the Skill tool for principle leaves, `$pstack:<name>` in Codex), and an instruction to write the result to `result.md` in the fixture. It asserts that the native record shows the `pstack:<name>` skill load and that the session wrote a nonempty `result.md`. Only skills whose normal use would push, merge, post, or write daily state override it: `fix-ci`, `babysit`, and `make-pr-easy-to-review` run against a local fixture with no remote and assert a local effect, and `automate-me` writes its draft into the fixture instead of the daily skills folder. `setup-pstack` uses the setup recipe. `project-skill` runs from the candidate checkout and asserts the skill load, the doctor command, and the canonical-path `doctor.json`.
+
+Claude recipe definitions describe required assertions, not an available app launcher. Do not claim their stub tests as live proof.

@@ -1,5 +1,3 @@
-// Headless recipes for every selectable feature. The trusted parent runs each case as one fresh
-// native session and evaluates `assert` against the parsed record and the fixture it created.
 import { lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import type { Command } from '../scripts/io.ts';
@@ -28,8 +26,6 @@ export interface Case {
   assert(record: SessionRecord, fixture: Fixture): Promise<Evidence>;
 }
 
-/** Claude tools pre-authorized for every case; anything else is denied without a prompt and fails the case. */
-export const CLAUDE_TOOLS = 'Skill,Read,Glob,Grep,Write,Edit,Bash,Agent,Task,TodoWrite';
 export const DEFAULT_ROUTES: Record<Harness, string> = { claude: 'codex:gpt-6.1-sol@max', codex: 'claude:opus@max' };
 export const ROUTE = /^(claude|codex|grok):([A-Za-z0-9._-]+)@([a-z]+)$/;
 const SETUP_DESCRIPTOR = 'claude:opus@high';
@@ -149,7 +145,11 @@ const projectSkill: Case = {
 
 function runner(harness: Harness, routes: string[]): Case[] {
   const chosen = routes.filter(route => !route.startsWith(`${harness}:`));
-  return (chosen.length ? chosen : [DEFAULT_ROUTES[harness]]).map((route, index) => {
+  const selected = chosen.length ? chosen : [DEFAULT_ROUTES[harness]];
+  if (harness === 'codex' && selected.some(route => route.startsWith('claude:'))) {
+    throw new Error('unsupported-native-consumer:claude-app: runner verification requires an app-owned dispatch recipe; a shell-completion receipt cannot prove a T3 claudeAgent result');
+  }
+  return selected.map((route, index) => {
     const [, provider, model, effort] = ROUTE.exec(route)!, lane = (f: Fixture, name: string) => join(f.dir, `lane-${index + 1}.${name}`);
     return {
       id: `route-${index + 1}`,
