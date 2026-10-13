@@ -1128,6 +1128,97 @@ printf '%s\\n' '{"type":"thread.started","thread_id":"isolated"}' '{"type":"item
     });
   });
 
+  for (const scenario of [
+    {
+      name: "connection error after reading authentication code",
+      diagnostic: "error: failed to run prompt: provider.connection_error: Connection error.",
+      status: "child-failed", exitCode: 70,
+    },
+    {
+      name: "OAuth refresh connection error",
+      diagnostic: "error: failed to run prompt: provider.connection_error: OAuth authentication refresh connection failed.",
+      status: "child-failed", exitCode: 70,
+    },
+    {
+      name: "connection diagnostic quoting a credential error",
+      diagnostic: "error: failed to run prompt: provider.connection_error: Upstream returned text:\nerror: Provider credential missing",
+      status: "child-failed", exitCode: 70,
+    },
+    {
+      name: "unknown failure mentioning authentication",
+      diagnostic: "error: failed to run prompt: Unknown authentication middleware failure.",
+      status: "child-failed", exitCode: 70,
+    },
+    {
+      name: "absent CLI diagnostic after reviewing error strings",
+      diagnostic: "Warning: authentication module was reviewed.",
+      status: "child-failed", exitCode: 70,
+    },
+    {
+      name: "missing credential",
+      diagnostic: "error: Provider credential missing\n\nmessage:\nprovider managed:kimi-code has no credential configured",
+      status: "unauthenticated", exitCode: 77,
+    },
+    {
+      name: "colored logout diagnostic",
+      diagnostic: "\u001b[31merror: failed to run prompt: auth.login_required: Sign in again.\u001b[0m\nSee log: /run-owned/kimi-code/logs/kimi.log",
+      status: "unauthenticated", exitCode: 77,
+    },
+    {
+      name: "provider authentication error",
+      diagnostic: "error: failed to run prompt: provider.auth_error: The token is expired.",
+      status: "unauthenticated", exitCode: 77,
+    },
+    {
+      name: "HTTP 401 authentication failure",
+      diagnostic: "error: failed to run prompt: provider.auth_error: 401 Unauthorized",
+      status: "unauthenticated", exitCode: 77,
+    },
+    {
+      name: "five-hour quota refusal observed on Kimi 2.1.1",
+      diagnostic: "error: failed to run prompt: provider.auth_error: 403 You've reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends. To continue now, purchase extra usage or upgrade your plan: https://www.kimi.com/membership/subscription?tab=quota\nSee log: /Users/rever/.kimi-code/logs/kimi-code.log",
+      status: "child-failed", exitCode: 70,
+    },
+    {
+      name: "missing served model",
+      diagnostic: "error: failed to run prompt: model.not_found: Model k3 does not exist.",
+      status: "unavailable-model", exitCode: 69,
+    },
+    {
+      name: "model configuration failure",
+      diagnostic: "error: Model not found\n\nmessage:\nModel k3 does not exist.",
+      status: "unavailable-model", exitCode: 69,
+    },
+  ]) {
+    it(`classifies Kimi ${scenario.name} from the CLI diagnostic`, async () => {
+      const source = 'if (/not logged in|authentication|sign in|invalid model/i.test(value)) return "unauthenticated";';
+      const tool = JSON.stringify({ role: "tool", tool_call_id: "read1", content: source });
+      const assistant = JSON.stringify({ role: "assistant", content: "The source contains authentication and model-not-found classifications." });
+      writeFileSync(join(bin, "kimi"), `#!/usr/bin/env bun
+if (process.argv[2] === "provider") {
+  console.log('{"models":{"kimi-code/k3":{"supportEfforts":["high"]}}}');
+  process.exit(0);
+}
+console.log(${JSON.stringify(tool)});
+console.log(${JSON.stringify(assistant)});
+console.error(${JSON.stringify(scenario.diagnostic)});
+process.exit(1);
+`);
+      const input = options("kimi");
+      const result = await runLane(input);
+      expect(result.exitCode).toBe(scenario.exitCode);
+      expect(receipt(input.receiptPath)).toMatchObject({
+        status: scenario.status,
+        preflight: { status: "passed" },
+        exitCode: 1,
+        error: { evidence: expect.stringContaining(scenario.diagnostic) },
+      });
+      expect(existsSync(input.outputPath)).toBe(false);
+      expect(readFileSync(streamPath(result.receipt.stdoutPath), "utf8")).toContain(source.replaceAll('"', '\\"'));
+      expect(readFileSync(streamPath(result.receipt.stderrPath), "utf8")).toContain(scenario.diagnostic);
+    });
+  }
+
   it("names a missing Kimi model alias as unavailable", async () => {
     process.env.FAKE_KIMI_MISSING_MODEL = "1";
     const input = options("kimi", "kimi-missing");

@@ -44,6 +44,11 @@ interface ProcessResult {
   readonly cancelledBy: CancellationSignal | null;
 }
 
+interface ProviderFailureEvidence {
+  readonly diagnostic: string;
+  readonly contentStream: string;
+}
+
 type CancellationSignal = "SIGINT" | "SIGTERM";
 
 interface RunCancellation {
@@ -499,6 +504,50 @@ function unavailableStatus(value: string): ReceiptStatus {
   return "child-failed";
 }
 
+function providerFailureStatus(provider: Provider, failure: ProviderFailureEvidence): ReceiptStatus {
+  if (provider !== "kimi") {
+    return unavailableStatus(`${failure.diagnostic}\n${failure.contentStream}`);
+  }
+
+  // Kimi 2.1.1 puts CLI diagnostics on stderr and reviewed/tool content on stdout.
+  // Match its CLI error header or typed turn error, never words in that content
+  // or later lines in the diagnostic's message body.
+  const diagnostic = failure.diagnostic.replace(/\u001b\[[0-9;]*m/g, "");
+  const header = diagnostic.split("\n").find((line) => line.startsWith("error: "));
+  if (header === undefined) return "child-failed";
+  const message = header.replace(/^error: (?:failed to (?:run prompt|start shell): )?/, "");
+  const code = /^([a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+):/.exec(message)?.[1];
+  // Kimi 2.1.1 labels its five-hour quota refusal provider.auth_error as well.
+  if (/^provider\.auth_error:\s*403 You've reached your 5-hour usage limit\./.test(message)) {
+    return "child-failed";
+  }
+  switch (code ?? message) {
+    case "provider.auth_error":
+    case "auth.login_required":
+    case "auth.provisioning_required":
+    case "auth.token_missing":
+    case "auth.token_unauthorized":
+    case "Provider authentication error":
+    case "Provider authentication failed":
+    case "Login required":
+    case "Provider provisioning required":
+    case "Provider credential missing":
+    case "Provider credential unauthorized":
+      return "unauthenticated";
+    case "model.not_found":
+    case "model.not_configured":
+    case "model.config_invalid":
+    case "auth.model_not_resolved":
+    case "Model not found":
+    case "No model configured":
+    case "Invalid model configuration":
+    case "Model not resolved":
+      return "unavailable-model";
+    default:
+      return "child-failed";
+  }
+}
+
 function kimiPreflightFailure(listing: string, model: string, effort: Effort): string {
   const efforts = kimiSupportedEfforts(listing, model);
   if (efforts !== null) {
@@ -516,13 +565,15 @@ function preflightFailureStatus(
   provider: Provider,
   model: string,
   value: string,
-  exitCode: number | null
+  result: ProcessResult
 ): ReceiptStatus {
-  const status = unavailableStatus(value);
+  const status = provider === "kimi"
+    ? providerFailureStatus(provider, { diagnostic: result.stderr, contentStream: result.stdout })
+    : unavailableStatus(value);
   if (status !== "child-failed") return status;
   // Kimi's preflight reads local config, not credentials: a listing without the
   // model or effort means the pair is unavailable, and anything else failed.
-  if (provider === "kimi") return exitCode === 0 ? "unavailable-model" : status;
+  if (provider === "kimi") return result.exitCode === 0 ? "unavailable-model" : status;
   if (provider === "cursor") {
     return cursorListedModel(value, model) === null
       ? "unavailable-model"
@@ -811,7 +862,7 @@ async function executeLane(
       options.provider,
       options.model,
       rawPreflightEvidence,
-      preflightResult.exitCode
+      preflightResult
     ) === "unauthenticated"
   ) {
     preflightState = {
@@ -887,7 +938,7 @@ async function executeLane(
       options.provider,
       options.model,
       rawPreflightEvidence,
-      preflightResult.exitCode
+      preflightResult
     );
     const status: ReceiptStatus = preflightResult.cancelledBy !== null
       ? "cancelled"
@@ -981,7 +1032,10 @@ async function executeLane(
       ? "cancelled"
       : result.timedOut
         ? "timed-out"
-        : providerFailure?.status ?? unavailableStatus(rawFailureEvidence);
+        : providerFailure?.status ?? providerFailureStatus(options.provider, {
+          diagnostic: result.stderr,
+          contentStream: result.stdout,
+        });
     // A sandbox-exec profile cannot start inside another Seatbelt sandbox, whatever the parent's network access.
     const nestedSeatbelt = invocation.sandbox !== undefined
       && rawFailureEvidence.includes("sandbox_apply: Operation not permitted");
