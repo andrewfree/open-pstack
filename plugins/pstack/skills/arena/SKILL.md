@@ -7,7 +7,7 @@ description: "Spawn N parallel candidates at the same task, pick a base, graft t
 
 Fan out N parallel attempts at the same task. Read every candidate end to end. Pick the strongest as the base. Graft the best ideas from the others into it. Verify the synthesized result.
 
-**Dispatch contract.** Read [`provider-dispatch.md`](../poteto-mode/references/provider-dispatch.md) before fan-out. Configured values are provider-qualified descriptors, not host-native model slugs. The parent starts native and external lanes directly; children never route themselves. On Codex, resolve the remaining Claude tool names via [`codex-tools.md`](../poteto-mode/references/codex-tools.md).
+**Dispatch contract.** Read [`provider-dispatch.md`](../poteto-mode/references/provider-dispatch.md) before fan-out. Configured values are provider-qualified descriptors, not host-native model slugs. The parent starts native, T3 Claude Agent, and external lanes directly; children never route themselves. On Codex, resolve the remaining Claude tool names via [`codex-tools.md`](../poteto-mode/references/codex-tools.md).
 
 ## Start
 
@@ -31,11 +31,11 @@ The N candidates will receive the same prompt, so the prompt is the contract.
 
 ## Phase B: Fan out
 
-Start all N lanes in one fan-out phase through the provider-dispatch contract. Native lanes are background subagents. External lanes are direct background launcher processes with retained task/session handles, never foreground calls and never subagents supervising subprocesses. Give every lane the task, the path to the shared grounding, its own output path, and instructions to produce both the artifact and a short rationale.
+Start all N lanes in one fan-out phase through the provider-dispatch contract. Native lanes are background subagents. Codex-parent Claude lanes use the T3 Claude Agent route and completion rule in `provider-dispatch.md`; write-required candidates are named dropouts. External runner lanes are direct background launcher processes with retained task/session handles, never foreground calls and never subagents supervising subprocesses. Give every lane the task, the path to the shared grounding, its own output path, and instructions to produce both the artifact and a short rationale.
 
 Each rationale names the alternatives the candidate considered and what it rejected.
 
-An external lane counts only when its receipt says `complete` and carries either a matching `provider-report` or Codex's exact `pinned-argv` evidence; a native lane counts when its tool transcript returns the assigned model's result. If a candidate fails, proceed with N-1 and note the exact dropout in the synthesis record. Never replace it with another provider silently.
+A T3 Claude Agent lane counts only under its delegated-task completion rule. An external runner lane counts only when its receipt says `complete` and carries either a matching `provider-report` or Codex's exact `pinned-argv` evidence; a native lane counts when its tool transcript returns the assigned model's result. If a candidate fails, proceed with N-1 and note the exact dropout in the synthesis record. Never replace it with another provider silently.
 
 ## Phase C: Cross-judge
 

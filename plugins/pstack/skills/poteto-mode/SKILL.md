@@ -7,7 +7,7 @@ description: poteto's agent style for concise, detailed responses, deliberate su
 
 ## Platform Adaptation
 
-These skills share one tree across Claude Code and Codex. Read [`references/provider-dispatch.md`](references/provider-dispatch.md) whenever a configured role launches. It defines the provider-qualified model descriptors, native/external route table, launcher, isolation, receipts, and dropout policy. Children never choose routes. When a skill names a Claude tool or built-in skill (`run`, `verify`, `plugin-dev:skill-development`), read [`references/codex-tools.md`](references/codex-tools.md) for the Codex equivalent.
+These skills share one tree across Claude Code and Codex. Read [`references/provider-dispatch.md`](references/provider-dispatch.md) whenever a configured role launches. It defines the provider-qualified model descriptors, native, T3 Claude Agent, and external route table, launcher, isolation, receipts, and dropout policy. Children never choose routes. When a skill names a Claude tool or built-in skill (`run`, `verify`, `plugin-dev:skill-development`), read [`references/codex-tools.md`](references/codex-tools.md) for the Codex equivalent.
 
 ## Non-negotiables
 
@@ -89,7 +89,7 @@ Read the leaf skill in full for any principle you apply. Each entry names when i
 
 ## Subagents
 
-For `inherit-parent`, `auto`, or an unconfigured native ad-hoc helper, prefer `poteto-agent`. `/poteto-mode` and `poteto-agent` route through the same wrapper. A provider-qualified role instead follows provider dispatch: Claude's shipped frontier agent definitions select the model alias and requested effort, Codex passes both to `spawn_agent`, and external providers run through the deterministic launcher. Routed workflow skills set the task and access mode. Do not override their choices.
+For `inherit-parent`, `auto`, or an unconfigured native ad-hoc helper, prefer `poteto-agent`. `/poteto-mode` and `poteto-agent` route through the same wrapper. A provider-qualified role instead follows provider dispatch: Claude's shipped frontier agent definitions select the model alias and requested effort, Codex-native lanes pass both to `spawn_agent`, Codex-parent Claude lanes use the T3 Claude Agent route and completion rule in `provider-dispatch.md`, and external runner lanes use the deterministic launcher. Routed workflow skills set the task and access mode. Do not override their choices.
 
 **Defaults for every delegation.** Start independent lanes together, use file pointers rather than inlined dumps, preserve only the tools or MCPs the task needs, and assign every writer a worktree or unique output directory. `/setup-pstack` configures the descriptor per role. Defaults use Grok 4.7 xhigh for feature/refactoring, exploration, and swarm work; GPT-5.6 Sol max for bug fixes, performance work, and hillclimbing; Opus max for judgment, prose, explanation, and hardest tasks; and the three-model Opus, Sol, and Grok panel for model-diverse judgment. The panel defaults are enumerated in `arena`, `architect`, and `interrogate`. Each code playbook's configured model comes from its line (`feature, refactoring`, `bug-fix`, `perf-issue`, or `hillclimb`), and the hardest changes read `hardest tasks`. Prose and judgment read `judgment and prose`. `inherit-parent` and `auto` use the parent model natively and reduce provider diversity when used in a panel.
 

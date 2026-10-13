@@ -9,6 +9,7 @@ const DISPATCH_PATH = join(
   "skills/poteto-mode/references/provider-dispatch.md"
 );
 const SETUP_PATH = join(PLUGIN_ROOT, "skills/setup-pstack/SKILL.md");
+const CODEX_TOOLS_PATH = join(PLUGIN_ROOT, "skills/poteto-mode/references/codex-tools.md");
 const AGENTS_DIR = join(PLUGIN_ROOT, "agents");
 
 const MATRIX_HEADER = [
@@ -347,6 +348,40 @@ describe("model matrix", () => {
       "match the descriptor's `(provider, model)` to one model-matrix row"
     );
     expect(nativeLanes).toContain("`pstack-<stem>-<effort>`");
+  });
+
+  it("routes Codex-parent Claude through T3 in dispatch, setup, and tool mapping", () => {
+    const dispatch = readFileSync(DISPATCH_PATH, "utf8");
+    const codexTools = readFileSync(CODEX_TOOLS_PATH, "utf8");
+    const routeRows = dispatch.split("\n").filter((line) => /^\| (Claude Code|Codex) \|/.test(line));
+    expect(routeRows.map(splitRow)).toEqual([
+      ["Claude Code", "native Agent", "external runner", "external runner", "external runner", "external runner"],
+      ["Codex", "T3 Claude Agent; otherwise dropout", "native spawn_agent", "external runner", "external runner", "external runner"],
+    ]);
+    const probeRows = setup.split("\n").filter((line) => /^\| (Fable|Opus) \|/.test(line));
+    expect(probeRows).toHaveLength(2);
+    for (const row of probeRows.map(splitRow)) {
+      expect(row[3]).toBe("T3 Claude Agent");
+      expect(row[4]).toContain("delegated one-turn probe");
+    }
+    expect(setup).not.toContain("claude auth status");
+    expect(setup).not.toContain("Every other pair uses the external runner");
+    expect(codexTools).toContain("parent-owned T3 Claude Agent mapping");
+    expect(codexTools).not.toContain("Route Claude and Grok descriptors through the external launcher");
+  });
+
+  it("lets panel callers accept T3 results and makes setup disclose writer dropouts", () => {
+    for (const name of ["poteto-mode", "interrogate", "arena", "swarm"]) {
+      const skill = readFileSync(join(PLUGIN_ROOT, "skills", name, "SKILL.md"), "utf8");
+      expect(skill).toContain("T3 Claude Agent route and completion rule");
+    }
+    const interrogate = readFileSync(join(PLUGIN_ROOT, "skills/interrogate/SKILL.md"), "utf8");
+    expect(interrogate).not.toContain("External reviewers use the launcher directly");
+    expect(setup).toContain("distinguish read-only availability from writer availability before probing");
+    expect(setup).toContain("`hardest tasks`");
+    expect(setup).toContain("always drop out as `no-isolated-worktree`");
+    expect(setup).toContain("Offer explicit reassignment through steps 2–4.");
+    expect(setup).toContain("do not claim those roles are fully available");
   });
 
   it("normalizes old rolling-family pins before any runtime route", () => {
