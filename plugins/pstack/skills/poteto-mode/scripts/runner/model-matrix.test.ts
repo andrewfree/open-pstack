@@ -371,7 +371,7 @@ describe("model matrix", () => {
   });
 
   it("lets panel callers accept T3 results and makes setup disclose writer dropouts", () => {
-    for (const name of ["poteto-mode", "interrogate", "arena", "swarm"]) {
+    for (const name of ["poteto-mode", "interrogate", "arena", "swarm", "how"]) {
       const skill = readFileSync(join(PLUGIN_ROOT, "skills", name, "SKILL.md"), "utf8");
       expect(skill).toContain("T3 Claude Agent route and completion rule");
     }
