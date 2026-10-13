@@ -352,6 +352,28 @@ describe("parseProviderOutput", () => {
     expect(reportedModelMatches("grok", "fable", "claude-fable-9-9")).toBe(false);
   });
 
+  it("matches Haiku as a rolling family without crossing families", () => {
+    expect(reportedModelMatches("claude", "haiku", "claude-haiku-5-5")).toBe(true);
+    expect(reportedModelMatches("claude", "haiku", "claude-haiku-4-5-20251001")).toBe(true);
+    expect(reportedModelMatches("claude", "haiku", "claude-opus-9")).toBe(false);
+    expect(reportedModelMatches("claude", "opus", "claude-haiku-5-5")).toBe(false);
+    expect(reportedModelMatches("claude", "haiku", "haiku")).toBe(false);
+    expect(reportedModelMatches("claude", "haiku", "claude-haiku-latest")).toBe(false);
+  });
+
+  it("selects the Haiku revision a Haiku lane reports from model usage", () => {
+    const parsed = parseProviderOutput(
+      "claude",
+      JSON.stringify({
+        result: "HAIKU_OK",
+        modelUsage: { "claude-fable-9-9": {}, "claude-haiku-5-5": {} },
+      }),
+      "",
+      "haiku"
+    );
+    expect(parsed.reportedModel).toBe("claude-haiku-5-5");
+  });
+
   it("ignores the zero-width spaces Cursor appends to some listed names", () => {
     // xhigh is listed as "Extra High", so only the listed name can vouch for this report.
     const listing = "grok-4.7-xhigh-fast - Grok 4.7  Extra High Fast\u200b\u200b";

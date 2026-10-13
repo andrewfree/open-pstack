@@ -22,7 +22,8 @@ const MATRIX_HEADER = [
   "Claude-native agent stem",
 ] as const;
 
-const FAMILY_ORDER = ["fable", "sol", "grok", "opus"] as const;
+const FAMILY_ORDER = ["fable", "sol", "grok", "opus", "haiku", "luna"] as const;
+const OPTIONAL_FAMILIES = ["fable", "haiku", "luna"] as const;
 const FIRST_RUN_PANEL = ["opus", "sol", "grok"] as const;
 const PROVIDERS = ["claude", "codex", "grok", "cursor", "kimi"] as const;
 const DESCRIPTOR_RE =
@@ -108,9 +109,9 @@ function parseModelMatrix(markdown: string): MatrixRow[] {
     .slice(start + 1, end)
     .map((line) => line.trim())
     .filter((line) => line.startsWith("|"));
-  if (table.length !== 6) {
+  if (table.length !== 8) {
     throw new Error(
-      `model matrix must be header, separator, and 4 data rows, got ${table.length}`
+      `model matrix must be header, separator, and 6 data rows, got ${table.length}`
     );
   }
   const header = splitRow(table[0]);
@@ -229,15 +230,67 @@ describe("model matrix", () => {
       ["sol", "max"],
       ["grok", "xhigh"],
       ["opus", "max"],
+      ["haiku", "low"],
+      ["luna", "medium"],
     ]);
     expect(
       rows
-        .filter((row) => row.family === "fable" || row.family === "opus")
+        .filter((row) => row.provider === "claude")
+        .map((row) => [row.family, row.model, row.claudeNativeAgentStem])
+    ).toEqual([
+      ["fable", "fable", "fable"],
+      ["opus", "opus", "opus"],
+      ["haiku", "haiku", "haiku"],
+    ]);
+    expect(
+      rows
+        .filter((row) => row.provider === "codex")
         .map((row) => [row.family, row.model])
     ).toEqual([
-      ["fable", "fable"],
-      ["opus", "opus"],
+      ["sol", "gpt-5.6-sol"],
+      ["luna", "gpt-6-luna"],
     ]);
+    for (const family of ["haiku", "luna"]) {
+      const row = rows.find((candidate) => candidate.family === family);
+      expect(row?.selectableEfforts).toEqual([...EFFORTS]);
+    }
+  });
+
+  it("keeps optional families out of every first-run role", () => {
+    const sheet = firstRunSheet(setup);
+    const assignments = sheet
+      .split("\n")
+      .filter((line) => line.includes(": "))
+      .map((line) => line.slice(line.indexOf(": ") + 2));
+    expect(assignments).toEqual([
+      "grok:grok-4.7@xhigh",
+      "codex:gpt-5.6-sol@max",
+      "codex:gpt-5.6-sol@max",
+      "codex:gpt-5.6-sol@max",
+      "claude:opus@max",
+      "claude:opus@max",
+      "grok:grok-4.7@xhigh",
+      "claude:opus@max",
+      "inherit-parent",
+      "inherit-parent",
+      panel.join(", "),
+      panel.join(", "),
+      "grok:grok-4.7@xhigh",
+      panel.join(", "),
+      panel.join(", "),
+    ]);
+    expect(panel).toEqual([
+      "claude:opus@max",
+      "codex:gpt-5.6-sol@max",
+      "grok:grok-4.7@xhigh",
+    ]);
+    for (const family of OPTIONAL_FAMILIES) {
+      const row = rows.find((candidate) => candidate.family === family);
+      if (row === undefined) {
+        throw new Error(`missing optional family: ${family}`);
+      }
+      expect(sheet).not.toContain(`${row.provider}:${row.model}@`);
+    }
   });
 
   it("ships exactly the declared Claude-native frontier agents", () => {
@@ -328,7 +381,7 @@ describe("model matrix", () => {
     expect(setup).toContain("A failed probe writes nothing:");
     expect(setup).toContain("Run one probe per family");
     expect(setup).toContain("normalized complete role map from step 2");
-    expect(setup).toContain("starts with `claude-fable-` or `claude-opus-`");
+    expect(setup).toContain("starts with `claude-fable-`, `claude-opus-`, or `claude-haiku-`");
     expect(setup).toContain("preserving the provider, effort, role, and lane order");
     expect(setup).toContain("Show any rolling-alias migrations");
     expect(setup).toContain("Every documented role remains present.");
@@ -358,12 +411,22 @@ describe("model matrix", () => {
       ["Claude Code", "native Agent", "external runner", "external runner", "external runner", "external runner"],
       ["Codex", "T3 Claude Agent; otherwise dropout", "native spawn_agent", "external runner", "external runner", "external runner"],
     ]);
-    const probeRows = setup.split("\n").filter((line) => /^\| (Fable|Opus) \|/.test(line));
-    expect(probeRows).toHaveLength(2);
+    const probeRows = setup.split("\n").filter((line) => /^\| (Fable|Opus|Haiku) \|/.test(line));
+    expect(probeRows.map((line) => splitRow(line)[0])).toEqual(["Fable", "Opus", "Haiku"]);
     for (const row of probeRows.map(splitRow)) {
+      expect(row[2]).toBe(`native Agent pstack-${row[0].toLowerCase()}-<effort>`);
       expect(row[3]).toBe("T3 Claude Agent");
       expect(row[4]).toContain("delegated one-turn probe");
     }
+    const codexProbeRows = setup.split("\n").filter((line) => /^\| (Sol|Luna) \|/.test(line));
+    expect(codexProbeRows.map(splitRow).map((row) => row.slice(0, 1).concat(row.slice(2)))).toEqual(
+      ["Sol", "Luna"].map((family) => [
+        family,
+        "codex exec",
+        "native spawn_agent",
+        "codex login status plus one-turn probe or native one-turn probe",
+      ])
+    );
     expect(setup).not.toContain("claude auth status");
     expect(setup).not.toContain("Every other pair uses the external runner");
     expect(codexTools).toContain("parent-owned T3 Claude Agent mapping");
@@ -395,6 +458,17 @@ describe("model matrix", () => {
     expect(normalization).toContain("Never pass the versioned predecessor to Claude.");
     expect(normalization).toContain("without writing user files");
     expect(normalization).toContain("`/setup-pstack` will rewrite it");
-    expect(normalization).toContain("runner rejects a missed Fable or Opus version pin");
+    expect(normalization).toContain("runner rejects a missed Fable, Opus, or Haiku version pin");
+    expect(normalization).toContain("`claude-fable-`, `claude-opus-`, or `claude-haiku-`");
+    const t3Start = dispatch.indexOf("## The T3 Claude Agent route");
+    const t3 = dispatch.slice(t3Start, dispatch.indexOf("## External lanes"));
+    expect(t3).toContain("For `fable`, `opus`, or `haiku`, match only IDs");
+    expect(t3).toContain("Treat a trailing eight-digit segment as a release date");
+    expect(t3).toContain("compare the preceding version segments first");
+    expect(t3).toContain("use the date only to break a version tie");
+    expect(t3).toContain("Otherwise record `unsupported-effort`.");
+    expect(t3).toContain("Never reduce effort");
+    expect(dispatch).toContain("Completion on any route, whether recorded in a runner receipt, native transcript, or T3 task result");
+    expect(dispatch).toContain("Validate the returned schema, identifiers, and totals against the source before synthesis");
   });
 });

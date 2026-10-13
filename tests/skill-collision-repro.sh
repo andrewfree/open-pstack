@@ -51,7 +51,7 @@ fi
 legacy_model_pins="$(
   grep -REn \
     --include='*.md' --include='*.ts' --include='*.sh' \
-    'claude:claude-(fable|opus)-[0-9]|^model: claude-(fable|opus)-[0-9]|--model claude-(fable|opus)-[0-9]' \
+    'claude:claude-(fable|opus|haiku)-[0-9]|^model: claude-(fable|opus|haiku)-[0-9]|--model claude-(fable|opus|haiku)-[0-9]' \
     "$repo/plugins/pstack" "$repo/tests" "$repo/README.md" "$repo/docs/reference.md" \
     2>/dev/null || true
 )"
@@ -59,17 +59,17 @@ standalone_code_pins="$(
   grep -REn \
     --include='*.ts' --include='*.js' \
     --exclude='*.test.ts' --exclude='*.test.js' \
-    "['\"]claude-(fable|opus)-[0-9]" \
+    "['\"]claude-(fable|opus|haiku)-[0-9]" \
     "$repo/plugins/pstack" \
     2>/dev/null || true
 )"
 if [ -n "$legacy_model_pins" ] || [ -n "$standalone_code_pins" ]; then
-  note "FAIL: active Fable or Opus configuration still pins a model revision:"
+  note "FAIL: active Fable, Opus, or Haiku configuration still pins a model revision:"
   [ -z "$legacy_model_pins" ] || note "$legacy_model_pins"
   [ -z "$standalone_code_pins" ] || note "$standalone_code_pins"
   fail=1
 else
-  note "ok: active Fable and Opus configuration uses rolling aliases"
+  note "ok: active Fable, Opus, and Haiku configuration uses rolling aliases"
 fi
 
 # Static invariant (CHANGES maintenance note): setup-pstack's first-run `arena runners`
