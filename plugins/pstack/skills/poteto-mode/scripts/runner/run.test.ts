@@ -152,7 +152,7 @@ if (process.env.FAKE_NOISY_FAILURE === "1") {
 }
 if (stage === "model" && process.env.FAKE_DESCENDANT_HOLDS_PIPES_MS) {
   const seconds = Number(process.env.FAKE_DESCENDANT_HOLDS_PIPES_MS) / 1000;
-  const descendant = Bun.spawn(["/bin/sh", "-c", "sleep " + seconds], {
+  const descendant = Bun.spawn(["/bin/sh", "-c", "exec sleep " + seconds], {
     stdin: "ignore",
     stdout: "inherit",
     stderr: "inherit",
@@ -163,6 +163,9 @@ if (stage === "model" && process.env.FAKE_DESCENDANT_HOLDS_PIPES_MS) {
   descendant.unref();
 }
 if (stage === "model" && process.env.FAKE_SELF_SIGNAL) {
+  if (process.env.FAKE_MODEL_EXITING_PATH) {
+    writeFileSync(process.env.FAKE_MODEL_EXITING_PATH, String(process.pid));
+  }
   process.kill(process.pid, process.env.FAKE_SELF_SIGNAL);
   await Bun.sleep(5_000);
 }
@@ -304,6 +307,62 @@ async function waitForExit(pid: number): Promise<void> {
     await Bun.sleep(10);
   }
   throw new Error(`timed out waiting for process ${pid} to exit`);
+}
+
+async function within<T>(pending: Promise<T>, milliseconds: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      pending,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`fixture did not finish within ${milliseconds}ms`)), milliseconds);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+function killFixtureProcess(path: string): void {
+  if (!existsSync(path)) return;
+  const pid = Number(readFileSync(path, "utf8"));
+  if (processIsAlive(pid)) process.kill(pid, "SIGKILL");
+}
+
+async function postExitDeadlineReceipt(suffix: string, selfSignal?: "SIGTERM"): Promise<RunnerReceipt> {
+  const descendantPidPath = join(scratch, `${suffix}-descendant.pid`);
+  const modelExiting = join(scratch, `${suffix}-model.exiting`);
+  const input = { ...options("grok", suffix), timeoutMs: 700 };
+  process.env.FAKE_DESCENDANT_HOLDS_PIPES_MS = "30000";
+  process.env.FAKE_DESCENDANT_PID_PATH = descendantPidPath;
+  process.env.FAKE_MODEL_EXITING_PATH = modelExiting;
+  // These 400 ms delays replay slow startup independently of the controlled deadline clock.
+  process.env.FAKE_PREFLIGHT_DELAY_MS = "400";
+  process.env.FAKE_MODEL_DELAY_MS = "400";
+  if (selfSignal !== undefined) process.env.FAKE_SELF_SIGNAL = selfSignal;
+  const started = Date.now();
+  let now = started;
+  const clock = spyOn(Date, "now").mockImplementation(() => now);
+  const pending = runLane(input, started);
+  let childReaped = false;
+  try {
+    await waitFor(descendantPidPath);
+    await waitFor(modelExiting);
+    await waitForExit(Number(readFileSync(modelExiting, "utf8")));
+    childReaped = true;
+    expect(processIsAlive(Number(readFileSync(descendantPidPath, "utf8")))).toBe(true);
+    // Expire after the direct child is reaped and its descendant still owns the pipes.
+    now = started + input.timeoutMs;
+    expect((await within(pending, 3_000)).exitCode).toBe(124);
+    const recorded = receipt(input.receiptPath);
+    expect(recorded.elapsedMs).toBe(input.timeoutMs);
+    return recorded;
+  } finally {
+    if (!childReaped) killFixtureProcess(modelExiting);
+    killFixtureProcess(descendantPidPath);
+    clock.mockRestore();
+    await within(pending, 3_000);
+  }
 }
 
 beforeEach(() => {
@@ -1666,77 +1725,71 @@ console.log(JSON.stringify({ type: "result", result: "MALFORMED_TERMINAL_EVENT" 
   });
 
   it("spends one explicit deadline across preflight and model execution", async () => {
-    process.env.FAKE_PREFLIGHT_DELAY_MS = "1200";
-    process.env.FAKE_MODEL_DELAY_MS = "1200";
+    const preflightStarted = join(scratch, "shared-preflight.started");
+    const releasePreflight = join(scratch, "shared-preflight.release");
+    const modelStarted = join(scratch, "shared-model.started");
+    const gatedFake = fake.replace(
+      'if (name === "grok" && args[0] === "models") {',
+      `if (name === "grok" && args[0] === "models") {
+        while (!existsSync(${JSON.stringify(releasePreflight)})) await Bun.sleep(10);`
+    );
+    expect(gatedFake).not.toBe(fake);
+    writeFileSync(join(bin, "grok"), gatedFake);
+    process.env.FAKE_PREFLIGHT_STARTED_PATH = preflightStarted;
+    process.env.FAKE_MODEL_STARTED_PATH = modelStarted;
+    process.env.FAKE_PREFLIGHT_DELAY_MS = "400";
+    process.env.FAKE_MODEL_DELAY_MS = "30000";
     const input = { ...options("grok"), timeoutMs: 1_500 };
-    const result = await runLane(input);
-    const recorded = receipt(input.receiptPath);
-
-    expect(result.exitCode).toBe(124);
-    expect(recorded.status).toBe("timed-out");
-    expect(recorded.preflight.status).toBe("passed");
-    expect(recorded.elapsedMs).toBeLessThan(2_100);
+    const started = Date.now();
+    let now = started;
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    const pending = runLane(input, started);
+    let preflightReaped = false;
+    let pendingSettled = false;
+    try {
+      await waitFor(preflightStarted);
+      // Charge 1,200 ms to the running preflight, leaving 300 ms for the model.
+      now = started + 1_200;
+      writeFileSync(releasePreflight, "release");
+      await waitFor(modelStarted);
+      await waitForExit(Number(readFileSync(preflightStarted, "utf8")));
+      preflightReaped = true;
+      now = started + input.timeoutMs;
+      const result = await within(pending, 3_000);
+      pendingSettled = true;
+      expect(result.exitCode).toBe(124);
+      expect(receipt(input.receiptPath)).toMatchObject({
+        status: "timed-out",
+        preflight: { status: "passed" },
+        elapsedMs: input.timeoutMs,
+      });
+    } finally {
+      writeFileSync(releasePreflight, "release");
+      if (!pendingSettled) {
+        if (!preflightReaped) killFixtureProcess(preflightStarted);
+        killFixtureProcess(modelStarted);
+      }
+      clock.mockRestore();
+      await within(pending, 3_000);
+    }
   });
 
   it("bounds a descendant-held pipe by the explicit deadline without fabricating a signal", async () => {
-    const descendantPidPath = join(scratch, "deadline-descendant.pid");
-    const input = { ...options("grok", "deadline-drain"), timeoutMs: 700 };
-    const runner = Bun.spawn(runnerArgs(input), {
-      cwd: scratch,
-      env: {
-        ...process.env,
-        FAKE_DESCENDANT_HOLDS_PIPES_MS: "5000",
-        FAKE_DESCENDANT_PID_PATH: descendantPidPath,
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const stdout = new Response(runner.stdout).text();
-    const stderr = new Response(runner.stderr).text();
-
-    expect(await exitWithin(runner, 2_000)).toBe(124);
-    await Promise.all([stdout, stderr]);
-    const recorded = receipt(input.receiptPath);
-    expect(recorded).toMatchObject({
+    expect(await postExitDeadlineReceipt("deadline-drain")).toMatchObject({
       status: "timed-out",
       exitCode: 0,
       signal: null,
       preflight: { status: "passed" },
     });
-    expect(recorded.elapsedMs).toBeLessThan(1_500);
-
-    const descendantPid = Number(readFileSync(descendantPidPath, "utf8"));
-    if (processIsAlive(descendantPid)) process.kill(descendantPid, "SIGKILL");
   });
 
   it("does not claim a signal was sent to an already signal-reaped child", async () => {
-    const descendantPidPath = join(scratch, "signalled-descendant.pid");
-    const input = { ...options("grok", "signalled-drain"), timeoutMs: 700 };
-    const runner = Bun.spawn(runnerArgs(input), {
-      cwd: scratch,
-      env: {
-        ...process.env,
-        FAKE_DESCENDANT_HOLDS_PIPES_MS: "5000",
-        FAKE_DESCENDANT_PID_PATH: descendantPidPath,
-        FAKE_SELF_SIGNAL: "SIGTERM",
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const stdout = new Response(runner.stdout).text();
-    const stderr = new Response(runner.stderr).text();
-
-    expect(await exitWithin(runner, 2_000)).toBe(124);
-    await Promise.all([stdout, stderr]);
-    expect(receipt(input.receiptPath)).toMatchObject({
+    expect(await postExitDeadlineReceipt("signalled-drain", "SIGTERM")).toMatchObject({
       status: "timed-out",
       exitCode: 143,
       signal: null,
       preflight: { status: "passed" },
     });
-
-    const descendantPid = Number(readFileSync(descendantPidPath, "utf8"));
-    if (processIsAlive(descendantPid)) process.kill(descendantPid, "SIGKILL");
   });
 
   it("lets manual cancellation end a post-exit pipe drain without a default timeout", async () => {
@@ -1941,18 +1994,30 @@ console.log(JSON.stringify({ type: "result", result: "MALFORMED_TERMINAL_EVENT" 
 
   it("terminalizes catchable failures after reserving output paths", async () => {
     const unreadable = options("grok", "unreadable-prompt");
-    chmodSync(unreadable.promptPath, 0o000);
-    const unreadableRunner = Bun.spawn(runnerArgs(unreadable), {
-      cwd: scratch,
-      env: { ...process.env },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const unreadableStdout = new Response(unreadableRunner.stdout).text();
-    const unreadableStderr = new Response(unreadableRunner.stderr).text();
-    expect(await unreadableRunner.exited).toBe(70);
-    await Promise.all([unreadableStdout, unreadableStderr]);
-    chmodSync(unreadable.promptPath, 0o600);
+    const unreadableStdout: string[] = [];
+    const unreadableStderr: string[] = [];
+    const originalRead = fs.readFileSync;
+    let injectedFailures = 0;
+    const read = spyOn(fs, "readFileSync").mockImplementation(new Proxy(originalRead, {
+      apply(target, receiver, args) {
+        if (args[0] === unreadable.promptPath) {
+          injectedFailures += 1;
+          throw new Error("fixture prompt read failure");
+        }
+        return Reflect.apply(target, receiver, args);
+      },
+    }));
+    try {
+      expect(await main(runnerArgs(unreadable).slice(1), Date.now(), {
+        stdout: (value) => unreadableStdout.push(value),
+        stderr: (value) => unreadableStderr.push(value),
+      })).toBe(70);
+      expect(injectedFailures).toBe(1);
+      expect(unreadableStdout).toEqual([]);
+      expect(unreadableStderr.join("")).toContain('"status":"child-failed"');
+    } finally {
+      read.mockRestore();
+    }
 
     const preservedReceipt = readFileSync(unreadable.receiptPath, "utf8");
     expect(statSync(unreadable.receiptPath).size).toBeGreaterThan(0);
@@ -1960,7 +2025,10 @@ console.log(JSON.stringify({ type: "result", result: "MALFORMED_TERMINAL_EVENT" 
     expect(receipt(unreadable.receiptPath)).toMatchObject({
       status: "child-failed",
       preflight: { status: "not-run" },
-      error: { message: "launcher failed after reserving output paths" },
+      error: {
+        message: "launcher failed after reserving output paths",
+        evidence: "fixture prompt read failure",
+      },
     });
 
     const samePaths = Bun.spawn(runnerArgs(unreadable), {
