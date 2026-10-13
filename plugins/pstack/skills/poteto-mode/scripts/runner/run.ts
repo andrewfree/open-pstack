@@ -563,6 +563,8 @@ function statusExitCode(status: ReceiptStatus): number {
       return 77;
     case "timed-out":
       return 124;
+    case "route-refused":
+      return 78;
   }
 }
 
@@ -1067,11 +1069,48 @@ async function executeLane(
   return { exitCode: statusExitCode(receipt.status), receipt };
 }
 
+function refuseRoute(options: RunnerOptions, started: number): RunResult {
+  const streams = reserveOutputs(options);
+  try {
+    closeSync(streams.stdout);
+  } finally {
+    closeSync(streams.stderr);
+  }
+  const completed = Date.now();
+  const receipt = completeReceipt(options, {
+    status: "route-refused",
+    startedAt: new Date(started).toISOString(),
+    completedAt: new Date(completed).toISOString(),
+    elapsedMs: completed - started,
+    executable: null,
+    preflight: { argv: [], status: "not-run", evidence: "" },
+    argv: [],
+    exitCode: null,
+    signal: null,
+    reportedModel: null,
+    modelVerified: false,
+    modelEvidence: null,
+    sessionId: null,
+    usage: null,
+    costUsd: null,
+    error: {
+      message: `a codex parent does not run claude lanes in the external runner; the parent dispatches claude:${options.model}@${options.effort} through its T3 Claude Agent route or records a dropout; see provider-dispatch.md#the-t3-claude-agent-route`,
+      evidence: `parent=${options.parent} provider=${options.provider}`,
+    },
+  });
+  removeIfExists(options.outputPath);
+  writeReceipt(options.receiptPath, receipt);
+  return { exitCode: statusExitCode(receipt.status), receipt };
+}
+
 export async function runLane(
   options: RunnerOptions,
   started: number = Date.now()
 ): Promise<RunResult> {
   validateOptions(options);
+  if (options.parent === "codex" && options.provider === "claude") {
+    return refuseRoute(options, started);
+  }
   const deadlineAt = options.timeoutMs === null ? null : started + options.timeoutMs;
   const invocation = invocationCommand(options);
   const preflight = preflightCommand(options.provider);

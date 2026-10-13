@@ -7,7 +7,7 @@ description: "Fan out N parallel workers, drain them, and return one report. Use
 
 Fan out N parallel workers. They may cover separate slices, race the same brief, or mix both. The parent waits, aggregates, and returns one report.
 
-**Dispatch contract.** Resolve each worker descriptor through [`provider-dispatch.md`](../poteto-mode/references/provider-dispatch.md). The parent starts native and external lanes; workers never route themselves. On Codex, resolve remaining Claude tool names via [`codex-tools.md`](../poteto-mode/references/codex-tools.md).
+**Dispatch contract.** Resolve each worker descriptor through [`provider-dispatch.md`](../poteto-mode/references/provider-dispatch.md). The parent starts native, T3 Claude Agent, and external lanes; workers never route themselves. On Codex, resolve remaining Claude tool names via [`codex-tools.md`](../poteto-mode/references/codex-tools.md).
 
 ## Start
 
@@ -28,13 +28,13 @@ Open a todolist with one entry per phase before launching anything.
 
 ## Phase B: Fan out
 
-Start all N workers in one fan-out phase through provider dispatch. Native lanes use background subagents; external lanes invoke the launcher as background work with retained task/session handles. Never use Claude's foreground Bash path for a long worker. Every writer runs in its assigned worktree or output directory. Isolation comes from those paths, not the provider.
+Start all N workers in one fan-out phase through provider dispatch. Native lanes use background subagents. Codex-parent Claude lanes use the T3 Claude Agent route and completion rule in `provider-dispatch.md`; write-required workers are named dropouts. External runner lanes invoke the launcher as background work with retained task/session handles. Never use Claude's foreground Bash path for a long worker. Every writer runs in its assigned worktree or output directory. Isolation comes from those paths, not the provider.
 
 When a worker must start from a non-default branch, check that branch out in the worker's own worktree and name the worktree path in its brief.
 
 Every brief stands alone. Include the goal, scope, exact slice or race arm, how to verify, and what to report. Reports use `PASS`, `ISSUES`, or `BLOCKED` with evidence. A worker that can prove a defect reports `ISSUES` and lists every issue it can prove, not only the first.
 
-If a worker drops out, proceed with N-1 and note the provider, model, and receipt failure. Never substitute another provider silently.
+If a worker drops out, proceed with N-1 and note the provider, model, and failure from its runner receipt or T3 lane record. Never substitute another provider silently.
 
 ## Phase C: Aggregate
 
