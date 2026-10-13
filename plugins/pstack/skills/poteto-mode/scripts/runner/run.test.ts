@@ -2017,6 +2017,15 @@ console.log(JSON.stringify({ type: "result", result: "MALFORMED_TERMINAL_EVENT" 
     expect(existsSync(input.outputPath)).toBe(false);
     expect(existsSync(input.receiptPath)).toBe(false);
   });
+
+  it("rejects a dated Haiku pin before it can stay pinned", async () => {
+    const input = { ...options("claude"), model: "claude-haiku-4-5-20251001" };
+    await expect(runLane(input)).rejects.toThrow(
+      "normalize it to haiku before invoking the runner"
+    );
+    expect(existsSync(input.outputPath)).toBe(false);
+    expect(existsSync(input.receiptPath)).toBe(false);
+  });
 });
 
 describe("Codex-parent claude route refusal", () => {
@@ -2070,7 +2079,7 @@ exit 0
     return [`${input.receiptPath}.stdout`, `${input.receiptPath}.stderr`];
   }
 
-  for (const model of ["fable", "opus"]) {
+  for (const model of ["fable", "opus", "haiku"]) {
     for (const mode of ["read-only", "isolated-write"] as const) {
       it(`refuses claude:${model} in ${mode} mode without touching the CLI or applying a sandbox hint`, async () => {
         process.env.CODEX_SANDBOX_NETWORK_DISABLED = "1";
