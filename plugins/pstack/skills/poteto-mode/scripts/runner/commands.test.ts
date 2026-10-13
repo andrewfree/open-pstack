@@ -448,9 +448,9 @@ describe("invocationCommand", () => {
   it("gives each Kimi agent file only its mode's tools and no subagents", () => {
     const frontmatter = (mode: string): string =>
       readFileSync(`${import.meta.dir}/kimi/${mode}.md`, "utf8").split("---")[1] ?? "";
-    expect(frontmatter("read-only")).toContain("tools: Read, Grep, Glob, Bash\n");
+    expect(frontmatter("read-only")).toContain("tools: Read, ReadMediaFile, Grep, Glob, Bash\n");
     expect(frontmatter("isolated-write")).toContain(
-      "tools: Read, Write, Edit, Grep, Glob, Bash\n"
+      "tools: Read, ReadMediaFile, Write, Edit, Grep, Glob, Bash\n"
     );
     for (const mode of ["read-only", "isolated-write"]) {
       expect(frontmatter(mode)).toContain("subagents: []\n");
