@@ -1,9 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { createReadStream } from 'node:fs';
-import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
-import { isAbsolute, join } from 'node:path';
+import { createReadStream, readFileSync } from 'node:fs';
+import { lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { isAbsolute, join, sep } from 'node:path';
 import { createInterface } from 'node:readline';
-import { isDeepStrictEqual } from 'node:util';
 import { interruption, save } from './io.ts';
 import { parseClaudeEvidence } from './claude-evidence.ts';
 import type { NativeWritePolicy } from './command-policy.ts';
@@ -15,6 +14,9 @@ export interface T3Config {
   codexProviderId: string;
   codexModel: string;
   runnerClaudeModel: string;
+  verifyClaudeProviderId: string;
+  verifyCodexProviderId: string;
+  launcherDirectory: string;
   settingsPath: string;
   logsDirectory: string;
 }
@@ -39,39 +41,52 @@ interface AppRequest {
   task: string;
   responsePath: string;
 }
-interface ProviderEnvironment { name: string; value: string; sensitive: false }
-type ProviderInstance = {
-  displayName: string;
-  enabled: true;
-  environment: ProviderEnvironment[];
-} & ({ driver: 'claudeAgent'; config: { binaryPath: string; homePath: string; launchArgs: string } }
-  | { driver: 'codex'; config: { binaryPath: string; homePath: string; shadowHomePath: string } });
-export type ProviderInstanceMutation =
-  | { operation: 'create'; instanceId: string; instance: ProviderInstance }
-  | { operation: 'remove'; instanceId: string; expectedInstance: ProviderInstance };
-export interface ProviderMutationRequest {
-  id: string;
-  parentThreadId: string;
-  tool: 't3_provider_instance_update';
-  arguments: { mutation: ProviderInstanceMutation };
-  responsePath: string;
-}
-export function validateProviderMutationReply(request: ProviderMutationRequest, reply: unknown): void {
-  const { instanceId, operation } = request.arguments.mutation;
-  if (!isDeepStrictEqual(reply, { requestId: request.id, result: { instanceId, operation, updated: true } })) {
-    throw new Error('T3 provider mutation lacks an exact app tool receipt; retain ownership and pending request');
-  }
-}
 type JsonObject = Record<string, any>;
+type Driver = 'claude' | 'codex';
 export interface AppRouteEvidence { providerInstanceId: string; model: string; efforts: string[] }
 export function t3Config(value: unknown): T3Config {
   if (!value || typeof value !== 'object') throw new Error('T3 configuration must be an object');
   const config = value as Record<string, unknown>;
-  for (const key of ['parentThreadId', 'baseProviderId', 'model', 'codexProviderId', 'codexModel', 'runnerClaudeModel', 'settingsPath', 'logsDirectory']) {
+  for (const key of ['parentThreadId', 'baseProviderId', 'model', 'codexProviderId', 'codexModel', 'runnerClaudeModel', 'verifyClaudeProviderId', 'verifyCodexProviderId', 'launcherDirectory', 'settingsPath', 'logsDirectory']) {
     if (typeof config[key] !== 'string' || !config[key]) throw new Error(`Missing T3 configuration: ${key}`);
   }
-  if (!isAbsolute(config.settingsPath as string) || !isAbsolute(config.logsDirectory as string)) throw new Error('T3 settings and logs paths must be absolute');
+  for (const key of ['launcherDirectory', 'settingsPath', 'logsDirectory']) if (!isAbsolute(config[key] as string)) throw new Error(`T3 ${key} must be absolute`);
+  const ids = [config.baseProviderId, config.codexProviderId, config.verifyClaudeProviderId, config.verifyCodexProviderId];
+  if (new Set(ids).size !== ids.length) throw new Error('T3 verification instances must differ from the daily providers and from each other');
   return config as unknown as T3Config;
+}
+
+export interface Launch { real: string; env?: Record<string, string>; args?: string[]; receipt?: { path: string; label: string } }
+const shellQuote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`;
+const LAUNCHER_MARKER = '# pstack-verify launcher';
+/** A launcher records its launch, applies the case environment, and appends the case arguments after T3's own, where the SDK put extra arguments. */
+export function launcherScript(launch: Launch): string {
+  const lines = ['#!/bin/sh', LAUNCHER_MARKER];
+  if (launch.receipt) lines.push(`printf '%s %s\\n' ${shellQuote(launch.receipt.label)} "$$" >> ${shellQuote(launch.receipt.path)}`);
+  for (const [name, value] of Object.entries(launch.env ?? {})) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`Invalid launcher environment name: ${name}`);
+    lines.push(`export ${name}=${shellQuote(value)}`);
+  }
+  lines.push(`exec ${[shellQuote(launch.real), '"$@"', ...(launch.args ?? []).map(shellQuote)].join(' ')}`);
+  return lines.join('\n') + '\n';
+}
+const errorMessage = (error: unknown): string => error instanceof Error ? error.message : String(error);
+function processAlive(pid: number): boolean {
+  try { process.kill(pid, 0); } catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM'; }
+  return true;
+}
+function commandLine(pid: number): string {
+  try { return readFileSync(`/proc/${pid}/cmdline`, 'utf8').replaceAll('\0', ' '); }
+  catch { return Bun.spawnSync(['ps', '-p', String(pid), '-o', 'command='], { stdout: 'pipe', stderr: 'ignore' }).stdout.toString(); }
+}
+const runningCodex = (pid: number): boolean => processAlive(pid) && commandLine(pid).includes('codex');
+const accountEnvironment = (entry: JsonObject): boolean => entry.environment?.some((e: JsonObject) => e.sensitive === true || /TOKEN|KEY|SECRET|PASSWORD|AUTH/i.test(e.name)) ?? false;
+function caseEnvironment(env: Record<string, string>): Record<string, string> {
+  const merged = { ...env, DO_NOT_TRACK: '1', DISABLE_ERROR_REPORTING: '1', CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: '1', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', GH_TOKEN: '', GITHUB_TOKEN: '', GH_ENTERPRISE_TOKEN: '', GITHUB_ENTERPRISE_TOKEN: '' };
+  for (const [name, value] of Object.entries(merged)) {
+    if (/TOKEN|KEY|SECRET|PASSWORD|AUTH/i.test(name) && name !== 'GIT_CONFIG_KEY_0' && value) throw new Error('Verifier launcher environment must not contain credential values');
+  }
+  return merged;
 }
 
 /** The coordinating agent supplies tool responses, never a model's account of its own work. */
@@ -118,7 +133,7 @@ export function capabilityRoutes(request: AppRequest, reply: JsonObject, started
 export async function nativeMessages(logs: string, identity: { threadId: string; providerId: string }, started: number, harness: 'claude' | 'codex' = 'claude', retain?: { native: string; raw: string }): Promise<{ native: string; raw: string; launches: JsonObject[]; prompts: JsonObject[] }> {
   const instancePrefix = `provider-session:provider-instance:${identity.providerId}:`;
   const prefix = `${instancePrefix}${harness === 'claude' ? `thread:${encodeURIComponent(identity.threadId)}:` : 'shared'}`;
-  const records: { at: string; raw: string; message: JsonObject; incoming: boolean; selected: boolean }[] = [];
+  const records: { at: string; raw: string; message: JsonObject; incoming: boolean; selected: boolean; thread?: string }[] = [];
   const threads = new Set<string>();
   const malformed: string[] = [];
   for (const name of await readdir(logs)) {
@@ -129,6 +144,8 @@ export async function nativeMessages(logs: string, identity: { threadId: string;
     for await (const line of lines) {
       const match = /^\[([^\]]+)\] NTIVE: (.*)$/.exec(line);
       if (!match || !match[2]!.includes(instancePrefix)) continue;
+      // The verification instances are permanent, so earlier cases and runs share this identity; only this case's window is evidence.
+      if (Date.parse(match[1]!) < started) continue;
       let record: JsonObject;
       try {
         record = JSON.parse(match[2]!);
@@ -137,19 +154,22 @@ export async function nativeMessages(logs: string, identity: { threadId: string;
       if (!record.providerSessionId?.startsWith(instancePrefix)
         || record.provider !== (harness === 'claude' ? 'claudeAgent' : 'codex') || record.protocol !== (harness === 'claude' ? 'claude-agent-sdk.query' : 'codex.app-server')) continue;
       if (record.event?.stage !== 'decoded') continue;
-      if (Date.parse(match[1]!) >= started) {
-        const thread = harness === 'claude' ? /^thread:([^:]+):/.exec(record.providerSessionId.slice(instancePrefix.length))?.[1]
-          : record.event.payload?.params?.threadId ?? record.event.payload?.params?.thread?.id;
-        if (thread) threads.add(thread);
-      }
-      const incoming = record.event.direction === 'incoming';
-      if (!incoming && !(harness === 'claude' && record.event.direction === 'outgoing' && ['query.open', 'prompt.offer'].includes(record.event.payload?.type))) continue;
+      const payload = record.event.payload, incoming = record.event.direction === 'incoming';
+      const thread: string | undefined = harness === 'claude' ? /^thread:([^:]+):/.exec(record.providerSessionId.slice(instancePrefix.length))?.[1]
+        : payload?.params?.threadId ?? payload?.params?.thread?.id;
+      // T3 tears down earlier threads' idle sessions during a case, so only an opening or a prompt claims the instance for a thread.
+      const opens = harness === 'claude'
+        ? incoming ? payload?.type === 'system' && payload?.subtype === 'init' : ['query.open', 'prompt.offer'].includes(payload?.type)
+        : incoming ? ['thread/started', 'turn/started'].includes(payload?.method) : ['thread/start', 'thread/resume', 'turn/start'].includes(payload?.method);
+      if (thread && opens) threads.add(thread);
+      if (!incoming && !(harness === 'claude' && ['query.open', 'prompt.offer'].includes(payload?.type))) continue;
       const selected = harness === 'claude' ? record.providerSessionId.startsWith(prefix) : record.providerSessionId === prefix;
-      records.push({ at: match[1]!, raw: line, message: record.event.payload, incoming, selected });
+      records.push({ at: match[1]!, raw: line, message: payload, incoming, selected, thread });
     }
   }
   records.sort((a, b) => a.at.localeCompare(b.at));
-  const selected = records.filter(r => r.selected);
+  const caseThread = harness === 'codex' && threads.size === 1 ? [...threads][0] : undefined;
+  const selected = records.filter(r => r.selected && !(caseThread && r.thread && r.thread !== caseThread));
   const native = selected.filter(r => r.incoming).map(r => JSON.stringify(r.message)).join('\n') + '\n';
   const raw = [...records.map(r => r.raw), ...malformed].join('\n') + '\n';
   if (retain) {
@@ -159,8 +179,7 @@ export async function nativeMessages(logs: string, identity: { threadId: string;
   if (malformed.length) throw new Error('T3 native evidence contains malformed matching records');
   if (!selected.length) throw new Error('T3 native evidence unavailable for this child; summaries cannot replace it');
   if (records.some(r => !Number.isFinite(Date.parse(r.at)))) throw new Error('Native T3 evidence timestamp is invalid');
-  if (selected.some(r => Date.parse(r.at) < started)) throw new Error('Native T3 evidence predates this case');
-  if (threads.size > 1) throw new Error('Isolated T3 provider has native evidence from extra thread identities');
+  if (threads.size > 1) throw new Error('T3 verification provider has native evidence from extra thread identities during this case');
   return { native, raw, launches: selected.filter(r => !r.incoming && r.message.type === 'query.open').map(r => r.message),
     prompts: selected.filter(r => !r.incoming && r.message.type === 'prompt.offer').map(r => r.message) };
 }
@@ -179,24 +198,27 @@ export function validateClaudeLaunch(native: string, launches: JsonObject[], mod
   const options = launches[0]?.options;
   if (launches.length !== 1 || init.length !== 1 || !options || options.sessionId !== init[0].session_id || options.cwd !== init[0].cwd
     || options.model !== model || options.pathToClaudeCodeExecutable !== binary || options.tools?.preset !== 'claude_code'
-    || options.hasExtraArgs !== true || options.hasEnvironment !== true || options.hasMcpServers !== true) throw new Error('Claude query launch does not match the native candidate session');
+    || options.hasEnvironment !== true || options.hasMcpServers !== true) throw new Error('Claude query launch does not match the native candidate session');
   if (effort !== undefined && options.effort !== effort) throw new Error('Claude child query effort differs from requested route');
 }
 
 /** Agent-driven rendezvous: only the T3 delegate_task tool launches Claude. */
 export class T3App {
-  private owned: { id: string; entry: ProviderInstance }[] = [];
   private pending?: string;
-  private providerPending?: ProviderMutationRequest;
-  private childProviderId = `pstack_verify_${randomUUID().replaceAll('-', '')}_claude`;
+  private armed = false;
+  private locked = false;
+  private passThrough?: Record<Driver, string>;
   constructor(private config: T3Config, private root: string) {}
   get runnerRoute(): { providerInstanceId: string; model: string } {
-    return { providerInstanceId: this.childProviderId, model: this.config.runnerClaudeModel };
+    return { providerInstanceId: this.config.verifyClaudeProviderId, model: this.config.runnerClaudeModel };
   }
 
   get settingsPath(): string { return this.config.settingsPath; }
 
   private get directory(): string { return join(this.root, 't3-app'); }
+  private launcher(driver: Driver): string { return join(this.config.launcherDirectory, driver); }
+  private get lockPath(): string { return join(this.config.launcherDirectory, 'lock.json'); }
+  private get serversPath(): string { return join(this.config.launcherDirectory, 'codex-servers.json'); }
 
   private async providers(): Promise<JsonObject> {
     const settings = JSON.parse(await readFile(this.config.settingsPath, 'utf8'));
@@ -204,142 +226,208 @@ export class T3App {
     return settings.providerInstances;
   }
 
-  async claudeBinaryPath(): Promise<string> {
-    const base = (await this.providers())[this.config.baseProviderId];
-    if (base?.driver !== 'claudeAgent' || base.enabled !== true || typeof base.config?.binaryPath !== 'string' || !base.config.binaryPath) throw new Error('Select an enabled Claude app provider with an explicit binary');
+  /** The operator's daily provider supplies the real CLI each launcher executes. */
+  private dailyBinary(providers: JsonObject, driver: Driver): string {
+    const base = providers[driver === 'claude' ? this.config.baseProviderId : this.config.codexProviderId];
+    if (base?.driver !== (driver === 'claude' ? 'claudeAgent' : 'codex') || base.enabled !== true || typeof base.config?.binaryPath !== 'string' || !base.config.binaryPath) throw new Error('Select an enabled native app provider with an explicit binary');
+    if (accountEnvironment(base)) throw new Error('This provider requires account-specific environment; use its normal app lane without copying credentials');
+    if (!isAbsolute(base.config.binaryPath)) throw new Error('The daily provider binary must be an absolute path');
     return base.config.binaryPath;
   }
 
-  private async retainOwnership(): Promise<void> {
-    await mkdir(this.directory, { recursive: true, mode: 0o700 });
-    await save(join(this.directory, 'ownership.json'), { providers: this.owned, pendingCase: this.pending ?? null, pendingMutation: this.providerPending ?? null });
+  /** Runs never edit T3 settings; the operator adds both verification instances once. */
+  private verifyInstances(providers: JsonObject): void {
+    for (const driver of ['claude', 'codex'] as const) {
+      const id = driver === 'claude' ? this.config.verifyClaudeProviderId : this.config.verifyCodexProviderId, entry = providers[id];
+      const kind = driver === 'claude' ? 'claudeAgent' : 'codex';
+      if (entry?.driver !== kind || entry.enabled !== true || entry.config?.binaryPath !== this.launcher(driver) || entry.config?.launchArgs || (entry.environment ?? []).length) {
+        throw new Error(`Add T3 provider instance ${id} once in T3 Settings: driver ${kind}, enabled, binary ${this.launcher(driver)}, no launch arguments, no environment entries. Verification runs never edit T3 settings.`);
+      }
+    }
   }
 
-  private async response(path: string, allowInterrupted = false): Promise<JsonObject> {
+  async claudeBinaryPath(): Promise<string> {
+    return this.dailyBinary(await this.providers(), 'claude');
+  }
+
+  /** The launcher directory holds only verifier launchers, so a mistyped path cannot replace an operator CLI or make a launcher run itself. */
+  private async passThroughTargets(providers: JsonObject): Promise<Record<Driver, string>> {
+    const directory = this.config.launcherDirectory;
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    const info = await lstat(directory);
+    if (!info.isDirectory() || info.uid !== process.getuid?.() || info.mode & 0o022) throw new Error(`Launcher directory ${directory} must be a real directory owned by this user and not group- or world-writable`);
+    const resolvedDirectory = await realpath(directory);
+    const targets = { claude: this.dailyBinary(providers, 'claude'), codex: this.dailyBinary(providers, 'codex') };
+    for (const target of Object.values(targets)) {
+      const resolved = await realpath(target).catch(() => { throw new Error(`Daily provider binary ${target} does not exist`); });
+      if (resolved === resolvedDirectory || resolved.startsWith(resolvedDirectory + sep)) throw new Error(`Daily provider binary ${target} resolves into the launcher directory`);
+    }
+    return targets;
+  }
+
+  private async writeLauncher(driver: Driver, launch: Launch): Promise<void> {
+    const path = this.launcher(driver), existing = await lstat(path).catch(() => undefined);
+    if (existing && (!existing.isFile() || !(await Bun.file(path).slice(0, 256).text()).split('\n').includes(LAUNCHER_MARKER))) throw new Error(`Refusing to replace ${path}: it is not a pstack verification launcher`);
+    const temporary = `${path}.${randomUUID()}.tmp`;
+    await writeFile(temporary, launcherScript(launch), { flag: 'wx', mode: 0o700 });
+    await rename(temporary, path);
+  }
+
+  /** Idle launchers pass straight through, so T3's background probes and stray use see an ordinary CLI. */
+  private async disarm(): Promise<void> {
+    const failures: string[] = [];
+    for (const driver of ['claude', 'codex'] as const) {
+      try { await this.writeLauncher(driver, { real: this.passThrough![driver] }); } catch (error) { failures.push(`${driver}: ${errorMessage(error)}`); }
+    }
+    if (failures.length) throw new Error(`Pass-through launchers were not restored (${failures.join('; ')}); the verification instances may still carry candidate arguments`);
+    this.armed = false;
+    await this.retainState();
+  }
+
+  private async lock(): Promise<void> {
+    const owner = { pid: process.pid, root: this.root };
+    try { await writeFile(this.lockPath, JSON.stringify(owner) + '\n', { flag: 'wx', mode: 0o600 }); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      const held = JSON.parse(await readFile(this.lockPath, 'utf8'));
+      if (held.pid === process.pid && held.root === this.root) { this.locked = true; return; }
+      if (processAlive(held.pid)) throw new Error(`Verification run pid ${held.pid} (${held.root}) holds the launchers; wait for it to finish`);
+      console.log(`Taking over the stale launcher lock from pid ${held.pid} (${held.root})`);
+      await save(this.lockPath, owner);
+    }
+    this.locked = true;
+  }
+
+  /** T3 keeps an idle Codex app-server for about 30 minutes; a new run must not inherit one bound to an earlier run's home. */
+  private async refuseLiveServers(): Promise<void> {
+    const previous = await readFile(this.serversPath, 'utf8').then(text => JSON.parse(text), () => undefined);
+    if (!previous) return;
+    const live = (previous.pids as number[]).filter(runningCodex);
+    if (live.length) throw new Error(`T3 still runs the Codex verification app-server (pid ${live.join(', ')}) from run ${previous.root}; wait for T3's idle release, about 30 minutes, or restart T3`);
+    await rm(this.serversPath);
+  }
+
+  /** Codex app-servers started through this run's launcher that are still running. */
+  async liveCodexServers(): Promise<number[]> {
+    const log = await readFile(join(this.directory, 'launches.log'), 'utf8').catch(() => '');
+    return [...new Set(log.split('\n').map(line => / codex (\d+)$/.exec(line)?.[1]).filter(Boolean).map(Number))].filter(runningCodex);
+  }
+
+  async prepare(): Promise<void> {
+    const providers = await this.providers();
+    this.passThrough = await this.passThroughTargets(providers);
+    await this.lock();
+    await this.refuseLiveServers();
+    await this.disarm();
+    this.verifyInstances(providers);
+  }
+
+  private async retainState(): Promise<void> {
+    await mkdir(this.directory, { recursive: true, mode: 0o700 });
+    await save(join(this.directory, 'state.json'), { pendingCase: this.pending ?? null, armedLaunchers: this.armed });
+  }
+
+  private async response(path: string): Promise<JsonObject> {
     while (true) {
-      if (!allowInterrupted) interruption.signal.throwIfAborted();
+      interruption.signal.throwIfAborted();
       try { return JSON.parse(await readFile(path, 'utf8')); }
       catch (error) { if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error; }
       await Bun.sleep(500);
     }
   }
 
-  private async changeProvider(mutation: ProviderInstanceMutation): Promise<void> {
-    if (this.providerPending) throw new Error(`T3 provider mutation ${this.providerPending.id} has no validated receipt; retain providers and pending request`);
-    const id = randomUUID();
-    const request: ProviderMutationRequest = { id, parentThreadId: this.config.parentThreadId, tool: 't3_provider_instance_update',
-      arguments: { mutation }, responsePath: join(this.directory, `${id}.provider-response.json`) };
-    this.providerPending = request;
-    await this.retainOwnership();
-    await save(join(this.directory, `${id}.provider-request.json`), request);
-    await save(join(this.directory, 'provider-pending.json'), request);
-    console.log(`T3 provider mutation awaits ${request.tool}: ${join(this.directory, 'provider-pending.json')}`);
-    validateProviderMutationReply(request, await this.response(request.responsePath, mutation.operation === 'remove'));
-    const providers = await this.providers();
-    if (mutation.operation === 'create' ? !isDeepStrictEqual(providers[mutation.instanceId], mutation.instance)
-      : Object.hasOwn(providers, mutation.instanceId)) throw new Error('T3 provider mutation readback mismatch; retain ownership and pending request');
-    this.providerPending = undefined;
-    await this.retainOwnership();
-    await rm(join(this.directory, 'provider-pending.json'));
-  }
-
   async cleanup(): Promise<void> {
-    if (this.pending) throw new Error(`T3 case ${this.pending} has no validated terminal receipt; retain providers and state until its task is finished or cancelled`);
-    if (this.providerPending) throw new Error(`T3 provider mutation ${this.providerPending.id} has no validated receipt; retain providers and pending request`);
-    for (const item of [...this.owned]) {
-      const providers = await this.providers();
-      if (Object.hasOwn(providers, item.id)) {
-        if (!isDeepStrictEqual(providers[item.id], item.entry)) throw new Error('Temporary T3 provider changed; preserve it for inspection');
-        await this.changeProvider({ operation: 'remove', instanceId: item.id, expectedInstance: item.entry });
-      }
-      this.owned = this.owned.filter(owned => owned.id !== item.id);
-      await this.retainOwnership();
+    const failures: string[] = [];
+    if (this.armed) await this.disarm().catch(error => { failures.push(errorMessage(error)); });
+    if (this.pending) failures.push(`T3 case ${this.pending} has no validated terminal receipt; check or cancel only that task before trusting this run`);
+    const live = await this.liveCodexServers();
+    if (live.length) await save(this.serversPath, { root: this.root, pids: live });
+    if (this.locked && failures.length === 0) {
+      const held = JSON.parse(await readFile(this.lockPath, 'utf8'));
+      if (held.pid === process.pid && held.root === this.root) await rm(this.lockPath);
+      this.locked = false;
     }
+    if (failures.length) throw new Error(failures.join('; '));
   }
 
   async record(c: AppCase): Promise<{ evidence: string[]; prompt: string; model: string; routes: AppRouteEvidence[] }> {
     interruption.signal.throwIfAborted();
-    const id = randomUUID(), providerId = `pstack_verify_${id.replaceAll('-', '')}`;
-    const quote = (s: string): string => JSON.stringify(s);
-    const claudeArgs = `--setting-sources ${c.projectSkill ? 'project' : '\"\"'} ${c.projectSkill ? `--project-config-root ${quote(c.workspace)} --add-dir ${quote(c.workspace)} ` : ''}--plugin-dir ${quote(c.pluginRoot)} --strict-mcp-config`;
-    if (this.pending || this.providerPending || this.owned.length) throw new Error('Previous T3 case still owns providers or pending work');
+    if (!this.passThrough || !this.locked) throw new Error('Prepare the T3 verification launchers before recording a case');
+    if (this.pending || this.armed) throw new Error('Previous T3 case still has pending work or armed launchers');
     const providers = await this.providers();
-    const leftovers = Object.keys(providers).filter(key => key.startsWith('pstack_verify_'));
-    if (leftovers.length) throw new Error(`Unowned temporary T3 providers remain; resolve their task and ownership receipts before a new run: ${leftovers.join(', ')}`);
-    const base = providers[c.harness === 'claude' ? this.config.baseProviderId : this.config.codexProviderId];
-    if (base?.driver !== (c.harness === 'claude' ? 'claudeAgent' : 'codex') || base.enabled !== true || typeof base.config?.binaryPath !== 'string' || !base.config.binaryPath) throw new Error('Select an enabled native app provider with an explicit binary');
+    this.verifyInstances(providers);
     const configHome = c.env.CLAUDE_CONFIG_DIR || join(c.env.HOME!, '.claude');
-    if (c.harness === 'claude' && base.config.homePath && base.config.homePath !== configHome) throw new Error('Claude app config home differs from the setup snapshot home');
-    if (base.environment?.some((entry: JsonObject) => entry.sensitive === true || /TOKEN|KEY|SECRET|PASSWORD|AUTH/i.test(entry.name))) throw new Error('This provider requires account-specific environment; use its normal app lane without copying credentials');
-    const environment = Object.entries({ ...c.env, DO_NOT_TRACK: '1', DISABLE_ERROR_REPORTING: '1', CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: '1', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', GH_TOKEN: '', GITHUB_TOKEN: '', GH_ENTERPRISE_TOKEN: '', GITHUB_ENTERPRISE_TOKEN: '' })
-      .map(([name, value]): ProviderEnvironment => {
-        if (/TOKEN|KEY|SECRET|PASSWORD|AUTH/i.test(name) && name !== 'GIT_CONFIG_KEY_0' && value) throw new Error('Verifier provider environment must not contain credential values');
-        return { name, value, sensitive: false };
-      });
-    const entry: ProviderInstance = { displayName: 'Pstack verification (temporary)', enabled: true, environment,
-      ...(c.harness === 'claude' ? { driver: 'claudeAgent', config: { binaryPath: base.config.binaryPath, homePath: base.config.homePath ?? '', launchArgs: claudeArgs } }
-        : { driver: 'codex', config: { binaryPath: base.config.binaryPath, homePath: c.env.CODEX_HOME!, shadowHomePath: '' } }) };
-    const owned: { id: string; entry: ProviderInstance }[] = [{ id: providerId, entry }];
-    if (c.harness === 'codex') {
-      const claude = providers[this.config.baseProviderId];
-      if (claude?.driver !== 'claudeAgent' || claude.enabled !== true || typeof claude.config?.binaryPath !== 'string' || !claude.config.binaryPath || claude.environment?.some((e: JsonObject) => e.sensitive === true || /TOKEN|KEY|SECRET|PASSWORD|AUTH/i.test(e.name))) throw new Error('Native Claude child needs an existing provider without copied credential environment');
-      if (claude.config.homePath && claude.config.homePath !== configHome) throw new Error('Claude child config home differs from the setup snapshot home');
-      owned.push({ id: this.childProviderId, entry: { ...entry, driver: 'claudeAgent', config: { binaryPath: claude.config.binaryPath, homePath: claude.config.homePath ?? '', launchArgs: claudeArgs } } });
+    for (const id of [this.config.baseProviderId, this.config.verifyClaudeProviderId]) {
+      const home = providers[id]?.config?.homePath;
+      if (home && home !== configHome) throw new Error('Claude app config home differs from the setup snapshot home');
     }
-    await mkdir(this.directory, { recursive: true, mode: 0o700 });
-    await save(join(this.directory, `${id}.providers.json`), owned);
-    for (const item of owned) {
-      this.owned.push(item);
-      await this.changeProvider({ operation: 'create', instanceId: item.id, instance: item.entry });
-    }
-    const directory = this.directory;
+    const env = caseEnvironment(c.env);
+    const claudeArgs = ['--setting-sources', c.projectSkill ? 'project' : '', ...c.projectSkill ? ['--project-config-root', c.workspace, '--add-dir', c.workspace] : [],
+      '--plugin-dir', c.pluginRoot, '--strict-mcp-config'];
+    const id = randomUUID(), directory = this.directory, receipts = join(directory, 'launches.log');
+    const providerId = c.harness === 'claude' ? this.config.verifyClaudeProviderId : this.config.verifyCodexProviderId;
     const responsePath = join(directory, `${id}.response.json`);
     const request: AppRequest = { id, parentThreadId: this.config.parentThreadId,
       target: { providerInstanceId: providerId, model: c.harness === 'claude' ? this.config.model : this.config.codexModel }, responsePath,
       ...(c.harness === 'codex' ? { runnerTarget: this.runnerRoute } : {}),
       task: `${c.prompt}\n\nThis is a live verification case. ${c.harness === 'claude' ? 'Invoke named skills with the native Skill tool, never substitute a filesystem read.' : 'Use the natively discovered candidate skill.'} T3's starting directory is inherited; use the absolute fixture paths in this request. Do not publish or change remote state. Case identity: ${id}.` };
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    await writeFile(receipts, '', { flag: 'a', mode: 0o600 });
     await save(join(directory, `${id}.request.json`), { ...request, installation: c.pluginRoot, workspace: c.workspace, fixture: c.fixture, started: c.started });
-    this.pending = id;
-    await this.retainOwnership();
-    await save(join(directory, 'pending.json'), request);
-    console.log(`T3 app case awaits delegate_task: ${join(directory, 'pending.json')}`);
-    const reply = await this.response(responsePath);
-    const identity = validateAppTerminalReply(request, reply, c.started);
-    await save(join(directory, `${id}.terminal.json`), { request, reply, identity });
-    this.pending = undefined;
-    await this.retainOwnership();
-    await rm(join(directory, 'pending.json'));
-    const raw = c.stdout + '.t3-native.log', binding = c.stdout + '.t3-binding.json';
-    await save(binding, { request, reply, provider: this.owned, identity });
+    let reply!: JsonObject, identity!: { threadId: string; providerId: string; runId: string }, failure: unknown;
+    this.armed = true;
+    await this.retainState();
+    try {
+      await this.writeLauncher('claude', { real: this.passThrough.claude, env, args: claudeArgs, receipt: { path: receipts, label: `${id} claude` } });
+      if (c.harness === 'codex') await this.writeLauncher('codex', { real: this.passThrough.codex, env, receipt: { path: receipts, label: `${id} codex` } });
+      this.pending = id;
+      await this.retainState();
+      await save(join(directory, 'pending.json'), request);
+      console.log(`T3 app case awaits delegate_task: ${join(directory, 'pending.json')}`);
+      reply = await this.response(responsePath);
+      identity = validateAppTerminalReply(request, reply, c.started);
+      await save(join(directory, `${id}.terminal.json`), { request, reply, identity });
+      this.pending = undefined;
+      await rm(join(directory, 'pending.json'));
+    } catch (error) { failure = error; }
+    try { await this.disarm(); }
+    catch (error) { throw failure === undefined ? error : new Error(`${errorMessage(failure)}; ${errorMessage(error)}`); }
+    if (failure !== undefined) throw failure;
+    const raw = c.stdout + '.t3-native.log', binding = c.stdout + '.t3-binding.json', caseLaunches = c.stdout + '.launches.log';
+    await save(binding, { request, reply, identity, launchers: this.config.launcherDirectory });
     const collected = await nativeMessages(this.config.logsDirectory, identity, c.started, c.harness, { native: c.stdout, raw });
     await writeFile(c.stderr, '', { flag: 'wx', mode: 0o600 });
-    if (reply.status.status !== 'completed') throw new Error(`T3 task ended ${reply.status.status}; terminal receipt retained and conditional provider cleanup is permitted`);
+    // The run log keeps growing, so evidence gets an immutable copy of the lines this case relies on.
+    const launches = (await readFile(receipts, 'utf8')).split('\n').filter(line => line.startsWith(`${id} `) || (c.harness === 'codex' && / codex \d+$/.test(line)));
+    await writeFile(caseLaunches, launches.map(line => line + '\n').join(''), { flag: 'wx', mode: 0o600 });
+    if (reply.status.status !== 'completed') throw new Error(`T3 task ended ${reply.status.status}; terminal receipt retained`);
+    if (!launches.some(line => line.startsWith(`${id} claude `))) throw new Error("No Claude CLI started through this case's launcher");
+    if (c.harness === 'codex' && !launches.some(line => / codex \d+$/.test(line))) throw new Error("No Codex app-server started through this run's launcher; an app-server from before this run may still serve the verification instance");
     const routes = capabilityRoutes(request, reply, c.started);
     if (c.harness === 'claude') {
-      validateClaudeLaunch(collected.native, collected.launches, request.target.model, owned[0]!.entry.config.binaryPath);
+      validateClaudeLaunch(collected.native, collected.launches, request.target.model, this.launcher('claude'));
       validateClaudePrompt(collected.prompts, request.task);
     }
-    const evidence = [raw, binding];
+    const evidence = [raw, binding, caseLaunches];
     if (c.harness === 'codex') {
       const calls = collected.native.trim().split('\n').map(line => JSON.parse(line))
         .filter(e => e.method === 'item/completed' && e.params?.item?.type === 'mcpToolCall' && e.params.item.server === 't3-code' && e.params.item.tool === 'delegate_task')
         .map(e => e.params.item);
       const call = calls[0], child = call?.result?.structuredContent;
-      if (calls.length !== 1 || !child?.childThreadId || child.providerInstanceId !== this.childProviderId || child.model !== call.arguments?.target?.model) throw new Error('Codex native evidence lacks one matching Claude child');
+      if (calls.length !== 1 || !child?.childThreadId || child.providerInstanceId !== this.config.verifyClaudeProviderId || child.model !== call.arguments?.target?.model) throw new Error('Codex native evidence lacks one matching Claude child');
       const childPath = c.stdout + '.claude-child.jsonl', childRaw = childPath + '.t3-native.log';
-      const childLog = await nativeMessages(this.config.logsDirectory, { threadId: child.childThreadId, providerId: this.childProviderId }, c.started, 'claude', { native: childPath, raw: childRaw });
+      const childLog = await nativeMessages(this.config.logsDirectory, { threadId: child.childThreadId, providerId: this.config.verifyClaudeProviderId }, c.started, 'claude', { native: childPath, raw: childRaw });
       const options = call.arguments?.target?.options;
       const effort = Array.isArray(options) ? options.find(o => o?.id === 'effort')?.value : options?.effort;
       if (typeof effort !== 'string') throw new Error('Claude child request lacks effort');
-      if (!routes.some(route => route.providerInstanceId === this.childProviderId && route.model === child.model && route.efforts.includes(effort))) throw new Error('Claude child model/effort was absent from the fresh app catalog');
-      validateClaudeLaunch(childLog.native, childLog.launches, child.model, owned[1]!.entry.config.binaryPath, effort);
+      if (!routes.some(route => route.providerInstanceId === this.config.verifyClaudeProviderId && route.model === child.model && route.efforts.includes(effort))) throw new Error('Claude child model/effort was absent from the fresh app catalog');
+      validateClaudeLaunch(childLog.native, childLog.launches, child.model, this.launcher('claude'), effort);
       validateClaudePrompt(childLog.prompts, call.arguments?.task);
       await parseClaudeEvidence(childLog.native, { pluginRoot: c.pluginRoot, workspace: c.workspace, started: c.started, model: child.model, writePolicy: c.writePolicy });
       const terminal = childLog.native.trim().split('\n').map(line => JSON.parse(line)).find(e => e.type === 'result');
       if (terminal?.result?.trim() !== 'PONG') throw new Error('Claude native child did not return PONG');
       evidence.push(childPath, childRaw);
     }
-    await this.cleanup();
     return { evidence, prompt: request.task, model: request.target.model, routes };
   }
 }

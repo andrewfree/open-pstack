@@ -22,7 +22,7 @@ For setup only, snapshot `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/pstack-models.md` 
 
 ## Private evidence and cleanup
 
-Use a fresh external mode-0700 run root. Retain raw transcripts, artifacts, receipts, and restoration results privately through merge. Keep each temporary T3 provider until its owned request is terminal and its binding/native evidence has been retained; then remove only provider entries whose full config still matches the run's recorded entry. Preserve evidence if cleanup cannot safely complete. Never remove unrelated settings or kill unrelated processes. Removing the Codex run home removes its auth symlink, never its target file.
+Use a fresh external mode-0700 run root. Retain raw transcripts, artifacts, receipts, and restoration results privately through merge. Runs never edit T3 settings. Restore the pass-through launchers after each case and again at cleanup, and retain each case's launch lines with the binding and native evidence. Preserve evidence if cleanup cannot safely complete. Never kill unrelated processes. Removing the Codex run home removes its auth symlink, never its target file; cleanup keeps the home while T3's Codex app-server from this run still runs.
 
 After merge, archive retained evidence and let the operator delete only the named run root. Never recursively delete an operator directory.
 
@@ -34,4 +34,4 @@ Before preparation and after cleanup, retain digests of daily Claude settings, p
 
 ## Interrupted app requests
 
-If interrupted after `delegate_task`, use the captured task id to check only that request with `task_status`. Wait for that task, or cancel only that task if cancellation is available and needed, before removing its temporary provider or run-owned Codex home. The pending-request guard preserves those entries until a validated terminal receipt exists. Do not cancel unrelated or pre-existing tasks. Keep the request, task result, native log, and provider binding in the private evidence root even when the case fails.
+If interrupted after `delegate_task`, use the captured task id to check only that request with `task_status`. Wait for that task, or cancel only that task if cancellation is available and needed, before removing its run-owned Codex home. The pending-request guard preserves those entries until a validated terminal receipt exists. Do not cancel unrelated or pre-existing tasks. Keep the request, task result, native log, launch lines, and binding in the private evidence root even when the case fails.

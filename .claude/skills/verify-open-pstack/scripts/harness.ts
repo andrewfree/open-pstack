@@ -64,7 +64,9 @@ export class MacDriver implements Driver {
     if (this.setup) await restoreSetup(this.setup);
     if (this.restorationFailed) throw new Error('Setup restoration failed; publication forbidden');
     await this.app?.cleanup();
-    for (const home of this.codexHomes) await removeCodexHome(home);
+    const liveServers = await this.app?.liveCodexServers() ?? [];
+    if (liveServers.length) console.log(`Keeping the run-owned Codex home while T3's verification app-server (pid ${liveServers.join(', ')}) still uses it; T3 releases idle app-servers after about 30 minutes.`);
+    else for (const home of this.codexHomes) await removeCodexHome(home);
     this.codexHomes = [];
     if (this.daily) {
       const after = await captureDailyState(this.daily.paths);
@@ -78,6 +80,7 @@ export class MacDriver implements Driver {
   async prepare(receipt: Receipt): Promise<Installation[]> {
     const harnesses = requiredHarnesses(receipt);
     assertNativeConsumers(harnesses, Boolean(this.app));
+    await this.app?.prepare();
     const root = receipt.artifactRoot;
     const paths = dailyStatePaths(this.app?.settingsPath);
     this.daily = { paths, before: await captureDailyState(paths), root };

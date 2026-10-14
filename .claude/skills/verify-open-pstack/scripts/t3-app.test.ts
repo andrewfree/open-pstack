@@ -1,9 +1,9 @@
 import { afterEach, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { save } from './io.ts';
-import { capabilityRoutes, nativeMessages, T3App, t3Config, validateAppReply, validateAppTerminalReply, validateClaudeLaunch, validateClaudePrompt, validateProviderMutationReply, type AppCase, type ProviderMutationRequest } from './t3-app.ts';
+import { capabilityRoutes, launcherScript, nativeMessages, T3App, t3Config, validateAppReply, validateAppTerminalReply, validateClaudeLaunch, validateClaudePrompt, type AppCase } from './t3-app.ts';
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -62,13 +62,42 @@ test('fails closed when only summary or old native evidence exists', async () =>
   await writeFile(join(root, 'events.colliding.log'), 'The candidate worked.\n');
   await expect(nativeMessages(root, { providerId: 'candidate', threadId: 'child' }, started)).rejects.toThrow('unavailable');
   await writeFile(join(root, 'events.colliding.log'), native('candidate', 'child', '2026-10-13T00:00:00Z', { id: 1 }));
-  await expect(nativeMessages(root, { providerId: 'candidate', threadId: 'child' }, started)).rejects.toThrow('predates');
+  await expect(nativeMessages(root, { providerId: 'candidate', threadId: 'child' }, started)).rejects.toThrow('unavailable');
+});
+test('a permanent Codex instance keeps only this case window and still rejects a second thread in it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 't3-window-')); roots.push(root);
+  const codex = (thread: string, at: string, id: string, method = 'turn/started') => native('verify-codex', '', at, { id, method, params: { threadId: thread } }, 'codex');
+  await writeFile(join(root, 'events.shared.log'), '[2026-10-13T23:58:00Z] NTIVE: {"providerSessionId":"provider-session:provider-instance:verify-codex:shared",truncated\n'
+    + codex('earlier-case', '2026-10-13T23:59:00Z', 'old') + codex('this-case', '2026-10-14T00:00:03Z', 'new'));
+  const found = await nativeMessages(root, { providerId: 'verify-codex', threadId: 'child' }, started, 'codex');
+  expect(found.native.trim().split('\n').map(line => JSON.parse(line).id)).toEqual(['new']);
+  expect(found.raw).not.toContain('earlier-case');
+  await writeFile(join(root, 'events.shared.log'), codex('this-case', '2026-10-14T00:00:03Z', 'new') + codex('earlier-case', '2026-10-14T00:00:04Z', 'idle teardown', 'thread/status/changed')
+    + native('verify-codex', '', '2026-10-14T00:00:05Z', { id: 'no thread', method: 'account/updated' }, 'codex'));
+  expect((await nativeMessages(root, { providerId: 'verify-codex', threadId: 'child' }, started, 'codex')).native.trim().split('\n').map(line => JSON.parse(line).id)).toEqual(['new', 'no thread']);
+  await writeFile(join(root, 'events.shared.log'), codex('this-case', '2026-10-14T00:00:03Z', 'new') + codex('intruder', '2026-10-14T00:00:04Z', 'other', 'thread/started'));
+  await expect(nativeMessages(root, { providerId: 'verify-codex', threadId: 'child' }, started, 'codex')).rejects.toThrow('extra thread');
+});
+test('an earlier Claude thread torn down during the case is ignored, but a second opening still fails', async () => {
+  const root = await mkdtemp(join(tmpdir(), 't3-teardown-')); roots.push(root);
+  const outgoing = (thread: string, payload: object) => `[2026-10-14T00:00:03Z] NTIVE: ${JSON.stringify({ provider: 'claudeAgent', protocol: 'claude-agent-sdk.query',
+    providerSessionId: `provider-session:provider-instance:verify-claude:thread:${thread}:sdk`, event: { direction: 'outgoing', stage: 'decoded', payload } })}\n`;
+  const opening = native('verify-claude', 'child', '2026-10-14T00:00:02Z', JSON.parse(init));
+  await writeFile(join(root, 'events.claude.log'), opening + outgoing('earlier-case', { type: 'query.close' }));
+  expect((await nativeMessages(root, { providerId: 'verify-claude', threadId: 'child' }, started)).native).toContain('sdk-session');
+  await writeFile(join(root, 'events.claude.log'), opening + outgoing('intruder', { type: 'query.open', options: {} }));
+  await expect(nativeMessages(root, { providerId: 'verify-claude', threadId: 'child' }, started)).rejects.toThrow('extra thread');
 });
 test('requires explicit app routes and discovered absolute state paths', () => {
-  const config = { parentThreadId: 'parent', baseProviderId: 'claude', model: 'haiku', codexProviderId: 'codex', codexModel: 'luna', runnerClaudeModel: 'opus', settingsPath: '/app/settings.json', logsDirectory: '/app/logs' };
+  const config = { parentThreadId: 'parent', baseProviderId: 'claude', model: 'haiku', codexProviderId: 'codex', codexModel: 'luna', runnerClaudeModel: 'opus',
+    verifyClaudeProviderId: 'verify-claude', verifyCodexProviderId: 'verify-codex', launcherDirectory: '/state/launchers', settingsPath: '/app/settings.json', logsDirectory: '/app/logs' };
   expect(t3Config(config)).toEqual(config);
   expect(() => t3Config({ ...config, settingsPath: 'relative' })).toThrow();
+  expect(() => t3Config({ ...config, launcherDirectory: 'launchers' })).toThrow('launcherDirectory');
   expect(() => t3Config({ ...config, codexProviderId: '' })).toThrow();
+  expect(() => t3Config({ ...config, verifyCodexProviderId: '' })).toThrow();
+  expect(() => t3Config({ ...config, verifyClaudeProviderId: 'claude' })).toThrow('must differ');
+  expect(() => t3Config({ ...config, verifyCodexProviderId: 'verify-claude' })).toThrow('must differ');
 });
 
 function capabilities() {
@@ -102,32 +131,11 @@ test('requires an app query launch matching the native init and selected binary/
   expect(() => validateClaudeLaunch(init, launch(), 'haiku', '/bin/other')).toThrow();
   const wrong = launch(); wrong[0]!.options.cwd = '/candidate';
   expect(() => validateClaudeLaunch(init, wrong, 'haiku', '/bin/claude')).toThrow();
+  const plain = launch(); plain[0]!.options.hasExtraArgs = false;
+  expect(() => validateClaudeLaunch(init, plain, 'haiku', '/bin/claude')).not.toThrow();
 });
 
-function mutationRequest(operation: 'create' | 'remove' = 'create'): ProviderMutationRequest {
-  const entry = { driver: 'claudeAgent', displayName: 'Test owned provider', enabled: true,
-    config: { binaryPath: '/bin/claude', homePath: '', launchArgs: '--strict-mcp-config' },
-    environment: [{ name: 'DO_NOT_TRACK', value: '1', sensitive: false }] } as const;
-  return { id: 'mutation-id', parentThreadId: 'parent', tool: 't3_provider_instance_update', responsePath: '/private/evidence/provider-response.json',
-    arguments: { mutation: operation === 'create' ? { operation, instanceId: 'owned', instance: { ...entry, environment: [...entry.environment] } }
-      : { operation, instanceId: 'owned', expectedInstance: { ...entry, environment: [...entry.environment] } } } };
-}
-function mutationReply(request: ProviderMutationRequest) {
-  return { requestId: request.id, result: { instanceId: request.arguments.mutation.instanceId, operation: request.arguments.mutation.operation, updated: true } };
-}
-test('accepts only an exact provider tool result bound to its mutation request', () => {
-  for (const operation of ['create', 'remove'] as const) {
-    const request = mutationRequest(operation);
-    expect(() => validateProviderMutationReply(request, mutationReply(request))).not.toThrow();
-    for (const result of [null, {}, { requestId: 'other', result: mutationReply(request).result },
-      { requestId: request.id, result: { ...mutationReply(request).result, instanceId: 'daily' } },
-      { requestId: request.id, result: { ...mutationReply(request).result, operation: operation === 'create' ? 'remove' : 'create' } },
-      { requestId: request.id, result: { ...mutationReply(request).result, updated: false } },
-      { requestId: request.id, result: { ...mutationReply(request).result, settings: {} } },
-      { requestId: request.id, error: 'Tool is unavailable' }]) expect(() => validateProviderMutationReply(request, result)).toThrow('exact app tool receipt');
-  }
-});
-test('failed and cancelled original tasks allow cleanup only after strong terminal binding', () => {
+test('failed and cancelled original tasks are bound before their status is reported', () => {
   for (const status of ['failed', 'cancelled', 'interrupted'] as const) {
     const r = reply(); r.status.status = status; r.status.latestTerminalStatus = status;
     r.activity.thread.status = status; r.activity.recentRuns[0]!.status = status;
@@ -139,12 +147,12 @@ test('failed and cancelled original tasks allow cleanup only after strong termin
 });
 test('rejects extra T3 threads and preserves raw records before rejecting them', async () => {
   const root = await mkdtemp(join(tmpdir(), 't3-threads-')); roots.push(root);
-  await writeFile(join(root, 'events.provider.log'), native('candidate', 'child', '2026-10-14T00:00:03Z', { id: 1 })
-    + native('candidate', 'other-child', '2026-10-14T00:00:03Z', { id: 2 }));
+  await writeFile(join(root, 'events.provider.log'), native('candidate', 'child', '2026-10-14T00:00:03Z', { id: 1, type: 'system', subtype: 'init' })
+    + native('candidate', 'other-child', '2026-10-14T00:00:03Z', { id: 2, type: 'system', subtype: 'init' }));
   const raw = join(root, 'retained.log'), output = join(root, 'retained.jsonl');
   await expect(nativeMessages(root, { providerId: 'candidate', threadId: 'child' }, started, 'claude', { raw, native: output })).rejects.toThrow('extra thread');
   expect(await readFile(raw, 'utf8')).toContain('other-child');
-  expect(await readFile(output, 'utf8')).toBe('{"id":1}\n');
+  expect(await readFile(output, 'utf8')).toBe('{"id":1,"type":"system","subtype":"init"}\n');
 });
 test('requires exactly the logged native Claude user prompt, including the app test wrapper', () => {
   const offer = (text: unknown) => [{ type: 'prompt.offer', message: { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: text } } }];
@@ -169,46 +177,58 @@ test('keeps every eligible nested Claude model and effort from the fresh catalog
   ]);
 });
 
+test('a launcher records itself, exports the case environment and appends case arguments after T3 arguments', async () => {
+  const root = await mkdtemp(join(tmpdir(), 't3-launcher-')); roots.push(root);
+  const real = join(root, 'real'), launcher = join(root, 'launcher'), receipt = join(root, 'launches.log');
+  await writeFile(real, `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(join(root, 'args'))}\nprintf '%s\\n' "$PSTACK_PROBE" > ${JSON.stringify(join(root, 'env'))}\n`, { mode: 0o700 });
+  await writeFile(launcher, launcherScript({ real, env: { PSTACK_PROBE: "it's quoted" }, args: ['--setting-sources', '', '--plugin-dir', '/plugin dir'], receipt: { path: receipt, label: 'case claude' } }), { mode: 0o700 });
+  const child = Bun.spawn([launcher, '--model', 'opus'], { stdout: 'ignore', stderr: 'ignore' });
+  expect(await child.exited).toBe(0);
+  expect(await readFile(join(root, 'args'), 'utf8')).toBe('--model\nopus\n--setting-sources\n\n--plugin-dir\n/plugin dir\n');
+  expect(await readFile(join(root, 'env'), 'utf8')).toBe("it's quoted\n");
+  expect(await readFile(receipt, 'utf8')).toBe(`case claude ${child.pid}\n`);
+  expect(launcherScript({ real })).toBe(`#!/bin/sh\n# pstack-verify launcher\nexec '${real}' "$@"\n`);
+  expect(() => launcherScript({ real, env: { 'BAD NAME': 'x' } })).toThrow('environment name');
+});
+
 async function fakeApp() {
-  const root = await mkdtemp(join(tmpdir(), 't3-mutations-')); roots.push(root);
-  const settingsPath = join(root, 'settings.json'), logsDirectory = join(root, 'logs');
+  const root = await mkdtemp(join(tmpdir(), 't3-launchers-')); roots.push(root);
+  const settingsPath = join(root, 'settings.json'), logsDirectory = join(root, 'logs'), launcherDirectory = join(root, 'launchers');
   await mkdir(logsDirectory);
   const settings = { uiPreference: 'original', providerInstances: {
-    claude: { driver: 'claudeAgent', enabled: true, config: { binaryPath: '/bin/claude', homePath: '' }, environment: [] },
-    codex: { driver: 'codex', enabled: true, config: { binaryPath: '/bin/codex', homePath: '' }, environment: [] },
+    claude: { driver: 'claudeAgent', enabled: true, config: { binaryPath: '/usr/bin/true', homePath: '' }, environment: [] },
+    codex: { driver: 'codex', enabled: true, config: { binaryPath: '/usr/bin/true', homePath: '' }, environment: [] },
+    verify_claude: { driver: 'claudeAgent', enabled: true, config: { binaryPath: join(launcherDirectory, 'claude'), homePath: '' }, environment: [] },
+    verify_codex: { driver: 'codex', enabled: true, config: { binaryPath: join(launcherDirectory, 'codex'), homePath: '' }, environment: [] },
   } };
   await writeFile(settingsPath, JSON.stringify(settings));
-  const config = { parentThreadId: 'parent', baseProviderId: 'claude', model: 'haiku', codexProviderId: 'codex', codexModel: 'luna', runnerClaudeModel: 'opus', settingsPath, logsDirectory };
+  const config = { parentThreadId: 'parent', baseProviderId: 'claude', model: 'haiku', codexProviderId: 'codex', codexModel: 'luna', runnerClaudeModel: 'opus',
+    verifyClaudeProviderId: 'verify_claude', verifyCodexProviderId: 'verify_codex', launcherDirectory, settingsPath, logsDirectory };
   const app = new T3App(config, root);
   const c: AppCase = { harness: 'claude', pluginRoot: join(root, 'plugin'), workspace: join(root, 'candidate'), fixture: join(root, 'fixture'), prompt: 'Test a pinned candidate skill.',
     env: { HOME: root, USER: 'operator', LOGNAME: 'operator', CODEX_HOME: join(root, 'codex'), GIT_CONFIG_KEY_0: 'credential.helper', GIT_CONFIG_VALUE_0: '' },
     stdout: join(root, 'stdout.jsonl'), stderr: join(root, 'stderr'), started };
-  return { root, settingsPath, logsDirectory, app, c };
+  return { root, settingsPath, logsDirectory, launcherDirectory, app, c, config };
+}
+async function preparedApp() {
+  const a = await fakeApp(); await a.app.prepare(); return a;
 }
 async function json(path: string): Promise<any> { return JSON.parse(await readFile(path, 'utf8')); }
-async function pending(root: string, name: string, previousId?: string): Promise<any> {
+async function pending(root: string, previousId?: string): Promise<any> {
   for (let i = 0; i < 600; i++) {
-    try { const value = await json(join(root, 't3-app', name)); if (value.id !== previousId) return value; }
+    try { const value = await json(join(root, 't3-app', 'pending.json')); if (value.id !== previousId) return value; }
     catch (error) { if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error; }
     await Bun.sleep(5);
   }
-  throw new Error(`Test coordinator did not receive ${name}`);
+  throw new Error('Test coordinator did not receive pending.json');
 }
-async function performMutation(settingsPath: string, request: ProviderMutationRequest) {
-  const settings = await json(settingsPath), mutation = request.arguments.mutation;
-  if (mutation.operation === 'create') {
-    expect(settings.providerInstances[mutation.instanceId]).toBeUndefined();
-    settings.providerInstances[mutation.instanceId] = mutation.instance;
-  } else {
-    expect(settings.providerInstances[mutation.instanceId]).toEqual(mutation.expectedInstance);
-    delete settings.providerInstances[mutation.instanceId];
-  }
-  settings.uiPreference = 'concurrent operator edit';
-  await writeFile(settingsPath, JSON.stringify(settings));
-  await save(request.responsePath, mutationReply(request));
+async function spawnLauncher(a: Awaited<ReturnType<typeof fakeApp>>, driver: 'claude' | 'codex') {
+  expect(await Bun.spawn([join(a.launcherDirectory, driver), '--version'], { stdout: 'ignore', stderr: 'ignore' }).exited).toBe(0);
 }
-async function answerCase(app: Awaited<ReturnType<typeof fakeApp>>, terminal = 'completed', validLaunch = true) {
-  const request = await pending(app.root, 'pending.json');
+async function answerCase(a: Awaited<ReturnType<typeof fakeApp>>, { terminal = 'completed', validLaunch = true, launched = ['claude'] as ('claude' | 'codex')[], previousId = undefined as string | undefined,
+  codexEvent = { id: 'codex-native-result' } as object, runnerCatalog = false } = {}) {
+  const request = await pending(a.root, previousId);
+  for (const driver of launched) await spawnLauncher(a, driver);
   const r = reply(); r.requestId = request.id;
   r.status.providerInstanceId = request.target.providerInstanceId; r.status.model = request.target.model;
   r.status.status = terminal; r.status.latestTerminalStatus = terminal;
@@ -217,164 +237,168 @@ async function answerCase(app: Awaited<ReturnType<typeof fakeApp>>, terminal = '
   r.activity.items[0]!.text = request.task;
   const outgoing = (payload: object) => `[2026-10-14T00:00:01Z] NTIVE: ${JSON.stringify({ provider: 'claudeAgent', protocol: 'claude-agent-sdk.query',
     providerSessionId: `provider-session:provider-instance:${request.target.providerInstanceId}:thread:child:sdk`, event: { direction: 'outgoing', stage: 'decoded', payload } })}\n`;
-  const claudeLog = outgoing({ type: 'query.open', options: { ...launch()[0]!.options, model: validLaunch ? request.target.model : 'wrong-model' } })
+  const claudeLog = outgoing({ type: 'query.open', options: { ...launch()[0]!.options, pathToClaudeCodeExecutable: join(a.launcherDirectory, 'claude'), model: validLaunch ? request.target.model : 'wrong-model' } })
     + outgoing({ type: 'prompt.offer', message: { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: request.task } } })
     + native(request.target.providerInstanceId, 'child', '2026-10-14T00:00:02Z', JSON.parse(init));
-  await writeFile(join(app.logsDirectory, 'events.case.log'), app.c.harness === 'claude' ? claudeLog : native(request.target.providerInstanceId, 'child', '2026-10-14T00:00:02Z', { id: 'codex-native-result' }, 'codex'));
+  await writeFile(join(a.logsDirectory, 'events.case.log'), a.c.harness === 'claude' ? claudeLog : native(request.target.providerInstanceId, 'child', '2026-10-14T00:00:02Z', codexEvent, 'codex'));
   await save(request.responsePath, { ...r, capabilities: { capturedAt: '2026-10-14T00:00:00.500Z', result: { parentThreadId: 'parent', providers: [
     { providerInstanceId: request.target.providerInstanceId, canRunChildTask: true, models: [{ id: request.target.model, options: [] }] },
+    ...runnerCatalog ? [{ providerInstanceId: 'verify_claude', canRunChildTask: true, models: [{ id: 'opus', options: [{ id: 'effort', options: [{ id: 'max' }] }] }] }] : [],
   ] } } });
   return request;
 }
-test('sequential cases register and conditionally remove via app API, preserving concurrent UI edits', async () => {
-  const a = await fakeApp();
+const idle = (a: Awaited<ReturnType<typeof fakeApp>>) => Promise.all(['claude', 'codex'].map(driver => readFile(join(a.launcherDirectory, driver), 'utf8')));
+const passThrough = [launcherScript({ real: '/usr/bin/true' }), launcherScript({ real: '/usr/bin/true' })];
+
+test('sequential cases arm candidate launchers and restore pass-through without editing T3 settings', async () => {
+  const a = await fakeApp(), before = await readFile(a.settingsPath, 'utf8');
+  await expect(a.app.record(a.c)).rejects.toThrow('Prepare the T3 verification launchers');
+  await a.app.prepare();
+  expect(await idle(a)).toEqual(passThrough);
+  const evidence: Record<string, string> = {};
   expect(a.app.settingsPath).toBe(a.settingsPath);
-  expect(await a.app.claudeBinaryPath()).toBe('/bin/claude');
+  expect(await a.app.claudeBinaryPath()).toBe('/usr/bin/true');
+  let previous: string | undefined;
   for (let i = 0; i < 2; i++) {
     const work = a.app.record({ ...a.c, stdout: join(a.root, `stdout-${i}.jsonl`), stderr: join(a.root, `stderr-${i}`) });
-    const create: ProviderMutationRequest = await pending(a.root, 'provider-pending.json');
-    expect(create.tool).toBe('t3_provider_instance_update');
-    expect(create.parentThreadId).toBe('parent');
-    expect(create.arguments.mutation.operation).toBe('create');
-    const ownership = await json(join(a.root, 't3-app', 'ownership.json'));
-    expect(ownership.providers[0].entry).toEqual(create.arguments.mutation.operation === 'create' ? create.arguments.mutation.instance : undefined);
-    expect(ownership.providers[0].entry.environment.every((env: any) => env.sensitive === false)).toBe(true);
-    for (const name of ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN']) {
-      expect(ownership.providers[0].entry.environment).toContainEqual({ name, value: '', sensitive: false });
-    }
-    expect(ownership.providers[0].entry.environment).toContainEqual({ name: 'CLAUDE_CODE_DISABLE_AUTO_MEMORY', value: '1', sensitive: false });
-    await performMutation(a.settingsPath, create);
-    await answerCase(a);
-    const remove: ProviderMutationRequest = await pending(a.root, 'provider-pending.json', create.id);
-    expect(remove.arguments.mutation.operation).toBe('remove');
-    if (remove.arguments.mutation.operation === 'remove' && create.arguments.mutation.operation === 'create') expect(remove.arguments.mutation.expectedInstance).toEqual(create.arguments.mutation.instance);
-    await performMutation(a.settingsPath, remove);
-    expect((await work).model).toBe('haiku');
+    const request = await pending(a.root, previous);
+    expect(request.target.providerInstanceId).toBe('verify_claude');
+    const armed = await readFile(join(a.launcherDirectory, 'claude'), 'utf8');
+    for (const part of [`'--plugin-dir' '${a.c.pluginRoot}' '--strict-mcp-config'`, `'${request.id} claude'`, "export CLAUDE_CODE_DISABLE_AUTO_MEMORY='1'", "export GH_TOKEN=''", "export DO_NOT_TRACK='1'"]) expect(armed).toContain(part);
+    expect(await json(join(a.root, 't3-app', 'state.json'))).toEqual({ pendingCase: request.id, armedLaunchers: true });
+    await answerCase(a, { previousId: previous });
+    const result = await work;
+    expect(result.model).toBe('haiku');
+    expect(result.evidence.some(path => path.endsWith('launches.log') && !path.endsWith('.jsonl.launches.log'))).toBe(false);
+    for (const path of result.evidence) evidence[path] = await readFile(path, 'utf8');
+    expect(await idle(a)).toEqual(passThrough);
+    previous = request.id;
   }
+  for (const [path, bytes] of Object.entries(evidence)) expect(await readFile(path, 'utf8')).toBe(bytes);
+  expect(await readdir(a.launcherDirectory)).toContain('lock.json');
   await a.app.cleanup();
-  expect((await json(a.settingsPath)).uiPreference).toBe('concurrent operator edit');
-  expect(Object.keys((await json(a.settingsPath)).providerInstances).sort()).toEqual(['claude', 'codex']);
-  expect((await json(join(a.root, 't3-app', 'ownership.json'))).providers).toEqual([]);
-  expect((await readdir(join(a.root, 't3-app'))).filter(name => name.endsWith('.provider-request.json'))).toHaveLength(4);
+  expect(await readdir(a.launcherDirectory)).not.toContain('lock.json');
+  expect(await readFile(a.settingsPath, 'utf8')).toBe(before);
+  expect((await readFile(join(a.root, 't3-app', 'launches.log'), 'utf8')).trim().split('\n')).toHaveLength(2);
+  expect(await json(join(a.root, 't3-app', 'state.json'))).toEqual({ pendingCase: null, armedLaunchers: false });
 }, 15000);
-test('missing provider tool has no settings-file fallback and blocks ambiguous cleanup', async () => {
-  const a = await fakeApp(), before = await readFile(a.settingsPath, 'utf8');
-  const work = a.app.record(a.c); const result = work.catch(error => error);
-  const request = await pending(a.root, 'provider-pending.json');
-  await writeFile(request.responsePath, JSON.stringify({ requestId: request.id, error: 'Unknown tool t3_provider_instance_update' }));
-  expect((await result).message).toContain('exact app tool receipt');
-  expect(await readFile(a.settingsPath, 'utf8')).toBe(before);
-  await expect(a.app.cleanup()).rejects.toThrow('no validated receipt');
-  expect((await json(join(a.root, 't3-app', 'ownership.json'))).pendingMutation.id).toBe(request.id);
+test('a session that bypassed the armed launcher fails after native evidence is retained', async () => {
+  const a = await preparedApp(); const result = a.app.record(a.c).catch(error => error);
+  await answerCase(a, { launched: [] });
+  expect((await result).message).toContain("No Claude CLI started through this case's launcher");
+  expect(await readFile(a.c.stdout, 'utf8')).toContain('sdk-session');
+  expect(await idle(a)).toEqual(passThrough);
 });
-test('a valid metadata receipt with mismatching settings readback retains pending ownership', async () => {
-  const a = await fakeApp(), before = await readFile(a.settingsPath, 'utf8');
-  const result = a.app.record(a.c).catch(error => error);
-  const request = await pending(a.root, 'provider-pending.json');
-  await save(request.responsePath, mutationReply(request));
-  expect((await result).message).toContain('readback mismatch');
-  expect(await readFile(a.settingsPath, 'utf8')).toBe(before);
-  await expect(a.app.cleanup()).rejects.toThrow('no validated receipt');
+test('missing or edited verification instances and credential environment fail before any launcher is armed', async () => {
+  const a = await fakeApp(), settings = await json(a.settingsPath);
+  for (const edit of [(s: any) => { delete s.providerInstances.verify_codex; }, (s: any) => { s.providerInstances.verify_claude.config.launchArgs = '--plugin-dir /daily'; },
+    (s: any) => { s.providerInstances.verify_claude.config.binaryPath = '/usr/bin/true'; }, (s: any) => { s.providerInstances.verify_codex.environment = [{ name: 'OPENAI_API_KEY', value: 'x' }]; },
+    (s: any) => { s.providerInstances.verify_claude.environment = [{ name: 'CLAUDE_CONFIG_DIR', value: '/elsewhere', sensitive: false }]; }]) {
+    const changed = structuredClone(settings); edit(changed); await writeFile(a.settingsPath, JSON.stringify(changed));
+    await expect(a.app.prepare()).rejects.toThrow('Add T3 provider instance');
+    expect(await idle(a)).toEqual(passThrough);
+    await expect(a.app.record(a.c)).rejects.toThrow('Add T3 provider instance');
+  }
+  await writeFile(a.settingsPath, JSON.stringify(settings));
+  await a.app.prepare();
+  await expect(a.app.record({ ...a.c, env: { ...a.c.env, PRIVATE_TOKEN: 'never-written' } })).rejects.toThrow('credential values');
+  expect(await readdir(join(a.root, 't3-app'))).not.toContain('pending.json');
+  expect(await idle(a)).toEqual(passThrough);
 });
-test('partial Codex registration retains the created provider and both ownership intents', async () => {
-  const a = await fakeApp();
-  const result = a.app.record({ ...a.c, harness: 'codex' }).catch(error => error);
-  const first = await pending(a.root, 'provider-pending.json');
-  await performMutation(a.settingsPath, first);
-  const second = await pending(a.root, 'provider-pending.json', first.id);
-  await writeFile(second.responsePath, JSON.stringify({ requestId: second.id, error: 'Rejected by app service' }));
-  expect((await result).message).toContain('exact app tool receipt');
-  const ownership = await json(join(a.root, 't3-app', 'ownership.json'));
-  expect(ownership.providers).toHaveLength(2);
-  expect((await json(a.settingsPath)).providerInstances[first.arguments.mutation.instanceId]).toEqual(first.arguments.mutation.instance);
-  await expect(a.app.cleanup()).rejects.toThrow('no validated receipt');
-});
-test('unbound task replies retain provider and case pending guard', async () => {
-  const a = await fakeApp(); const result = a.app.record(a.c).catch(error => error);
-  const create = await pending(a.root, 'provider-pending.json'); await performMutation(a.settingsPath, create);
-  const request = await pending(a.root, 'pending.json');
+test('unbound task replies keep the case pending guard but disarm the launchers', async () => {
+  const a = await preparedApp(); const result = a.app.record(a.c).catch(error => error);
+  const request = await pending(a.root);
   await writeFile(request.responsePath, JSON.stringify({ requestId: 'other-case' }));
   expect((await result).message).toContain('did not complete');
+  expect(await idle(a)).toEqual(passThrough);
   await expect(a.app.cleanup()).rejects.toThrow('no validated terminal receipt');
-  expect((await json(a.settingsPath)).providerInstances[create.arguments.mutation.instanceId]).toBeDefined();
 });
-test('failed original tasks permit only exact conditional cleanup', async () => {
-  const a = await fakeApp(); const result = a.app.record(a.c).catch(error => error);
-  const create = await pending(a.root, 'provider-pending.json'); await performMutation(a.settingsPath, create);
-  await answerCase(a, 'failed');
+test('failed original tasks disarm and report their bound terminal status', async () => {
+  const a = await preparedApp(); const result = a.app.record(a.c).catch(error => error);
+  await answerCase(a, { terminal: 'failed' });
   expect((await result).message).toContain('ended failed');
-  const cleanup = a.app.cleanup();
-  const remove = await pending(a.root, 'provider-pending.json', create.id);
-  await performMutation(a.settingsPath, remove); await cleanup;
-  expect(Object.keys((await json(a.settingsPath)).providerInstances).sort()).toEqual(['claude', 'codex']);
+  expect(await idle(a)).toEqual(passThrough);
+  await a.app.cleanup();
 });
-test('launch validation failure preserves native JSONL and raw logs before cleanup', async () => {
-  const a = await fakeApp(); const result = a.app.record(a.c).catch(error => error);
-  const create = await pending(a.root, 'provider-pending.json'); await performMutation(a.settingsPath, create);
-  await answerCase(a, 'completed', false);
+test('launch validation failure preserves native JSONL and raw logs', async () => {
+  const a = await preparedApp(); const result = a.app.record(a.c).catch(error => error);
+  await answerCase(a, { validLaunch: false });
   expect((await result).message).toContain('query launch');
   expect(await readFile(a.c.stdout, 'utf8')).toContain('sdk-session');
   expect(await readFile(a.c.stdout + '.t3-native.log', 'utf8')).toContain('wrong-model');
-  const settings = await json(a.settingsPath); settings.providerInstances[create.arguments.mutation.instanceId].displayName = 'operator changed it';
-  await writeFile(a.settingsPath, JSON.stringify(settings));
-  await expect(a.app.cleanup()).rejects.toThrow('provider changed');
-  expect((await json(a.settingsPath)).providerInstances[create.arguments.mutation.instanceId].displayName).toBe('operator changed it');
 });
-test('leftover providers and credential environment fail before any mutation request', async () => {
-  const a = await fakeApp(), settings = await json(a.settingsPath);
-  settings.providerInstances.pstack_verify_leftover = { credential: 'not-reported' }; await writeFile(a.settingsPath, JSON.stringify(settings));
-  await expect(a.app.record(a.c)).rejects.toThrow('pstack_verify_leftover');
-  expect(await readdir(a.root)).not.toContain('t3-app');
-  delete settings.providerInstances.pstack_verify_leftover; await writeFile(a.settingsPath, JSON.stringify(settings));
-  await expect(a.app.record({ ...a.c, env: { ...a.c.env, PRIVATE_TOKEN: 'never-written' } })).rejects.toThrow('credential values');
-  expect(await readdir(a.root)).not.toContain('t3-app');
-});
-
-test('invalid native timestamps fail closed after raw records are retained', async () => {
-  const root = await mkdtemp(join(tmpdir(), 't3-time-')); roots.push(root);
-  await writeFile(join(root, 'events.invalid.log'), native('candidate', 'child', 'not-a-timestamp', { id: 1 }));
-  const raw = join(root, 'raw.log'), output = join(root, 'native.jsonl');
-  await expect(nativeMessages(root, { providerId: 'candidate', threadId: 'child' }, started, 'claude', { raw, native: output })).rejects.toThrow('timestamp is invalid');
-  expect(await readFile(raw, 'utf8')).toContain('not-a-timestamp');
-  expect(await readFile(output, 'utf8')).toContain('{"id":1}');
-});
-
-test('malformed matching native records survive collection failure', async () => {
-  const root = await mkdtemp(join(tmpdir(), 't3-malformed-')); roots.push(root);
-  const damaged = '[2026-10-14T00:00:02Z] NTIVE: {"providerSessionId":"provider-session:provider-instance:candidate:thread:child:sdk",truncated';
-  await writeFile(join(root, 'events.damaged.log'), damaged + '\n');
-  const raw = join(root, 'raw.log'), output = join(root, 'native.jsonl');
-  await expect(nativeMessages(root, { providerId: 'candidate', threadId: 'child' }, started, 'claude', { raw, native: output })).rejects.toThrow('malformed matching');
-  expect(await readFile(raw, 'utf8')).toContain(damaged);
-});
-
-test('Codex parent and Claude child register and remove sequentially after a bound failed task', async () => {
-  const a = await fakeApp(); a.c.harness = 'codex';
+test('a Codex parent arms both launchers, delegates to the verification Claude instance and needs a Codex launch in this run', async () => {
+  const a = await preparedApp(); a.c.harness = 'codex';
+  expect(a.app.runnerRoute).toEqual({ providerInstanceId: 'verify_claude', model: 'opus' });
+  const delegated = (providerInstanceId: string) => ({ method: 'item/completed', params: { threadId: 'codex-thread', item: { type: 'mcpToolCall', server: 't3-code', tool: 'delegate_task',
+    arguments: { target: { model: 'opus', options: { effort: 'max' } }, task: 'Reply PONG.' }, result: { structuredContent: { childThreadId: 'claude-child', providerInstanceId, model: 'opus' } } } } });
+  let previousId: string | undefined;
+  for (const [launched, child, error] of [[['claude'], 'verify_claude', 'No Codex app-server started'], [['claude', 'codex'], 'claude', 'lacks one matching Claude child'],
+    [['claude', 'codex'], 'verify_claude', 'native evidence unavailable']] as const) {
+    const work = a.app.record({ ...a.c, stdout: join(a.root, `stdout-${child}-${launched.length}.jsonl`), stderr: join(a.root, `stderr-${child}-${launched.length}`) }).catch(e => e);
+    const request = await pending(a.root, previousId);
+    expect(request.target.providerInstanceId).toBe('verify_codex'); expect(request.runnerTarget).toEqual(a.app.runnerRoute);
+    expect(await readFile(join(a.launcherDirectory, 'codex'), 'utf8')).toContain(`export CODEX_HOME='${a.c.env.CODEX_HOME}'`);
+    await answerCase(a, { launched: [...launched], codexEvent: delegated(child), runnerCatalog: true, previousId });
+    expect((await work).message).toContain(error);
+    expect(await idle(a)).toEqual(passThrough);
+    previousId = request.id;
+  }
+}, 15000);
+test('a mid-case settings change cannot leave a launcher armed or hide the case error', async () => {
+  const a = await preparedApp(); a.c.harness = 'codex';
   const result = a.app.record(a.c).catch(error => error);
-  const first = await pending(a.root, 'provider-pending.json'); await performMutation(a.settingsPath, first);
-  const second = await pending(a.root, 'provider-pending.json', first.id); await performMutation(a.settingsPath, second);
-  expect(second.arguments.mutation.instanceId).toBe(a.app.runnerRoute.providerInstanceId);
-  await answerCase(a, 'failed'); expect((await result).message).toContain('ended failed');
-  const cleanup = a.app.cleanup();
-  const removeFirst = await pending(a.root, 'provider-pending.json', second.id); await performMutation(a.settingsPath, removeFirst);
-  const removeSecond = await pending(a.root, 'provider-pending.json', removeFirst.id); await performMutation(a.settingsPath, removeSecond);
-  await cleanup;
-  expect(removeFirst.arguments.mutation.instanceId).toBe(first.arguments.mutation.instanceId);
-  expect(removeSecond.arguments.mutation.instanceId).toBe(second.arguments.mutation.instanceId);
-  expect((await json(join(a.root, 't3-app', 'ownership.json'))).providers).toEqual([]);
-  expect(Object.keys((await json(a.settingsPath)).providerInstances).sort()).toEqual(['claude', 'codex']);
-}, 10000);
-test('an ambiguous removal retains ownership even when the provider appears absent', async () => {
-  const a = await fakeApp(); const result = a.app.record(a.c).catch(error => error);
-  const create = await pending(a.root, 'provider-pending.json'); await performMutation(a.settingsPath, create);
-  await answerCase(a);
-  const remove = await pending(a.root, 'provider-pending.json', create.id);
-  const settings = await json(a.settingsPath); delete settings.providerInstances[remove.arguments.mutation.instanceId];
+  const request = await pending(a.root);
+  const settings = await json(a.settingsPath); settings.providerInstances.codex.enabled = false; await writeFile(a.settingsPath, JSON.stringify(settings));
+  await writeFile(request.responsePath, JSON.stringify({ requestId: 'other-case' }));
+  expect((await result).message).toContain('did not complete');
+  expect(await idle(a)).toEqual(passThrough);
+});
+test('the launcher directory never replaces an operator file, follows a daily binary into itself, or accepts shared write access', async () => {
+  const a = await fakeApp();
+  await mkdir(a.launcherDirectory, { mode: 0o700 });
+  await writeFile(join(a.launcherDirectory, 'claude'), 'operator binary\n', { mode: 0o755 });
+  await expect(a.app.prepare()).rejects.toThrow('not a pstack verification launcher');
+  expect(await readFile(join(a.launcherDirectory, 'claude'), 'utf8')).toBe('operator binary\n');
+  await rm(join(a.launcherDirectory, 'claude'));
+  const settings = await json(a.settingsPath);
+  settings.providerInstances.claude.config.binaryPath = join(a.launcherDirectory, 'codex'); await writeFile(join(a.launcherDirectory, 'codex'), '#!/bin/sh\n', { mode: 0o700 });
   await writeFile(a.settingsPath, JSON.stringify(settings));
-  await save(remove.responsePath, { requestId: 'other-removal', result: mutationReply(remove).result });
-  expect((await result).message).toContain('exact app tool receipt');
-  await expect(a.app.cleanup()).rejects.toThrow('no validated receipt');
-  const ownership = await json(join(a.root, 't3-app', 'ownership.json'));
-  expect(ownership.providers).toHaveLength(1);
-  expect(ownership.pendingMutation.id).toBe(remove.id);
+  await expect(a.app.prepare()).rejects.toThrow('resolves into the launcher directory');
+  settings.providerInstances.claude.config.binaryPath = 'claude'; await writeFile(a.settingsPath, JSON.stringify(settings));
+  await expect(a.app.prepare()).rejects.toThrow('absolute path');
+  await chmod(a.launcherDirectory, 0o770);
+  await expect(a.app.prepare()).rejects.toThrow('not group- or world-writable');
+});
+test('one run at a time holds the launchers, and a stale lock is taken over', async () => {
+  const a = await preparedApp(), other = new T3App(a.config, join(a.root, 'other-run'));
+  await expect(other.prepare()).rejects.toThrow('holds the launchers');
+  await a.app.cleanup();
+  await other.prepare(); await other.cleanup();
+  await writeFile(join(a.launcherDirectory, 'lock.json'), JSON.stringify({ pid: 2 ** 22 + 12345, root: '/gone' }));
+  await other.prepare();
+  expect((await json(join(a.launcherDirectory, 'lock.json'))).root).toBe(join(a.root, 'other-run'));
+});
+test('a Codex app-server still running from a run keeps the next run out until it exits', async () => {
+  const a = await preparedApp();
+  const server = Bun.spawn(['sh', '-c', 'sleep 30; exit 0', 'codex-app-server-stand-in'], { stdout: 'ignore', stderr: 'ignore' });
+  try {
+    await writeFile(join(a.root, 't3-app', 'launches.log'), `case codex ${server.pid}\n`);
+    expect(await a.app.liveCodexServers()).toEqual([server.pid]);
+    await a.app.cleanup();
+    const next = new T3App(a.config, join(a.root, 'next-run'));
+    await expect(next.prepare()).rejects.toThrow(`Codex verification app-server (pid ${server.pid})`);
+    server.kill(); await server.exited;
+    await next.prepare();
+    expect(await readdir(a.launcherDirectory)).not.toContain('codex-servers.json');
+  } finally { server.kill(); }
+});
+test('a case whose launcher cannot be armed reports that failure, not a pending task', async () => {
+  const a = await preparedApp();
+  await rm(join(a.launcherDirectory, 'claude')); await writeFile(join(a.launcherDirectory, 'claude'), 'operator file\n', { mode: 0o755 });
+  await expect(a.app.record(a.c)).rejects.toThrow('not a pstack verification launcher');
+  expect(await readdir(join(a.root, 't3-app'))).not.toContain('pending.json');
+  const cleanup = await a.app.cleanup().catch(error => error);
+  expect(cleanup.message).toContain('not a pstack verification launcher');
+  expect(cleanup.message).not.toContain('no validated terminal receipt');
 });
