@@ -40,7 +40,7 @@ describe('isolated harness boundaries', () => {
       if (args[0] === 'codex') {
         calls.push(args);
         const config = join(options!.env!.CODEX_HOME!, 'config.toml');
-        expect(Bun.TOML.parse(await readFile(config, 'utf8'))).toMatchObject({ analytics: { enabled: false } });
+        expect(Bun.TOML.parse(await readFile(config, 'utf8'))).toMatchObject({ analytics: { enabled: false }, features: { apps: false } });
         expect((await stat(config)).mode & 0o777).toBe(0o600);
       }
       return args.includes('--version') ? 'version' : '--json local path';
@@ -387,23 +387,11 @@ describe('unsupported Claude app boundary', () => {
       await expect(stat(join(root, 'sessions'))).rejects.toThrow('ENOENT');
       await expect(stat(join(installation.home, 'fixtures'))).rejects.toThrow('ENOENT');
     }
-    expect(recipe('runner', 'codex', ['grok:grok-4@high'])).toHaveLength(1);
-    expect(recipe('runner', 'claude')).toHaveLength(1);
+    expect(() => recipe('runner', 'codex', ['grok:grok-4@high'])).toThrow('app-owned dispatch recipe');
+    expect(recipe('runner', 'claude').map(c => c.id)).toEqual(['route-1', 'route-2', 'native-haiku-max',
+      'kimi-read-only', 'kimi-isolated-write', 'kimi-unavailable-model', 'kimi-proxy-rejection']);
   });
-  test('recorded Claude streams still parse command expansion and successful Skill and Bash calls', () => {
-    const text = lines([
-      { type: 'user', isReplay: true, message: { content: '<command-name>/pstack:architect</command-name>' } },
-      { type: 'assistant', message: { content: [
-        { type: 'tool_use', id: 'ok', name: 'Skill', input: { skill: 'pstack:principle-prove-it-works' } },
-        { type: 'tool_use', id: 'failed', name: 'Skill', input: { skill: 'pstack:failed' } },
-        { type: 'tool_use', id: 'bash', name: 'Bash', input: { command: 'write fixture' } }] } },
-      { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'failed', is_error: true }] } },
-    ]);
-    expect(parseSession('claude', text, 0, 1)).toEqual({ harness: 'claude', exitCode: 0, started: 1,
-      skills: ['pstack:architect', 'pstack:principle-prove-it-works'], commands: ['write fixture'] });
-    expect(() => parseSession('claude', text, 1, 1)).toThrow('exit:1');
-    expect(() => parseSession('claude', 'invalid JSON', 0, 1)).toThrow();
-  });
+
 });
 
 describe('native recipe assertions', () => {

@@ -71,7 +71,7 @@ export function isolatedEnv(state: string, _harness?: 'claude' | 'codex'): Recor
 export async function initializeCodexHome(state: string): Promise<void> {
   const home = isolatedEnv(state).CODEX_HOME!;
   await mkdir(home, { recursive: true, mode: 0o700 });
-  await writeFile(join(home, 'config.toml'), '[analytics]\nenabled = false\n', { flag: 'wx', mode: 0o600 });
+  await writeFile(join(home, 'config.toml'), '[analytics]\nenabled = false\n[features]\napps = false\n', { flag: 'wx', mode: 0o600 });
 }
 export async function save(path: string, value: unknown): Promise<void> {
   const json = JSON.stringify(value, null, 2);

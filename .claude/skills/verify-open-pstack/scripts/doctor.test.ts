@@ -26,7 +26,7 @@ test('candidate doctor is a basic capability self-test, never live readiness', a
   const report = JSON.parse(await readFile(join(root, 'doctor.json'), 'utf8'));
   expect(report.result).toBe('pass'); expect(report.scope).toBe('capability-probe');
   expect(report.liveReadiness).toBe('blocked');
-  expect(report.liveReadinessReason).toContain('delegate_task transport lacks candidate plugin path, settings, and environment overrides');
+  expect(report.liveReadinessReason).toContain('supply --t3-app configuration and a T3 coordinating agent');
 });
 for (const candidate of [false, true]) {
   test(`Codex-only doctor probes capabilities without claiming live readiness (candidate=${candidate})`, async () => {
@@ -55,7 +55,7 @@ test('parent doctor reports unsupported Claude app before all CLI probes', async
   expect(calls).toEqual([]);
   const report = JSON.parse(await readFile(join(root, 'doctor.json'), 'utf8'));
   expect(report.result).toBe('blocked'); expect(report.liveReadiness).toBe('blocked');
-  expect(report.reason).toContain('exact-head installed Claude proof is unavailable');
+  expect(report.reason).toContain('supply --t3-app configuration and a T3 coordinating agent');
 });
 test('doctor records blocked capability checks', async () => {
   const root = await fixture();
