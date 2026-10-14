@@ -10,6 +10,7 @@ import { sourceDigest } from './provenance.ts';
 import { evidence, verify } from './verify.ts';
 import { command, freshRoot, isolatedEnv, retainedFile, treeHash, type Command, type Session } from './io.ts';
 import { type Harness, type Installation, type Receipt } from './types.ts';
+import type { T3App } from './t3-app.ts';
 
 const REPO = 'ericlitman/open-pstack';
 const roots: string[] = [];
@@ -462,5 +463,27 @@ describe('native recipe assertions', () => {
     expect(statuses).toEqual(['failure']);
     expect(comments.join('\n')).not.toContain('Observation');
     expect(comments.join('\n')).toContain('FAILED');
+  });
+});
+
+describe('Codex homes kept for a live T3 app-server', () => {
+  async function keptCleanup() {
+    const { installation } = await candidate('codex'), kept: unknown[] = [];
+    const app = { cleanup: async () => {}, liveCodexServers: async () => [4242], keepCodexHomes: async (homes: string[], pids: number[]) => { kept.push({ homes, pids }); } } as unknown as T3App;
+    const driver = new MacDriver(command, undefined, [], app);
+    (driver as unknown as { codexHomes: string[] }).codexHomes = [installation.home];
+    return { driver, kept, home: installation.home };
+  }
+  test('cleanup keeps the home, verifies its auth link and reports the kept home', async () => {
+    const { driver, kept, home } = await keptCleanup();
+    expect(await driver.cleanup()).toContain('Codex home kept');
+    expect(kept).toEqual([{ homes: [home], pids: [4242] }]);
+    expect((await lstat(join(home, '.codex/auth.json'))).isSymbolicLink()).toBe(true);
+  });
+  test('a replaced auth link still forbids publication when the home is kept', async () => {
+    const { driver, kept, home } = await keptCleanup();
+    await rm(join(home, '.codex/auth.json')); await writeFile(join(home, '.codex/auth.json'), 'copied login');
+    await expect(driver.cleanup()).rejects.toThrow('Codex replaced or redirected auth.json');
+    expect(kept).toEqual([]);
   });
 });

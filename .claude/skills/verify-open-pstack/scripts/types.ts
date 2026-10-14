@@ -56,5 +56,6 @@ export interface SessionRecord {
 export interface Driver {
   prepare(receipt: Receipt): Promise<Installation[]>;
   exercise(receipt: Receipt): Promise<Observation[]>;
-  cleanup?(receipt: Receipt): Promise<void>;
+  /** Resolves to a cleanup summary when it differs from the default. */
+  cleanup?(receipt: Receipt): Promise<string | void>;
 }

@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test';
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { save } from './io.ts';
@@ -360,9 +360,10 @@ test('the launcher directory never replaces an operator file, follows a daily bi
   await writeFile(join(a.launcherDirectory, 'claude'), 'operator binary\n', { mode: 0o755 });
   await expect(a.app.prepare()).rejects.toThrow('not a pstack verification launcher');
   expect(await readFile(join(a.launcherDirectory, 'claude'), 'utf8')).toBe('operator binary\n');
+  expect(await readdir(a.launcherDirectory)).toEqual(['claude']);
   await rm(join(a.launcherDirectory, 'claude'));
   const settings = await json(a.settingsPath);
-  settings.providerInstances.claude.config.binaryPath = join(a.launcherDirectory, 'codex'); await writeFile(join(a.launcherDirectory, 'codex'), '#!/bin/sh\n', { mode: 0o700 });
+  settings.providerInstances.claude.config.binaryPath = join(a.launcherDirectory, 'codex'); await writeFile(join(a.launcherDirectory, 'codex'), launcherScript({ real: '/usr/bin/true' }), { mode: 0o700 });
   await writeFile(a.settingsPath, JSON.stringify(settings));
   await expect(a.app.prepare()).rejects.toThrow('resolves into the launcher directory');
   settings.providerInstances.claude.config.binaryPath = 'claude'; await writeFile(a.settingsPath, JSON.stringify(settings));
@@ -378,20 +379,34 @@ test('one run at a time holds the launchers, and a stale lock is taken over', as
   await writeFile(join(a.launcherDirectory, 'lock.json'), JSON.stringify({ pid: 2 ** 22 + 12345, root: '/gone' }));
   await other.prepare();
   expect((await json(join(a.launcherDirectory, 'lock.json'))).root).toBe(join(a.root, 'other-run'));
+  await other.cleanup();
+  await writeFile(join(a.launcherDirectory, 'lock.json'), '');
+  await expect(other.prepare()).rejects.toThrow('lock.json is unreadable');
 });
-test('a Codex app-server still running from a run keeps the next run out until it exits', async () => {
-  const a = await preparedApp();
+test('a Codex app-server still running from a run keeps the next run out, and its kept home is removed once it exits', async () => {
+  const a = await preparedApp(), saved = process.env.CODEX_HOME;
+  const root = await realpath(a.root), daily = join(root, 'daily-codex'), home = join(root, 'run-home');
+  await mkdir(daily); await writeFile(join(daily, 'auth.json'), 'opaque login');
+  await mkdir(join(home, '.codex'), { recursive: true }); await symlink(join(daily, 'auth.json'), join(home, '.codex/auth.json'));
   const server = Bun.spawn(['sh', '-c', 'sleep 30; exit 0', 'codex-app-server-stand-in'], { stdout: 'ignore', stderr: 'ignore' });
+  const shell = Bun.spawn(['sh', '-c', 'sleep 30; exit 0', 'codex-agent-shell'], { stdout: 'ignore', stderr: 'ignore' });
+  process.env.CODEX_HOME = daily;
   try {
-    await writeFile(join(a.root, 't3-app', 'launches.log'), `case codex ${server.pid}\n`);
+    await writeFile(join(a.root, 't3-app', 'launches.log'), `case codex ${server.pid}\ncase codex ${shell.pid}\n`);
     expect(await a.app.liveCodexServers()).toEqual([server.pid]);
     await a.app.cleanup();
+    await a.app.keepCodexHomes([home], [server.pid, shell.pid]);
     const next = new T3App(a.config, join(a.root, 'next-run'));
     await expect(next.prepare()).rejects.toThrow(`Codex verification app-server (pid ${server.pid})`);
     server.kill(); await server.exited;
     await next.prepare();
     expect(await readdir(a.launcherDirectory)).not.toContain('codex-servers.json');
-  } finally { server.kill(); }
+    expect(await readdir(home)).toEqual([]);
+    expect(await readFile(join(daily, 'auth.json'), 'utf8')).toBe('opaque login');
+    await next.cleanup();
+    await writeFile(join(a.launcherDirectory, 'codex-servers.json'), '{');
+    await expect(new T3App(a.config, join(a.root, 'third-run')).prepare()).rejects.toThrow('codex-servers.json is unreadable');
+  } finally { server.kill(); shell.kill(); if (saved === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = saved; }
 });
 test('a case whose launcher cannot be armed reports that failure, not a pending task', async () => {
   const a = await preparedApp();

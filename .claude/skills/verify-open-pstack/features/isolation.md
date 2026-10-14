@@ -9,7 +9,7 @@ Verifier-changing PRs run from their reviewed candidate head, with publisher rev
 ## Candidate process state
 
 - Preserve real `HOME`, `USER`, and `LOGNAME`.
-- With `--t3-app`, Claude sessions use temporary T3 `claudeAgent` providers derived from the selected existing provider's binary and normal app login. Select only the exact candidate plugin for each session. Do not edit daily plugin settings or read/copy credentials. See `t3-app.md` for the session flags and project-skill exception.
+- With `--t3-app`, Claude sessions run on the permanent Claude verification instance, whose armed launcher executes the selected existing provider's binary with the normal app login. Select only the exact candidate plugin for each session. Do not edit daily plugin settings or read/copy credentials. See `t3-app.md` for the session flags and project-skill exception.
 - Codex installs the exact-head marketplace with `codex plugin marketplace add … --ref <sha>` and `codex plugin add` in a run-owned `CODEX_HOME`. Symlink its `auth.json` to the operator's `${CODEX_HOME:-$HOME/.codex}/auth.json`, resolving the daily home before overriding the environment.
 - If the daily home has no `auth.json`, fail closed: this tool needs file-based Codex auth. Do not read credentials, copy them, or start login. Native refresh writes through the symlink to the single existing login file.
 - Keep temporary, GitHub, and fixture state run-owned; disable global/system Git configuration and credential helpers for candidate commands. Provider descendants use the same native-login arrangement, never publisher credentials.
