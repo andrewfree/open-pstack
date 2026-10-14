@@ -15,7 +15,7 @@ export function validateRegistry(value: unknown): Registry {
 
 export function repositoryName(value: string): string {
   if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\/[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(value) || value.endsWith('.git')) throw new Error('Repository must be OWNER/REPO');
-  return value;
+  return value.toLowerCase();
 }
 
 // Only a terminal /** is supported: unknown paths cannot match an accidental broad glob.
@@ -56,7 +56,7 @@ export function classify(files: ChangedFile[], registry: Registry): Selection {
 }
 
 export function newReceipt(repo: string, pr: number, sha: string, base: string, selfTest: boolean, artifactRoot: string, publisherRevision?: string): Receipt {
-  repositoryName(repo);
+  repo = repositoryName(repo);
   if (!Number.isSafeInteger(pr) || pr < 1 || !/^[a-f0-9]{40}$/.test(sha) || !/^[a-f0-9]{40}$/.test(base)) throw new Error('Invalid PR/SHA');
   if (publisherRevision !== undefined && !/^[a-f0-9]{40}$/.test(publisherRevision)) throw new Error('Invalid publisher revision');
   return { schema: 1, repo, pr, sha, base, selfTest, artifactRoot, ...(publisherRevision ? { publisherRevision } : {}), phase: 'resolve',

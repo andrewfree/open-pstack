@@ -2,7 +2,7 @@ import { copyFile, mkdir, readdir, readFile, realpath, stat } from 'node:fs/prom
 import { basename, join } from 'node:path';
 import { recipe, type Fixture } from '../features/recipes.ts';
 import { requiredFeatures, requiredHarnesses } from './core.ts';
-import { command, isolatedEnv, retainedFile, save, session, treeHash, type Command, type Session } from './io.ts';
+import { command, initializeCodexHome, isolatedEnv, retainedFile, save, session, treeHash, type Command, type Session } from './io.ts';
 import { doctor } from './doctor.ts';
 import { assertNativeConsumers } from './native-consumer.ts';
 import { assertCodexAuth, linkCodexAuth, removeCodexHome, restoreSetup, snapshotSetup, type SetupSnapshot } from './isolation.ts';
@@ -89,6 +89,7 @@ export class MacDriver implements Driver {
       const home = join(root, 'state', harness), workspace = join(home, 'workspace');
       await mkdir(join(home, 'tmp'), { recursive: true, mode: 0o700 });
       for (const dir of ['.codex', '.config/gh', '.cache']) await mkdir(join(home, dir), { recursive: true, mode: 0o700 });
+      await initializeCodexHome(home);
       const env = isolatedEnv(home, harness);
       const candidateRun = this.candidate(home);
       await candidateRun(['git', 'clone', '--no-checkout', '--', `https://github.com/${receipt.repo}.git`, workspace], { env });
