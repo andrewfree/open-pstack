@@ -8,7 +8,7 @@ queue_rules:
     merge_method: merge
     queue_conditions:
       - -draft
-      - check-success=verify
+      - check-success=local-ci
       - check-success=Unfret
       - check-success=live-gate
     merge_conditions: []
@@ -21,12 +21,12 @@ merge_protections_settings:
 
 merge_protections:
   - name: Queue ready pull requests
-    description: Automatically queue non-draft pull requests targeting main after verify, Unfret, and live-gate pass on the head.
+    description: Automatically queue non-draft pull requests targeting main after local-ci, Unfret, and live-gate pass on the head.
     if:
       - base = main
     success_conditions:
       - -draft
-      - check-success=verify
+      - check-success=local-ci
       - check-success=Unfret
       - check-success=live-gate
 
