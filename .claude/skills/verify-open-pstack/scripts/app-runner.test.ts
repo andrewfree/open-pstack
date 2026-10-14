@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from 'bun:test';
-import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { connect } from 'node:net';
+import { inflateSync } from 'node:zlib';
 import { recipe, REQUIRED_RUNNER_ROUTES, type Fixture } from '../features/recipes.ts';
 import type { SessionRecord } from './types.ts';
 const roots: string[] = [];
@@ -76,9 +77,9 @@ test('compares numeric versions before dates and excludes proxy model IDs', asyn
 });
 test('required Opus, Haiku and Luna lanes remain when another route is supplied', async () => {
   const codex = recipe('runner', 'codex', ['grok:grok-4.7@high'], target), f = await fixture();
-  expect(codex.map(c => c.id)).toEqual(['app-route-1', 'app-route-2', 'route-3', 'claude-route-refusal', 'claude-output-collision', 'kimi-read-only', 'kimi-isolated-write', 'kimi-unavailable-model', 'kimi-proxy-rejection']);
+  expect(codex.map(c => c.id)).toEqual(['app-route-1', 'app-route-2', 'route-3', 'claude-route-refusal', 'claude-output-collision', 'kimi-read-only', 'kimi-isolated-write', 'kimi-media-read-only', 'kimi-media-isolated-write', 'kimi-unavailable-model', 'kimi-proxy-rejection']);
   expect(codex[1]!.prompt(f)).toContain('claude:haiku@max'); expect(REQUIRED_RUNNER_ROUTES.claude).toContain('codex:gpt-6-luna@max');
-  expect(recipe('runner', 'claude').map(c => c.id)).toEqual(['route-1', 'route-2', 'native-haiku-max', 'kimi-read-only', 'kimi-isolated-write', 'kimi-unavailable-model', 'kimi-proxy-rejection']);
+  expect(recipe('runner', 'claude').map(c => c.id)).toEqual(['route-1', 'route-2', 'native-haiku-max', 'kimi-read-only', 'kimi-isolated-write', 'kimi-media-read-only', 'kimi-media-isolated-write', 'kimi-unavailable-model', 'kimi-proxy-rejection']);
 });
 for (const collision of [false, true]) test(`real launcher ${collision ? 'preserves existing output on collision' : 'refuses Claude before preflight or models'}`, async () => {
   const f = await fixture(); f.location = await realpath(join(import.meta.dir, '../../../../plugins/pstack'));
@@ -86,11 +87,25 @@ for (const collision of [false, true]) test(`real launcher ${collision ? 'preser
   const launcher = join(f.location, 'skills/poteto-mode/scripts/runner/pstack-runner'), prefix = c.id;
   const args = [launcher, '--parent', 'codex', '--provider', 'claude', '--model', 'opus', '--effort', 'max', '--mode', 'read-only', '--prompt', join(f.dir, `${prefix}.prompt.md`), '--cwd', f.dir,
     '--output', join(f.dir, `${prefix}.output.md`), '--receipt', join(f.dir, `${prefix}.receipt.json`)];
-  const started = Date.now(), child = Bun.spawn(args, { cwd: f.dir, stdout: 'pipe', stderr: 'pipe' });
+  const guard = join(f.dir, `${prefix}.guard`);
+  const started = Date.now(), child = Bun.spawn(args, { cwd: f.dir, env: { ...process.env, PATH: `${guard}:${process.env.PATH ?? ''}` }, stdout: 'pipe', stderr: 'pipe' });
   const [exitCode] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
   expect(exitCode).toBe(collision ? 64 : 78);
-  const r: SessionRecord = { harness: 'codex', exitCode: 0, started, skills: ['pstack:poteto-mode'], commands: [], commandAttempts: [args.join(' ')] };
+  const r: SessionRecord = { harness: 'codex', exitCode: 0, started, skills: ['pstack:poteto-mode'], commands: [], commandAttempts: [`env PATH=${guard}:$PATH ${args.join(' ')}`] };
   expect((await c.assert(r, f)).assertions).toContain(collision ? 'existing-output-unchanged' : 'route-refused');
+  const requoted = { ...r, commandAttempts: [`/bin/zsh -lc 'env PATH='"'"'${guard}'"'"':"$PATH" '"'"'${launcher}'"'"' ${args.slice(1).join(' ')}'`] };
+  expect((await c.assert(requoted, f)).assertions).toContain('PATH-Claude-guard-not-invoked');
+  await expect(c.assert({ ...r, commandAttempts: [`env PATH=$PATH:${guard} ${args.join(' ')}`] }, f)).rejects.toThrow('refusal-guard-not-used');
+  await chmod(join(guard, 'claude'), 0o600);
+  await expect(c.assert(r, f)).rejects.toThrow('refusal-guard-changed');
+  await chmod(join(guard, 'claude'), 0o700);
+  const guardScript = await readFile(join(guard, 'claude'), 'utf8');
+  await writeFile(join(guard, 'claude'), '#!/bin/sh\nexit 0\n');
+  await expect(c.assert(r, f)).rejects.toThrow('refusal-guard-changed');
+  await writeFile(join(guard, 'claude'), guardScript);
+  const blocked = Bun.spawn([join(guard, 'claude')], { stdout: 'ignore', stderr: 'ignore' });
+  expect(await blocked.exited).toBe(97);
+  await expect(c.assert(r, f)).rejects.toThrow('refusal-attempted-headless-Claude');
 });
 test('background Bash needs a matching completed receipt, not a successful foreground command', async () => {
   const f = await fixture(), c = recipe('runner', 'claude')[1]!, launcher = join(f.location, 'skills/poteto-mode/scripts/runner/pstack-runner');
@@ -133,12 +148,18 @@ async function kimiFixture(kind: string) {
     preflight: { status: kind === 'unavailable-model' ? 'failed' : 'passed', argv: ['kimi', 'provider', 'list', '--json'] },
     exitCode: kind === 'unavailable-model' ? null : kind === 'proxy-rejection' ? 1 : 0, modelEvidence: 'pinned-argv', reportedModel: null, modelVerified: false,
     error: { message: `kimi config has no model alias ${baseline.model}` } };
-  const events = [
+  const media = kind.startsWith('media-'), writer = kind.endsWith('isolated-write');
+  const events: Record<string, unknown>[] = [
     { role: 'assistant', tool_calls: [{ id: 'read', type: 'function', function: { name: 'Read', arguments: JSON.stringify({ path: join(baseline.work, 'input.json') }) } }] },
     { role: 'tool', tool_call_id: 'read', content: await readFile(join(baseline.work, 'input.json'), 'utf8') },
   ];
-  const result = JSON.stringify({ marker: baseline.marker, sum: 42 });
-  if (kind === 'isolated-write') {
+  if (media) {
+    events.push({ role: 'assistant', tool_calls: [{ id: 'media', type: 'function', function: { name: 'ReadMediaFile', arguments: JSON.stringify({ path: join(baseline.work, 'image.png') }) } }] },
+      { role: 'tool', tool_call_id: 'media', content: JSON.stringify([{ type: 'text', text: `<image path="${join(baseline.work, 'image.png')}">` },
+        { type: 'image_url', imageUrl: { url: `data:image/png;base64,${(await readFile(join(baseline.work, 'image.png'))).toString('base64')}` } }, { type: 'text', text: '</image>' }]) });
+  }
+  const result = JSON.stringify({ marker: baseline.marker, sum: 42, ...media ? { color: 'red' } : {} });
+  if (writer) {
     await writeFile(join(baseline.work, 'result.json'), result);
     events.push({ role: 'assistant', tool_calls: [{ id: 'write', type: 'function', function: { name: 'Write', arguments: JSON.stringify({ path: join(baseline.work, 'result.json'), content: result }) } }] },
       { role: 'tool', tool_call_id: 'write', content: 'File written.' });
@@ -147,16 +168,74 @@ async function kimiFixture(kind: string) {
   await writeFile(path('receipt.json.stdout'), stream);
   await writeFile(path('receipt.json.stderr'), kind === 'proxy-rejection' ? 'error: failed to run prompt: provider.connection_error: Proxy tunnel rejected with403\n' : '');
   await writeFile(path('receipt.json'), JSON.stringify(receipt));
-  if (kind === 'read-only' || kind === 'isolated-write') await writeFile(path('output.md'), result);
+  if (kind !== 'unavailable-model' && kind !== 'proxy-rejection') await writeFile(path('output.md'), result);
   const r: SessionRecord = { harness: 'codex', exitCode: 0, started, skills: ['pstack:poteto-mode'], commands: [], commandAttempts: [c.prompt(f)] };
-  return { f, c, r, receipt, path, baseline };
+  return { f, c, r, receipt, path, baseline, events };
 }
-for (const mode of ['read-only', 'isolated-write']) test(`synthetic Kimi ${mode} evidence verifies tools, concrete result and untouched source`, async () => {
+for (const mode of ['read-only', 'isolated-write', 'media-read-only', 'media-isolated-write']) test(`synthetic Kimi ${mode} evidence verifies tools, concrete result and untouched source`, async () => {
   const { f, c, r, path } = await kimiFixture(mode);
   try {
-    expect((await c.assert(r, f)).assertions).toContain(mode === 'read-only' ? 'read-only-no-fixture-write' : 'isolated-file-write');
+    const { assertions } = await c.assert(r, f);
+    expect(assertions).toContain(mode.endsWith('read-only') ? 'read-only-no-fixture-write' : 'isolated-file-write');
+    if (mode.startsWith('media-')) expect(assertions).toContain('native-image-ReadMediaFile');
     await writeFile(path('receipt.json.stdout'), '{"role":"assistant","content":"I used Read and Write."}\n');
     await expect(c.assert(r, f)).rejects.toThrow('kimi-no-native-source-Read');
+  } finally { await c.cleanup?.(f); }
+});
+test('synthetic Kimi media proof requires the fixture PNG in a bound native result and the image color', async () => {
+  const { f, c, r, path, events, baseline } = await kimiFixture('media-read-only');
+  const stream = (list: Record<string, unknown>[]) => writeFile(path('receipt.json.stdout'), list.map(event => JSON.stringify(event)).join('\n') + '\n');
+  const mediaResult = (content: string) => events.map(event => event.tool_call_id === 'media' ? { ...event, content } : event);
+  const png = (await readFile(join(baseline.work, 'image.png'))).toString('base64');
+  try {
+    expect((await c.assert(r, f)).assertions).toContain('semantic-image-color-red');
+    for (const content of [
+      'The current model does not support image input. Tell the user to use a model with image input capability.',
+      JSON.stringify([{ type: 'text', text: '<image path="image.png">' }, { type: 'text', text: '</image>' }]),
+      JSON.stringify([{ type: 'image_url', imageUrl: { url: `data:image/jpeg;base64,${png}` } }]),
+      JSON.stringify([{ type: 'image_url', imageUrl: { url: `data:image/png;base64,${Buffer.from('another image').toString('base64')}` } }]),
+    ]) {
+      await stream(mediaResult(content));
+      await expect(c.assert(r, f)).rejects.toThrow('kimi-no-native-image-ReadMediaFile');
+    }
+    await stream(events.slice(0, 2));
+    await expect(c.assert(r, f)).rejects.toThrow('kimi-no-native-image-ReadMediaFile');
+    await stream(events);
+    await writeFile(path('output.md'), JSON.stringify({ ...JSON.parse(await readFile(path('output.md'), 'utf8')), color: 'blue' }));
+    await expect(c.assert(r, f)).rejects.toThrow('kimi-incorrect-result');
+  } finally { await c.cleanup?.(f); }
+});
+test('synthetic Kimi media proof rejects a changed image and a wrong written color', async () => {
+  const reader = await kimiFixture('media-read-only');
+  try {
+    await writeFile(join(reader.baseline.work, 'image.png'), Buffer.from('changed image'));
+    await expect(reader.c.assert(reader.r, reader.f)).rejects.toThrow('kimi-source-fixture-mutated');
+  } finally { await reader.c.cleanup?.(reader.f); }
+  const writer = await kimiFixture('media-isolated-write');
+  try {
+    const written = join(writer.baseline.work, 'result.json');
+    await writeFile(written, JSON.stringify({ ...JSON.parse(await readFile(written, 'utf8')), color: 'blue' }));
+    await expect(writer.c.assert(writer.r, writer.f)).rejects.toThrow('kimi-written-result-incorrect');
+  } finally { await writer.c.cleanup?.(writer.f); }
+});
+test('synthetic Kimi text cases reject an image read outside their allowlist', async () => {
+  const { f, c, r, path, events, baseline } = await kimiFixture('read-only');
+  try {
+    events.push({ role: 'assistant', tool_calls: [{ id: 'media', type: 'function', function: { name: 'ReadMediaFile', arguments: JSON.stringify({ path: join(baseline.work, 'input.json') }) } }] });
+    await writeFile(path('receipt.json.stdout'), events.map(event => JSON.stringify(event)).join('\n') + '\n');
+    await expect(c.assert(r, f)).rejects.toThrow('kimi-mode-unexpected-tool');
+  } finally { await c.cleanup?.(f); }
+});
+test('Kimi media fixture is a 24x24 RGB PNG whose every pixel is red', async () => {
+  const { f, c, baseline } = await kimiFixture('media-read-only');
+  try {
+    const png = await readFile(join(baseline.work, 'image.png')), chunks = new Map<string, Buffer>();
+    expect(png.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    for (let at = 8; at < png.length; at += 12 + png.readUInt32BE(at)) chunks.set(png.toString('ascii', at + 4, at + 8), png.subarray(at + 8, at + 8 + png.readUInt32BE(at)));
+    const header = chunks.get('IHDR')!;
+    expect([header.readUInt32BE(0), header.readUInt32BE(4), header[8], header[9], header[12]]).toEqual([24, 24, 8, 2, 0]);
+    const row = Buffer.concat([Buffer.of(0), ...Array.from({ length: 24 }, () => Buffer.of(255, 0, 0))]);
+    expect(inflateSync(chunks.get('IDAT')!)).toEqual(Buffer.concat(Array.from({ length: 24 }, () => row)));
   } finally { await c.cleanup?.(f); }
 });
 test('synthetic Kimi proof rejects mutated input despite a correct answer', async () => {
@@ -182,12 +261,14 @@ test('local rejection proxy uses an assigned loopback port and closes after synt
     await expect(c.assert(r, f)).rejects.toThrow('kimi-proxy-no-bound-native-failure');
     const response = await new Promise<string>((resolve, reject) => {
       const socket = connect({ host: uri.hostname, port: Number(uri.port) });
+      socket.once('connect', () => socket.write('CONNECT example.invalid:443 HTTP/1.1\r\nHost: example.invalid:443\r\n\r\n'));
       socket.once('error', reject); socket.once('data', data => { socket.destroy(); resolve(data.toString()); });
     });
     expect(response).toStartWith('HTTP/1.1 403 Forbidden');
-    expect((await c.assert(r, f)).assertions).toContain('real-cli-local-proxy-rejection');
+    expect((await c.assert(r, f)).assertions).toEqual(expect.arrayContaining(['real-cli-local-proxy-rejection', 'kimi-proxy-diagnostic:provider.connection_error']));
     const retained = JSON.parse(await readFile(path('proxy.json'), 'utf8'));
     expect(retained.acceptedConnections).toBe(1); expect(retained.forwardedConnections).toBe(0); expect(retained.requestBytesRead).toBe(0);
+    expect(retained.forwardingDisabled).toBe(true); expect(retained.nativeErrorCode).toBe('provider.connection_error');
   } finally { await c.cleanup?.(f); }
   const refused = await new Promise<boolean>(resolve => {
     const socket = connect({ host: uri.hostname, port: Number(uri.port) });

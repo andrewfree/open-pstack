@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
-import { createServer, type Server } from 'node:net';
+import { createServer, type Server, type Socket } from 'node:net';
 import { basename, join } from 'node:path';
 import type { Command } from '../scripts/io.ts';
 import type { Harness, SessionRecord } from '../scripts/types.ts';
@@ -228,22 +228,31 @@ const refusalSentinel = 'Existing output must survive the refused route.\n';
 function refusalCase(collision: boolean): Case {
   const prefix = collision ? 'claude-output-collision' : 'claude-route-refusal';
   const path = (f: Fixture, suffix: string) => join(f.dir, `${prefix}.${suffix}`);
+  const guardScript = (f: Fixture): string => `#!/bin/sh\nprintf '%s\\n' blocked-headless-claude >> ${quote(path(f, 'claude-attempted'))}\nexit 97\n`;
   return {
     id: prefix,
     async prepare(f) {
       await writeFile(path(f, 'prompt.md'), 'Reply PONG.\n', { flag: 'wx', mode: 0o600 });
+      await mkdir(path(f, 'guard'), { mode: 0o700 });
+      await writeFile(join(path(f, 'guard'), 'claude'), guardScript(f), { flag: 'wx', mode: 0o700 });
       if (collision) await writeFile(path(f, 'output.md'), refusalSentinel, { flag: 'wx', mode: 0o600 });
     },
-    prompt: f => `${invoke(f.harness, 'poteto-mode', `Exercise the installed launcher's refused Codex-parent Claude route without launching Claude. Run this exact command once and retain its actual exit status: ${[join(f.location, 'skills/poteto-mode/scripts/runner/pstack-runner'), '--parent', 'codex', '--provider', 'claude', '--model', 'opus', '--effort', 'max', '--mode', 'read-only', '--prompt', path(f, 'prompt.md'), '--cwd', f.dir, '--output', path(f, 'output.md'), '--receipt', path(f, 'receipt.json')].map(quote).join(' ')}. The expected nonzero ${collision ? 'output collision' : 'route refusal'} is the test result. Do not delete, overwrite, synthesize, or repair any artifacts; do not rerun or authenticate Claude. Finish normally after inspecting the result.`)} ${rules(f.dir)}`,
+    prompt: f => `${invoke(f.harness, 'poteto-mode', `Exercise the installed launcher's refused Codex-parent Claude route without launching Claude. Run this exact command once and retain its actual exit status: env PATH=${quote(path(f, 'guard'))}:"$PATH" ${[join(f.location, 'skills/poteto-mode/scripts/runner/pstack-runner'), '--parent', 'codex', '--provider', 'claude', '--model', 'opus', '--effort', 'max', '--mode', 'read-only', '--prompt', path(f, 'prompt.md'), '--cwd', f.dir, '--output', path(f, 'output.md'), '--receipt', path(f, 'receipt.json')].map(quote).join(' ')}. The command-local PATH guard blocks and records a regressed Claude launch. Never remove or change it. The expected nonzero ${collision ? 'output collision' : 'route refusal'} is the test result. Do not delete, overwrite, synthesize, or repair any artifacts; do not rerun or authenticate Claude. Finish normally after inspecting the result.`)} ${rules(f.dir)}`,
     async assert(record, f) {
       const launcher = join(f.location, 'skills/poteto-mode/scripts/runner/pstack-runner');
       if (!attempted(record, launcher)) throw new Error('refusal-launcher-not-attempted');
+      const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const guarded = new RegExp(`PATH=['"\\\\]*${escape(path(f, 'guard'))}['"\\\\]*:[^\\n;&|]*${escape(launcher)}`);
+      if (![...record.commandAttempts ?? [], ...record.commands].some(command => guarded.test(command))) throw new Error('refusal-guard-not-used');
+      const guard = join(path(f, 'guard'), 'claude'), guardStat = await lstat(guard);
+      if (!guardStat.isFile() || (guardStat.mode & 0o777) !== 0o700 || await readFile(guard, 'utf8') !== guardScript(f)) throw new Error('refusal-guard-changed');
+      if (await lstat(path(f, 'claude-attempted')).catch(() => undefined)) throw new Error('refusal-attempted-headless-Claude');
       if (collision) {
         if (await readFile(path(f, 'output.md'), 'utf8') !== refusalSentinel) throw new Error('refusal-existing-output-overwritten');
         for (const suffix of ['receipt.json', 'receipt.json.stdout', 'receipt.json.stderr']) {
           if (await lstat(path(f, suffix)).catch(() => undefined)) throw new Error('collision-created-artifact');
         }
-        return { assertions: [loaded(record, 'pstack:poteto-mode'), 'output-collision', 'existing-output-unchanged', 'no-receipt-or-sidecars'], files: [path(f, 'output.md')] };
+        return { assertions: [loaded(record, 'pstack:poteto-mode'), 'PATH-Claude-guard-not-invoked', 'output-collision', 'existing-output-unchanged', 'no-receipt-or-sidecars'], files: [path(f, 'output.md'), join(path(f, 'guard'), 'claude')] };
       }
       const receiptPath = path(f, 'receipt.json'), receipt = object(JSON.parse(await readFile(receiptPath, 'utf8'))), preflight = object(receipt.preflight);
       if (receipt.status !== 'route-refused' || receipt.parent !== 'codex' || receipt.provider !== 'claude' || receipt.model !== 'opus' || receipt.effort !== 'max'
@@ -255,7 +264,7 @@ function refusalCase(collision: boolean): Case {
         const sidecar = `${receiptPath}.${suffix}`;
         if (receipt[field!] !== sidecar || (await readFile(sidecar)).length) throw new Error('refusal-sidecar-not-empty');
       }
-      return { assertions: [loaded(record, 'pstack:poteto-mode'), 'route-refused', 'no-executable-or-commands', 'preflight-not-run', 'empty-sidecars', await written(record, receiptPath)], files: [receiptPath, `${receiptPath}.stdout`, `${receiptPath}.stderr`] };
+      return { assertions: [loaded(record, 'pstack:poteto-mode'), 'PATH-Claude-guard-not-invoked', 'route-refused', 'no-executable-or-commands', 'preflight-not-run', 'empty-sidecars', await written(record, receiptPath)], files: [receiptPath, `${receiptPath}.stdout`, `${receiptPath}.stderr`, join(path(f, 'guard'), 'claude')] };
     },
   };
 }
@@ -273,17 +282,32 @@ const nativeHaiku: Case = {
     return { assertions: [loaded(record, 'pstack:poteto-mode'), 'native-pstack-haiku-max', 'native-child-model', 'candidate-agent-declared-effort', 'completed-PONG', await written(record, output)], files: [output] };
   },
 };
-type KimiCase = 'read-only' | 'isolated-write' | 'unavailable-model' | 'proxy-rejection';
+type KimiCase = 'read-only' | 'isolated-write' | 'media-read-only' | 'media-isolated-write' | 'unavailable-model' | 'proxy-rejection';
+// A deterministic 24x24 RGB PNG whose pixels are all red.
+const MEDIA_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAIElEQVR4nGP4z8BAFUQdU0YNGjVo1KBRg0YNGjWIIgQABMo93z5bbNQAAAAASUVORK5CYII=', 'base64');
+const MEDIA_DATA_URL = `data:image/png;base64,${MEDIA_PNG.toString('base64')}`;
+// Kimi's stream-json writes a successful ReadMediaFile result as a JSON string of content parts and a failure as plain text.
+// It passes an image this small through without re-encoding, so the delivered URL carries the fixture's exact bytes.
+function deliversMediaPng(content: string): boolean {
+  try {
+    const parts: unknown = JSON.parse(content);
+    return Array.isArray(parts) && parts.map(object).some(part => part.type === 'image_url' && object(part.imageUrl).url === MEDIA_DATA_URL);
+  } catch { return false; }
+}
 function kimiCase(kind: KimiCase): Case {
-  const id = `kimi-${kind}`, mode = kind === 'isolated-write' ? kind : 'read-only';
+  const id = `kimi-${kind}`, media = kind.startsWith('media-'), writer = kind.endsWith('isolated-write'), mode = writer ? 'isolated-write' : 'read-only';
   const model = kind === 'unavailable-model' ? `kimi-code/pstack-verify-missing-${randomUUID()}` : 'kimi-code/k3';
   const path = (f: Fixture, suffix: string) => join(f.dir, `${id}.${suffix}`);
   const work = (f: Fixture) => path(f, 'work');
   const source = (f: Fixture) => join(work(f), 'input.json');
   const artifact = (f: Fixture) => join(work(f), 'result.json');
+  const image = (f: Fixture) => join(work(f), 'image.png');
   let marker = '', proxy: Server | undefined, proxyUri = '', connections = 0;
+  const sockets = new Set<Socket>();
+  let closedSocketBytesRead = 0;
+  const observedBytesRead = () => closedSocketBytesRead + [...sockets].reduce((sum, socket) => sum + socket.bytesRead, 0);
   let fixtureHashes: Record<string, string> = {};
-  const digest = (bytes: string) => createHash('sha256').update(bytes).digest('hex');
+  const digest = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex');
   const command = (f: Fixture): string => {
     const argv = [join(f.location, 'skills/poteto-mode/scripts/runner/pstack-runner'), '--parent', f.harness, '--provider', 'kimi', '--model', model, '--effort', 'max', '--mode', mode,
       '--prompt', path(f, 'prompt.md'), '--cwd', work(f), '--output', path(f, 'output.md'), '--receipt', path(f, 'receipt.json')];
@@ -299,14 +323,20 @@ function kimiCase(kind: KimiCase): Case {
       fixtureHashes = { 'input.json': digest(input), 'sentinel.txt': digest(sentinel) };
       await writeFile(source(f), input, { flag: 'wx', mode: 0o600 });
       await writeFile(join(work(f), 'sentinel.txt'), sentinel, { flag: 'wx', mode: 0o600 });
+      if (media) {
+        await writeFile(image(f), MEDIA_PNG, { flag: 'wx', mode: 0o600 });
+        fixtureHashes['image.png'] = digest(MEDIA_PNG);
+      }
       await writeFile(path(f, 'fixture.json'), JSON.stringify({ marker, model, mode, work: work(f), hashes: fixtureHashes }) + '\n', { flag: 'wx', mode: 0o600 });
-      const task = kind === 'read-only' || kind === 'isolated-write'
-        ? `Use the Read tool to read ${source(f)}. Sum its values and return exactly a JSON object with its marker and the sum. ${kind === 'isolated-write' ? `Use the Write tool to write that same JSON object to ${artifact(f)} before returning it. Only this new result.json may be written.` : 'Do not write, edit, delete, create files, or run shell commands.'} Do not modify input.json or sentinel.txt. Ask no questions and spawn no agents.`
+      const task = kind !== 'unavailable-model' && kind !== 'proxy-rejection'
+        ? `Use the Read tool to read ${source(f)}. Sum its values and return exactly a JSON object with its marker and the sum.${media ? ` Use ReadMediaFile to open ${image(f)} and add a color field naming the image's dominant color in lowercase. Do not infer the color from the filename or inspect bytes through another tool.` : ''} ${writer ? `Use the Write tool to write that same JSON object to ${artifact(f)} before returning it. Only this new result.json may be written.` : 'Do not write, edit, delete, create files, or run shell commands.'} Do not modify input.json, sentinel.txt or any image. Ask no questions and spawn no agents.`
         : 'Reply exactly PONG. Read no files, run no commands, ask no questions and spawn no agents.';
       await writeFile(path(f, 'prompt.md'), task + '\n', { flag: 'wx', mode: 0o600 });
       if (kind === 'proxy-rejection') {
-        proxy = createServer(socket => {
+        proxy = createServer({ pauseOnConnect: true }, socket => {
           connections++;
+          sockets.add(socket);
+          socket.once('close', () => { closedSocketBytesRead += socket.bytesRead; sockets.delete(socket); });
           socket.on('error', () => socket.destroy());
           // Reject before a tunnel exists; never read request headers or bodies.
           socket.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n', () => socket.destroy());
@@ -318,7 +348,7 @@ function kimiCase(kind: KimiCase): Case {
         const address = proxy.address();
         if (!address || typeof address === 'string' || address.address !== '127.0.0.1') throw new Error('kimi-proxy-loopback-bind-failed');
         proxyUri = `http://127.0.0.1:${address.port}`;
-        await writeFile(path(f, 'proxy.json'), JSON.stringify({ proxyUri, acceptedConnections: 0, forwardedConnections: 0, requestBytesRead: 0 }) + '\n', { flag: 'wx', mode: 0o600 });
+        await writeFile(path(f, 'proxy.json'), JSON.stringify({ proxyUri, acceptedConnections: connections, forwardingDisabled: true, forwardedConnections: 0, requestBytesRead: observedBytesRead() }) + '\n', { flag: 'wx', mode: 0o600 });
       }
     },
     async cleanup() {
@@ -339,11 +369,12 @@ function kimiCase(kind: KimiCase): Case {
       if (receipt.stdoutPath !== stdoutPath || receipt.stderrPath !== stderrPath) throw new Error('kimi-sidecar-path-mismatch');
       const stdout = await readFile(stdoutPath, 'utf8'), stderr = await readFile(stderrPath, 'utf8');
       for (const [name, hash] of Object.entries(fixtureHashes)) {
-        if (digest(await readFile(join(work(f), name), 'utf8')) !== hash) throw new Error('kimi-source-fixture-mutated');
+        if (digest(await readFile(join(work(f), name))) !== hash) throw new Error('kimi-source-fixture-mutated');
       }
-      const expectedFiles = kind === 'isolated-write' ? ['input.json', 'result.json', 'sentinel.txt'] : ['input.json', 'sentinel.txt'];
+      const expectedFiles = ['input.json', 'sentinel.txt', ...writer ? ['result.json'] : [], ...media ? ['image.png'] : []].sort();
       if ((await readdir(work(f))).sort().join('\n') !== expectedFiles.join('\n')) throw new Error('kimi-unexpected-fixture-write');
       const artifacts = [receiptPath, stdoutPath, stderrPath, path(f, 'fixture.json'), source(f), join(work(f), 'sentinel.txt')];
+      if (media) artifacts.push(image(f));
       const assertions = [loaded(record, 'pstack:poteto-mode'), 'kimi-launcher-attempted', 'matching-receipt', 'source-fixture-unchanged'];
       if (kind === 'unavailable-model') {
         const error = object(receipt.error);
@@ -354,16 +385,18 @@ function kimiCase(kind: KimiCase): Case {
         return { assertions: [...assertions, 'real-cli-unavailable-model-preflight', 'no-model-invocation'], files: artifacts };
       }
       if (kind === 'proxy-rejection') {
+        const diagnostic = /^error: .*?(provider\.(?:connection|auth)_error):/m.exec(stderr.replace(/\x1b\[[0-9;]*m/g, ''))?.[1];
+        const requestBytesRead = observedBytesRead();
+        await writeFile(path(f, 'proxy.json'), JSON.stringify({ proxyUri, acceptedConnections: connections, forwardingDisabled: true, forwardedConnections: 0, requestBytesRead, nativeErrorCode: diagnostic ?? null }) + '\n', { mode: 0o600 });
         if (!proxyUri || ![...record.commandAttempts ?? [], ...record.commands].some(command => command.includes(`HTTPS_PROXY=${proxyUri}`) && command.includes('pstack-runner'))
           || connections < 1 || receipt.status !== 'child-failed' || preflight.status !== 'passed' || typeof receipt.exitCode !== 'number' || receipt.exitCode === 0
-          || !/^error: .*provider\.(?:connection|auth)_error:/m.test(stderr.replace(/\x1b\[[0-9;]*m/g, ''))) throw new Error('kimi-proxy-no-bound-native-failure');
+          || !diagnostic || requestBytesRead !== 0) throw new Error('kimi-proxy-no-bound-native-failure');
         if (await lstat(path(f, 'output.md')).catch(() => undefined)) throw new Error('kimi-dropout-left-output');
-        await writeFile(path(f, 'proxy.json'), JSON.stringify({ proxyUri, acceptedConnections: connections, forwardedConnections: 0, requestBytesRead: 0 }) + '\n', { mode: 0o600 });
-        return { assertions: [...assertions, 'real-cli-local-proxy-rejection', 'native-connection-or-403-failure', 'child-failed', 'proxy-no-forwarding-or-request-reading'], files: [...artifacts, path(f, 'proxy.json')] };
+        return { assertions: [...assertions, 'real-cli-local-proxy-rejection', `kimi-proxy-diagnostic:${diagnostic}`, 'child-failed', 'proxy-forwarding-disabled', 'proxy-observed-zero-request-bytes'], files: [...artifacts, path(f, 'proxy.json')] };
       }
       if (receipt.status !== 'complete' || preflight.status !== 'passed' || receipt.exitCode !== 0 || receipt.modelEvidence !== 'pinned-argv' || receipt.reportedModel !== null || receipt.modelVerified !== false) throw new Error('kimi-no-completed-pinned-model');
       const result = object(JSON.parse(await readFile(path(f, 'output.md'), 'utf8')));
-      if (result.marker !== marker || result.sum !== 42 || Object.keys(result).length !== 2) throw new Error('kimi-incorrect-result');
+      if (result.marker !== marker || result.sum !== 42 || Object.keys(result).length !== (media ? 3 : 2) || media && result.color !== 'red') throw new Error('kimi-incorrect-result');
       const events = stdout.split('\n').filter(line => line.trim()).map(line => object(JSON.parse(line)));
       const calls = events.flatMap(event => event.role === 'assistant' && Array.isArray(event.tool_calls) ? event.tool_calls.map(object) : []);
       const boundTool = async (name: string, expectedPath: string): Promise<boolean> => {
@@ -372,17 +405,24 @@ function kimiCase(kind: KimiCase): Case {
           if (fn.name !== name || typeof fn.arguments !== 'string' || typeof call.id !== 'string') continue;
           const args = object(JSON.parse(fn.arguments));
           if (typeof args.path !== 'string' || await realpath(args.path).catch(() => '') !== await realpath(expectedPath)) continue;
-          if (events.some(event => event.role === 'tool' && event.tool_call_id === call.id && typeof event.content === 'string' && event.content.length)) return true;
+          for (const event of events) {
+            if (event.role !== 'tool' || event.tool_call_id !== call.id || typeof event.content !== 'string' || !event.content.length) continue;
+            if (name !== 'ReadMediaFile' || deliversMediaPng(event.content)) return true;
+          }
         }
         return false;
       };
       if (!await boundTool('Read', source(f))) throw new Error('kimi-no-native-source-Read');
-      if (kind === 'read-only' && calls.some(call => object(call.function).name !== 'Read')) throw new Error('kimi-read-only-unexpected-tool');
-      if (kind === 'isolated-write') {
+      const allowedTools = ['Read', ...media ? ['ReadMediaFile'] : [], ...writer ? ['Write'] : []];
+      if (calls.some(call => !allowedTools.includes(String(object(call.function).name)))) throw new Error('kimi-mode-unexpected-tool');
+      if (media) {
+        if (!await boundTool('ReadMediaFile', image(f))) throw new Error('kimi-no-native-image-ReadMediaFile');
+        assertions.push('native-image-ReadMediaFile', 'semantic-image-color-red', 'image-fixture-unchanged');
+      }
+      if (writer) {
         if (!await boundTool('Write', artifact(f))) throw new Error('kimi-no-native-result-Write');
-        if (calls.some(call => !['Read', 'Write'].includes(String(object(call.function).name)))) throw new Error('kimi-writer-unexpected-tool');
         const writtenResult = object(JSON.parse(await readFile(artifact(f), 'utf8')));
-        if (writtenResult.marker !== marker || writtenResult.sum !== 42 || Object.keys(writtenResult).length !== 2) throw new Error('kimi-written-result-incorrect');
+        if (writtenResult.marker !== marker || writtenResult.sum !== 42 || Object.keys(writtenResult).length !== (media ? 3 : 2) || media && writtenResult.color !== 'red') throw new Error('kimi-written-result-incorrect');
         artifacts.push(artifact(f)); assertions.push('native-result-Write', 'isolated-file-write');
       } else assertions.push('read-only-no-fixture-write');
       return { assertions: [...assertions, 'native-source-Read', 'completed-correct-result', await written(record, path(f, 'output.md'))], files: [...artifacts, path(f, 'output.md')] };
@@ -414,7 +454,7 @@ function runner(harness: Harness, routes: string[], appRoute?: AppRoute): Case[]
       },
     };
   });
-  return [...cases, ...harness === 'codex' ? [refusalCase(false), refusalCase(true)] : [nativeHaiku], ...(['read-only', 'isolated-write', 'unavailable-model', 'proxy-rejection'] as const).map(kimiCase)];
+  return [...cases, ...harness === 'codex' ? [refusalCase(false), refusalCase(true)] : [nativeHaiku], ...(['read-only', 'isolated-write', 'media-read-only', 'media-isolated-write', 'unavailable-model', 'proxy-rejection'] as const).map(kimiCase)];
 }
 
 const setup: Case[] = [{

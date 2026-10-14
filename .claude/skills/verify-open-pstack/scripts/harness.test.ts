@@ -389,7 +389,7 @@ describe('unsupported Claude app boundary', () => {
     }
     expect(() => recipe('runner', 'codex', ['grok:grok-4@high'])).toThrow('app-owned dispatch recipe');
     expect(recipe('runner', 'claude').map(c => c.id)).toEqual(['route-1', 'route-2', 'native-haiku-max',
-      'kimi-read-only', 'kimi-isolated-write', 'kimi-unavailable-model', 'kimi-proxy-rejection']);
+      'kimi-read-only', 'kimi-isolated-write', 'kimi-media-read-only', 'kimi-media-isolated-write', 'kimi-unavailable-model', 'kimi-proxy-rejection']);
   });
 
 });
