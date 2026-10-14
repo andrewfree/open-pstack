@@ -63,7 +63,7 @@ export async function verify(options: VerifyOptions): Promise<Receipt> {
   const { github, driver, persist } = options;
   const repo = repositoryName(options.repo);
   const initial = await github.pull(options.pr);
-  if (initial.state !== 'open' || initial.headRepo !== repo) throw new Error('Require an open same-repository PR');
+  if (initial.state !== 'open' || initial.headRepo.toLowerCase() !== repo) throw new Error('Require an open same-repository PR');
   const receipt = newReceipt(repo, options.pr, initial.head.sha, initial.base.sha, options.selfTest, options.root, options.publisherRevision);
   let successAttempted = false, commentAttempted = false, cleanupComplete = false, cleanupFailed = false;
   const cleanup = async (): Promise<void> => {
@@ -75,7 +75,7 @@ export async function verify(options: VerifyOptions): Promise<Receipt> {
   };
   const current = async (): Promise<Pull> => {
     const pull = await github.pull(receipt.pr);
-    if (pull.head.sha !== receipt.sha || pull.base.sha !== receipt.base || pull.state !== 'open' || pull.headRepo !== repo) throw new HeadMoved('PR head/base or open repository identity changed; run again');
+    if (pull.head.sha !== receipt.sha || pull.base.sha !== receipt.base || pull.state !== 'open' || pull.headRepo.toLowerCase() !== repo) throw new HeadMoved('PR head/base or open repository identity changed; run again');
     return pull;
   };
   const phase = async (next: Receipt['phase']): Promise<void> => {

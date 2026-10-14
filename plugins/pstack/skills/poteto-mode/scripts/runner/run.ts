@@ -10,6 +10,7 @@ import {
   writeSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import { guardCodexProjectTrust } from "./codex-trust.ts";
 import { invocationCommand, preflightCommand, type CommandSpec } from "./commands.ts";
 import { versionedClaudeAlias } from "./model-aliases.ts";
@@ -510,25 +511,25 @@ function providerFailureStatus(provider: Provider, failure: ProviderFailureEvide
   }
 
   // Kimi 2.1.1 puts CLI diagnostics on stderr and reviewed/tool content on stdout.
-  // Match its CLI error header or typed turn error, never words in that content
-  // or later lines in the diagnostic's message body.
-  const diagnostic = failure.diagnostic.replace(/\u001b\[[0-9;]*m/g, "");
-  const header = diagnostic.split("\n").find((line) => line.startsWith("error: "));
-  if (header === undefined) return "child-failed";
+  const lines = stripVTControlCharacters(failure.diagnostic).split(/\r?\n/);
+  const headerIndex = lines.findIndex((line) => line.startsWith("error: "));
+  if (headerIndex === -1) return "child-failed";
+  const header = lines[headerIndex]!;
   const message = header.replace(/^error: (?:failed to (?:run prompt|start shell): )?/, "");
   const code = /^([a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+):/.exec(message)?.[1];
-  // Kimi 2.1.1 labels its five-hour quota refusal provider.auth_error as well.
-  if (/^provider\.auth_error:\s*403 You've reached your 5-hour usage limit\./.test(message)) {
-    return "child-failed";
-  }
   switch (code ?? message) {
     case "provider.auth_error":
+    case "Provider authentication error":
+    case "Provider authentication failed": {
+      const detail = code ? message.slice(code.length + 1).trimStart()
+        : /^\s*message:\s*\n([^\n]*)/.exec(lines.slice(headerIndex + 1).join("\n"))?.[1] ?? "";
+      // Kimi 2.1.1 maps both HTTP 401 and 403 to the same authentication error.
+      return /^403\b/.test(detail) ? "child-failed" : "unauthenticated";
+    }
     case "auth.login_required":
     case "auth.provisioning_required":
     case "auth.token_missing":
     case "auth.token_unauthorized":
-    case "Provider authentication error":
-    case "Provider authentication failed":
     case "Login required":
     case "Provider provisioning required":
     case "Provider credential missing":

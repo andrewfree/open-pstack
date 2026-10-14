@@ -68,6 +68,11 @@ export function isolatedEnv(state: string, _harness?: 'claude' | 'codex'): Recor
     ...(process.env.CLAUDE_CONFIG_DIR !== undefined ? { CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR } : {}),
     CODEX_HOME: join(state, '.codex') };
 }
+export async function initializeCodexHome(state: string): Promise<void> {
+  const home = isolatedEnv(state).CODEX_HOME!;
+  await mkdir(home, { recursive: true, mode: 0o700 });
+  await writeFile(join(home, 'config.toml'), '[analytics]\nenabled = false\n', { flag: 'wx', mode: 0o600 });
+}
 export async function save(path: string, value: unknown): Promise<void> {
   const json = JSON.stringify(value, null, 2);
   await writeFile(path + '.tmp', json + '\n', { mode: 0o600 });
