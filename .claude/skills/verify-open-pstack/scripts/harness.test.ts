@@ -32,6 +32,24 @@ async function loginFixture(root: string): Promise<string> {
 }
 
 describe('isolated harness boundaries', () => {
+  test('doctor disables analytics in its isolated Codex home before any Codex command', async () => {
+    const root = await fixture(), auth = await loginFixture(root), dailyConfig = join(auth, '..', 'config.toml');
+    await writeFile(dailyConfig, '[analytics]\nenabled = true\n');
+    const calls: string[][] = [];
+    const run: Command = async (args, options) => {
+      if (args[0] === 'codex') {
+        calls.push(args);
+        const config = join(options!.env!.CODEX_HOME!, 'config.toml');
+        expect(Bun.TOML.parse(await readFile(config, 'utf8'))).toMatchObject({ analytics: { enabled: false } });
+        expect((await stat(config)).mode & 0o777).toBe(0o600);
+      }
+      return args.includes('--version') ? 'version' : '--json local path';
+    };
+    await doctor(root, run, 'darwin', true);
+    expect(calls).toHaveLength(3);
+    expect(await readFile(dailyConfig, 'utf8')).toBe('[analytics]\nenabled = true\n');
+  });
+
   test('candidate environment keeps operator identity while isolating provider configuration', () => {
     const previous = { HOME: process.env.HOME, USER: process.env.USER, LOGNAME: process.env.LOGNAME,
       GH_TOKEN: process.env.GH_TOKEN, CODEX_HOME: process.env.CODEX_HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
@@ -133,6 +151,11 @@ describe('isolated harness boundaries', () => {
     const run: Command = async (args, options = {}) => {
       calls.push(args);
       const env = options.env, candidate = Boolean(env?.CODEX_HOME?.startsWith(join(root, 'state') + '/'));
+      if (args[0] === 'codex') {
+        const config = join(env!.CODEX_HOME!, 'config.toml');
+        expect(Bun.TOML.parse(await readFile(config, 'utf8'))).toMatchObject({ analytics: { enabled: false } });
+        expect((await stat(config)).mode & 0o777).toBe(0o600);
+      }
       if (candidate) {
         const stateHome = join(env!.CODEX_HOME!, '..');
         expect(env!.HOME).toBe(operatorHome); expect(env!.USER).toBe('operator-user'); expect(env!.LOGNAME).toBe('operator-login');

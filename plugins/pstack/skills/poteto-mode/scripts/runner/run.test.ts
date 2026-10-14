@@ -1179,6 +1179,36 @@ printf '%s\\n' '{"type":"thread.started","thread_id":"isolated"}' '{"type":"item
       diagnostic: "error: failed to run prompt: provider.auth_error: 403 You've reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends. To continue now, purchase extra usage or upgrade your plan: https://www.kimi.com/membership/subscription?tab=quota\nSee log: /Users/rever/.kimi-code/logs/kimi-code.log",
       status: "child-failed", exitCode: 70,
     },
+    ...[
+      "403 You've reached your weekly usage limit.",
+      "403 You’ve reached your 5-hour usage limit.",
+      "403 This model is not included in your plan.",
+      "403 Forbidden",
+    ].map(message => ({
+      name: `synthetic provider refusal: ${message}`,
+      diagnostic: `error: failed to run prompt: provider.auth_error: ${message}`,
+      status: "child-failed", exitCode: 70,
+    })),
+    {
+      name: "typed HTTP 403 refusal",
+      diagnostic: "error: Provider authentication error\n\nmessage:\n403 Forbidden",
+      status: "child-failed", exitCode: 70,
+    },
+    {
+      name: "typed HTTP 401 authentication failure",
+      diagnostic: "error: Provider authentication failed\n\nmessage:\n401 Unauthorized",
+      status: "unauthenticated", exitCode: 77,
+    },
+    {
+      name: "HTTP 401 remains authoritative over later quoted HTTP 403 text",
+      diagnostic: "error: failed to run prompt: provider.auth_error: 401 Unauthorized\nDetails mention 403 Forbidden",
+      status: "unauthenticated", exitCode: 77,
+    },
+    {
+      name: "terminal clear-line logout diagnostic",
+      diagnostic: "\u001b[2K\u001b[31merror: failed to run prompt: auth.login_required: Sign in again.\u001b[0m",
+      status: "unauthenticated", exitCode: 77,
+    },
     {
       name: "missing served model",
       diagnostic: "error: failed to run prompt: model.not_found: Model k3 does not exist.",
