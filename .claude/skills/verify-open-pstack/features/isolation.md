@@ -9,7 +9,7 @@ Verifier-changing PRs run from their reviewed candidate head, with publisher rev
 ## Candidate process state
 
 - Preserve real `HOME`, `USER`, and `LOGNAME`.
-- Claude uses normal operator login/config with `claude --plugin-dir <exact-head checkout>/plugins/pstack --settings '{"enabledPlugins":{"pstack@open-pstack":false}}'`. These flags load only the candidate for that session, without persistent installation or settings changes.
+- With `--t3-app`, Claude sessions run on the permanent Claude verification instance, whose armed launcher executes the selected existing provider's binary with the normal app login. Select only the exact candidate plugin for each session. Do not edit daily plugin settings or read/copy credentials. See `t3-app.md` for the session flags and project-skill exception.
 - Codex installs the exact-head marketplace with `codex plugin marketplace add … --ref <sha>` and `codex plugin add` in a run-owned `CODEX_HOME`. Symlink its `auth.json` to the operator's `${CODEX_HOME:-$HOME/.codex}/auth.json`, resolving the daily home before overriding the environment.
 - If the daily home has no `auth.json`, fail closed: this tool needs file-based Codex auth. Do not read credentials, copy them, or start login. Native refresh writes through the symlink to the single existing login file.
 - Keep temporary, GitHub, and fixture state run-owned; disable global/system Git configuration and credential helpers for candidate commands. Provider descendants use the same native-login arrangement, never publisher credentials.
@@ -22,14 +22,16 @@ For setup only, snapshot `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/pstack-models.md` 
 
 ## Private evidence and cleanup
 
-Use a fresh external mode-0700 run root. Retain raw transcripts, artifacts, receipts, and restoration results privately through merge. Quit native sessions normally. Removing the Codex run home removes its auth symlink, never the operator's target file. No copied-credential cleanup or separate `~/.pstack-verify` login directories are needed.
+Use a fresh external mode-0700 run root. Retain raw transcripts, artifacts, receipts, and restoration results privately through merge. Runs never edit T3 settings. Restore the pass-through launchers after each case and again at cleanup, and retain each case's launch lines with the binding and native evidence. Preserve evidence if cleanup cannot safely complete. Never kill unrelated processes. Removing the Codex run home removes its auth symlink, never its target file; cleanup keeps the home while T3's Codex app-server from this run still runs.
 
-After merge, archive retained evidence and let the operator delete only the named run root. Never recursively delete an operator directory or kill unrelated processes.
+After merge, archive retained evidence and let the operator delete only the named run root. Never recursively delete an operator directory.
 
 ## Native verification
 
-Confirm a real Mac session loads only the candidate in Claude, Codex authenticates through the symlink, daily Codex still works after any refresh, and setup restoration is byte-exact. If Codex replaces the symlink or installed pstack leaks into Claude's candidate session, stop and reopen the design rather than improvise.
+Check the Claude init event's plugin inventory and native Skill tool evidence against the exact candidate path and pinned source. Plugin cases use `--setting-sources ""`, which excludes ambient user, project, and local settings. Only the `project-skill` case uses `--setting-sources project --project-config-root <candidate> --add-dir <candidate>` to load candidate project instructions. Native init, hook, and Skill-root checks validate the resulting configuration; never point the flag at the inherited daily workspace. Set `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` and reject active memory paths. Validate native hook and MCP inventories and reject unexpected tool use. The native stream must bind to the exact fresh T3 child, prompt, and case. A response summary alone is not proof.
 
-## Headless
+Before preparation and after cleanup, retain digests of daily Claude settings, plugin inventories, memory files, Codex configuration, and T3 settings. T3 comparison ignores JSON key order. Unexpected drift prevents publication and is reported without restoring operator edits. Native Write/Edit attempts targeting protected daily paths are rejected. These are evidence checks, not an operating-system sandbox. Claude session history still goes to its normal app config home; project-skill sessions can load ancestor project instructions.
 
-Headless sessions use the same candidate environment. `recipes.ts` describes each case; the trusted parent records the session streams under `sessions/` in the private run root.
+## Interrupted app requests
+
+If interrupted after `delegate_task`, use the captured task id to check only that request with `task_status`. Wait for that task, or cancel only that task if cancellation is available and needed, before removing its run-owned Codex home. The pending-request guard preserves those entries until a validated terminal receipt exists. Do not cancel unrelated or pre-existing tasks. Keep the request, task result, native log, launch lines, and binding in the private evidence root even when the case fails.

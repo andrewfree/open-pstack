@@ -6,6 +6,11 @@ fail=0
 
 note() { printf '%s\n' "$*"; }
 
+if [ "${PSTACK_STATIC_ONLY:-0}" != "1" ]; then
+  note "unsupported-app-surface:claude-app: current T3 claudeAgent per-task transport lacks candidate plugin path, settings, and environment overrides; installed Claude smoke proof is unavailable through this transport"
+  exit 1
+fi
+
 legacy_command_dir="$repo/plugins/pstack/commands"
 if [ -e "$legacy_command_dir" ]; then
   note "FAIL: legacy command layer still exists: $legacy_command_dir"
@@ -51,7 +56,7 @@ fi
 legacy_model_pins="$(
   grep -REn \
     --include='*.md' --include='*.ts' --include='*.sh' \
-    'claude:claude-(fable|opus)-[0-9]|^model: claude-(fable|opus)-[0-9]|--model claude-(fable|opus)-[0-9]' \
+    'claude:claude-(fable|opus|haiku)-[0-9]|^model: claude-(fable|opus|haiku)-[0-9]|--model claude-(fable|opus|haiku)-[0-9]' \
     "$repo/plugins/pstack" "$repo/tests" "$repo/README.md" "$repo/docs/reference.md" \
     2>/dev/null || true
 )"
@@ -59,17 +64,17 @@ standalone_code_pins="$(
   grep -REn \
     --include='*.ts' --include='*.js' \
     --exclude='*.test.ts' --exclude='*.test.js' \
-    "['\"]claude-(fable|opus)-[0-9]" \
+    "['\"]claude-(fable|opus|haiku)-[0-9]" \
     "$repo/plugins/pstack" \
     2>/dev/null || true
 )"
 if [ -n "$legacy_model_pins" ] || [ -n "$standalone_code_pins" ]; then
-  note "FAIL: active Fable or Opus configuration still pins a model revision:"
+  note "FAIL: active Fable, Opus, or Haiku configuration still pins a model revision:"
   [ -z "$legacy_model_pins" ] || note "$legacy_model_pins"
   [ -z "$standalone_code_pins" ] || note "$standalone_code_pins"
   fail=1
 else
-  note "ok: active Fable and Opus configuration uses rolling aliases"
+  note "ok: active Fable, Opus, and Haiku configuration uses rolling aliases"
 fi
 
 # Static invariant (CHANGES maintenance note): setup-pstack's first-run `arena runners`
@@ -464,42 +469,5 @@ note "Checking non-shipped verification helper"
   bun run test
   bun run typecheck
 )
-
-if [ "${PSTACK_STATIC_ONLY:-0}" = "1" ]; then
-  exit "$fail"
-fi
-
-scratch="$(mktemp -d)"
-trap 'rm -rf "$scratch"' EXIT
-mkdir -p "$scratch/.claude-plugin" "$scratch/skills/foo"
-printf '%s\n' '{"name": "testplug", "version": "0.0.1", "description": "native skill repro"}' \
-  > "$scratch/.claude-plugin/plugin.json"
-cat > "$scratch/skills/foo/SKILL.md" <<'EOF'
----
-name: foo
-description: collision test skill
----
-
-Say exactly: SKILL-RAN
-Then stop. Do not invoke any skill or tool.
-EOF
-
-run() {
-  claude -p --plugin-dir "$scratch" --model fable --effort max --max-turns 3 "$1" < /dev/null 2>&1
-}
-
-check() { # $1 label, $2 expected marker, $3 output
-  if printf '%s' "$3" | grep -q "$2"; then
-    note "ok: $1 -> $2"
-  else
-    note "FAIL: $1 expected $2, got: $3"
-    fail=1
-  fi
-}
-
-invoke='Call the Skill tool with skill "testplug:foo" exactly once and follow what it says.'
-
-check "model-initiated Skill-tool invocation" "SKILL-RAN" "$(run "$invoke")"
-check "user /testplug:foo invocation" "SKILL-RAN" "$(run '/testplug:foo')"
 
 exit "$fail"

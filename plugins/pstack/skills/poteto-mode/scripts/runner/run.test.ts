@@ -76,10 +76,10 @@ if (delay > 0) await Bun.sleep(delay);
 if (process.env.FAKE_TIMEOUT === "1" && !args.includes("status") && !args.includes("models")) {
   await Bun.sleep(5_000);
 }
+if (isPreflight && process.env.FAKE_REMOVE_EXECUTABLE_AFTER_PREFLIGHT === "1") {
+  unlinkSync(process.argv[1]);
+}
 if (name === "claude" && args[0] === "auth") {
-  if (process.env.FAKE_REMOVE_EXECUTABLE_AFTER_PREFLIGHT === "1") {
-    unlinkSync(process.argv[1]);
-  }
   console.log(JSON.stringify({loggedIn:true}));
   process.exit(0);
 }
@@ -152,7 +152,7 @@ if (process.env.FAKE_NOISY_FAILURE === "1") {
 }
 if (stage === "model" && process.env.FAKE_DESCENDANT_HOLDS_PIPES_MS) {
   const seconds = Number(process.env.FAKE_DESCENDANT_HOLDS_PIPES_MS) / 1000;
-  const descendant = Bun.spawn(["/bin/sh", "-c", "sleep " + seconds], {
+  const descendant = Bun.spawn(["/bin/sh", "-c", "exec sleep " + seconds], {
     stdin: "ignore",
     stdout: "inherit",
     stderr: "inherit",
@@ -163,6 +163,9 @@ if (stage === "model" && process.env.FAKE_DESCENDANT_HOLDS_PIPES_MS) {
   descendant.unref();
 }
 if (stage === "model" && process.env.FAKE_SELF_SIGNAL) {
+  if (process.env.FAKE_MODEL_EXITING_PATH) {
+    writeFileSync(process.env.FAKE_MODEL_EXITING_PATH, String(process.pid));
+  }
   process.kill(process.pid, process.env.FAKE_SELF_SIGNAL);
   await Bun.sleep(5_000);
 }
@@ -306,6 +309,62 @@ async function waitForExit(pid: number): Promise<void> {
   throw new Error(`timed out waiting for process ${pid} to exit`);
 }
 
+async function within<T>(pending: Promise<T>, milliseconds: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      pending,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`fixture did not finish within ${milliseconds}ms`)), milliseconds);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+function killFixtureProcess(path: string): void {
+  if (!existsSync(path)) return;
+  const pid = Number(readFileSync(path, "utf8"));
+  if (processIsAlive(pid)) process.kill(pid, "SIGKILL");
+}
+
+async function postExitDeadlineReceipt(suffix: string, selfSignal?: "SIGTERM"): Promise<RunnerReceipt> {
+  const descendantPidPath = join(scratch, `${suffix}-descendant.pid`);
+  const modelExiting = join(scratch, `${suffix}-model.exiting`);
+  const input = { ...options("grok", suffix), timeoutMs: 700 };
+  process.env.FAKE_DESCENDANT_HOLDS_PIPES_MS = "30000";
+  process.env.FAKE_DESCENDANT_PID_PATH = descendantPidPath;
+  process.env.FAKE_MODEL_EXITING_PATH = modelExiting;
+  // These 400 ms delays replay slow startup independently of the controlled deadline clock.
+  process.env.FAKE_PREFLIGHT_DELAY_MS = "400";
+  process.env.FAKE_MODEL_DELAY_MS = "400";
+  if (selfSignal !== undefined) process.env.FAKE_SELF_SIGNAL = selfSignal;
+  const started = Date.now();
+  let now = started;
+  const clock = spyOn(Date, "now").mockImplementation(() => now);
+  const pending = runLane(input, started);
+  let childReaped = false;
+  try {
+    await waitFor(descendantPidPath);
+    await waitFor(modelExiting);
+    await waitForExit(Number(readFileSync(modelExiting, "utf8")));
+    childReaped = true;
+    expect(processIsAlive(Number(readFileSync(descendantPidPath, "utf8")))).toBe(true);
+    // Expire after the direct child is reaped and its descendant still owns the pipes.
+    now = started + input.timeoutMs;
+    expect((await within(pending, 3_000)).exitCode).toBe(124);
+    const recorded = receipt(input.receiptPath);
+    expect(recorded.elapsedMs).toBe(input.timeoutMs);
+    return recorded;
+  } finally {
+    if (!childReaped) killFixtureProcess(modelExiting);
+    killFixtureProcess(descendantPidPath);
+    clock.mockRestore();
+    await within(pending, 3_000);
+  }
+}
+
 beforeEach(() => {
   scratch = mkdtempSync(join(tmpdir(), "pstack-runner-test-"));
   bin = join(scratch, "bin");
@@ -426,24 +485,24 @@ describe("Codex parent sandbox diagnostics", () => {
   it("names likely Codex sandbox cause after child failure", async () => {
     process.env.CODEX_SANDBOX_NETWORK_DISABLED = "1";
     const invoked = join(scratch, "model-invoked.json");
-    writeFileSync(join(bin, "claude"), `#!/usr/bin/env bun
+    writeFileSync(join(bin, "grok"), `#!/usr/bin/env bun
 import { writeFileSync } from "node:fs";
-if (process.argv[2] === "auth") {
-  console.log(JSON.stringify({ loggedIn: true }));
+if (process.argv[2] === "models") {
+  console.log("You are logged in with grok.com.\\nAvailable models:\\n  * grok-4.6 (default)");
   process.exit(0);
 }
 writeFileSync(${JSON.stringify(invoked)}, JSON.stringify({
   argv: process.argv.slice(2),
   networkDisabled: process.env.CODEX_SANDBOX_NETWORK_DISABLED ?? null,
 }));
-console.error("ENOTFOUND api.anthropic.com");
+console.error("ENOTFOUND api.x.ai");
 process.exit(1);
 `);
-    const input = options("claude");
+    const input = options("grok");
     const result = await runLane(input);
     const saved = receipt(input.receiptPath);
     expect(JSON.parse(readFileSync(invoked, "utf8"))).toMatchObject({
-      argv: expect.arrayContaining(["--model", "fable"]),
+      argv: expect.arrayContaining(["--model", "grok-4.6"]),
       networkDisabled: null,
     });
     expect(result.exitCode).toBe(70);
@@ -453,31 +512,31 @@ process.exit(1);
     expect(saved.error?.message).toContain("child exited with status 1");
     expect(saved.error?.message).toContain("likely cause: Codex parent sandbox has network disabled");
     expect(saved.error?.evidence).toStartWith("likely cause: Codex parent sandbox has network disabled");
-    expect(saved.error?.evidence).toContain("ENOTFOUND api.anthropic.com");
+    expect(saved.error?.evidence).toContain("ENOTFOUND api.x.ai");
     expect(saved.error?.message).toContain("provider-dispatch.md#host-and-parent-prerequisites");
     expect(saved.schemaVersion).toBe(1);
     expect(saved.model).toBe(input.model);
     expect(saved.effort).toBe(input.effort);
-    expect(readFileSync(streamPath(saved.stderrPath), "utf8")).toBe("ENOTFOUND api.anthropic.com\n");
+    expect(readFileSync(streamPath(saved.stderrPath), "utf8")).toBe("ENOTFOUND api.x.ai\n");
     expect(existsSync(input.outputPath)).toBe(false);
   });
 
   for (const marker of [undefined, "0", "true"]) {
     it(`does not infer blocked network from marker ${marker}`, async () => {
       if (marker !== undefined) process.env.CODEX_SANDBOX_NETWORK_DISABLED = marker;
-      writeFileSync(join(bin, "claude"), `#!/usr/bin/env bun
-if (process.argv[2] === "auth") {
-  console.log(JSON.stringify({ loggedIn: true }));
+      writeFileSync(join(bin, "grok"), `#!/usr/bin/env bun
+if (process.argv[2] === "models") {
+  console.log("You are logged in with grok.com.\\nAvailable models:\\n  * grok-4.6 (default)");
   process.exit(0);
 }
-console.error("ENOTFOUND api.anthropic.com; EACCES local-state");
+console.error("ENOTFOUND api.x.ai; EACCES local-state");
 process.exit(1);
 `);
-      const result = await runLane(options("claude"));
+      const result = await runLane(options("grok"));
       expect(result.exitCode).toBe(70);
       expect(result.receipt.error).toEqual({
         message: "child exited with status 1",
-        evidence: "ENOTFOUND api.anthropic.com; EACCES local-state",
+        evidence: "ENOTFOUND api.x.ai; EACCES local-state",
       });
     });
   }
@@ -549,7 +608,7 @@ process.exit(1);
     });
   }
 
-  for (const provider of ["claude", "grok"] as const) {
+  for (const provider of ["grok", "cursor"] as const) {
     it(`leaves successful ${provider} lanes unchanged with the marker`, async () => {
       process.env.CODEX_SANDBOX_NETWORK_DISABLED = "1";
       const result = await runLane({ ...options(provider), parent: "codex" });
@@ -887,7 +946,7 @@ printf '%s\\n' '{"type":"thread.started","thread_id":"isolated"}' '{"type":"item
     });
   }
 
-  for (const provider of ["claude", "codex", "grok", "cursor", "kimi"] as const) {
+  for (const provider of ["codex", "grok", "cursor", "kimi"] as const) {
     it(`executes and receipts the ${provider} external lane`, async () => {
       const input = options(provider);
       const result = await runLane(input);
@@ -909,9 +968,6 @@ printf '%s\\n' '{"type":"thread.started","thread_id":"isolated"}' '{"type":"item
       expect(readFileSync(streamPath(saved.stderrPath))).toEqual(Buffer.alloc(0));
       for (const path of [saved.stdoutPath, saved.stderrPath]) {
         expect(statSync(streamPath(path)).mode & 0o777).toBe(0o600);
-      }
-      if (provider === "claude") {
-        expect(receipt(input.receiptPath).reportedModel).toBe("claude-fable-9-9");
       }
     });
   }
@@ -1071,6 +1127,127 @@ printf '%s\\n' '{"type":"thread.started","thread_id":"isolated"}' '{"type":"item
       },
     });
   });
+
+  for (const scenario of [
+    {
+      name: "connection error after reading authentication code",
+      diagnostic: "error: failed to run prompt: provider.connection_error: Connection error.",
+      status: "child-failed", exitCode: 70,
+    },
+    {
+      name: "OAuth refresh connection error",
+      diagnostic: "error: failed to run prompt: provider.connection_error: OAuth authentication refresh connection failed.",
+      status: "child-failed", exitCode: 70,
+    },
+    {
+      name: "connection diagnostic quoting a credential error",
+      diagnostic: "error: failed to run prompt: provider.connection_error: Upstream returned text:\nerror: Provider credential missing",
+      status: "child-failed", exitCode: 70,
+    },
+    {
+      name: "unknown failure mentioning authentication",
+      diagnostic: "error: failed to run prompt: Unknown authentication middleware failure.",
+      status: "child-failed", exitCode: 70,
+    },
+    {
+      name: "absent CLI diagnostic after reviewing error strings",
+      diagnostic: "Warning: authentication module was reviewed.",
+      status: "child-failed", exitCode: 70,
+    },
+    {
+      name: "missing credential",
+      diagnostic: "error: Provider credential missing\n\nmessage:\nprovider managed:kimi-code has no credential configured",
+      status: "unauthenticated", exitCode: 77,
+    },
+    {
+      name: "colored logout diagnostic",
+      diagnostic: "\u001b[31merror: failed to run prompt: auth.login_required: Sign in again.\u001b[0m\nSee log: /run-owned/kimi-code/logs/kimi.log",
+      status: "unauthenticated", exitCode: 77,
+    },
+    {
+      name: "provider authentication error",
+      diagnostic: "error: failed to run prompt: provider.auth_error: The token is expired.",
+      status: "unauthenticated", exitCode: 77,
+    },
+    {
+      name: "HTTP 401 authentication failure",
+      diagnostic: "error: failed to run prompt: provider.auth_error: 401 Unauthorized",
+      status: "unauthenticated", exitCode: 77,
+    },
+    {
+      name: "five-hour quota refusal observed on Kimi 2.1.1",
+      diagnostic: "error: failed to run prompt: provider.auth_error: 403 You've reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends. To continue now, purchase extra usage or upgrade your plan: https://www.kimi.com/membership/subscription?tab=quota\nSee log: /Users/rever/.kimi-code/logs/kimi-code.log",
+      status: "child-failed", exitCode: 70,
+    },
+    ...[
+      "403 You've reached your weekly usage limit.",
+      "403 You’ve reached your 5-hour usage limit.",
+      "403 This model is not included in your plan.",
+      "403 Forbidden",
+    ].map(message => ({
+      name: `synthetic provider refusal: ${message}`,
+      diagnostic: `error: failed to run prompt: provider.auth_error: ${message}`,
+      status: "child-failed", exitCode: 70,
+    })),
+    {
+      name: "typed HTTP 403 refusal",
+      diagnostic: "error: Provider authentication error\n\nmessage:\n403 Forbidden",
+      status: "child-failed", exitCode: 70,
+    },
+    {
+      name: "typed HTTP 401 authentication failure",
+      diagnostic: "error: Provider authentication failed\n\nmessage:\n401 Unauthorized",
+      status: "unauthenticated", exitCode: 77,
+    },
+    {
+      name: "HTTP 401 remains authoritative over later quoted HTTP 403 text",
+      diagnostic: "error: failed to run prompt: provider.auth_error: 401 Unauthorized\nDetails mention 403 Forbidden",
+      status: "unauthenticated", exitCode: 77,
+    },
+    {
+      name: "terminal clear-line logout diagnostic",
+      diagnostic: "\u001b[2K\u001b[31merror: failed to run prompt: auth.login_required: Sign in again.\u001b[0m",
+      status: "unauthenticated", exitCode: 77,
+    },
+    {
+      name: "missing served model",
+      diagnostic: "error: failed to run prompt: model.not_found: Model k3 does not exist.",
+      status: "unavailable-model", exitCode: 69,
+    },
+    {
+      name: "model configuration failure",
+      diagnostic: "error: Model not found\n\nmessage:\nModel k3 does not exist.",
+      status: "unavailable-model", exitCode: 69,
+    },
+  ]) {
+    it(`classifies Kimi ${scenario.name} from the CLI diagnostic`, async () => {
+      const source = 'if (/not logged in|authentication|sign in|invalid model/i.test(value)) return "unauthenticated";';
+      const tool = JSON.stringify({ role: "tool", tool_call_id: "read1", content: source });
+      const assistant = JSON.stringify({ role: "assistant", content: "The source contains authentication and model-not-found classifications." });
+      writeFileSync(join(bin, "kimi"), `#!/usr/bin/env bun
+if (process.argv[2] === "provider") {
+  console.log('{"models":{"kimi-code/k3":{"supportEfforts":["high"]}}}');
+  process.exit(0);
+}
+console.log(${JSON.stringify(tool)});
+console.log(${JSON.stringify(assistant)});
+console.error(${JSON.stringify(scenario.diagnostic)});
+process.exit(1);
+`);
+      const input = options("kimi");
+      const result = await runLane(input);
+      expect(result.exitCode).toBe(scenario.exitCode);
+      expect(receipt(input.receiptPath)).toMatchObject({
+        status: scenario.status,
+        preflight: { status: "passed" },
+        exitCode: 1,
+        error: { evidence: expect.stringContaining(scenario.diagnostic) },
+      });
+      expect(existsSync(input.outputPath)).toBe(false);
+      expect(readFileSync(streamPath(result.receipt.stdoutPath), "utf8")).toContain(source.replaceAll('"', '\\"'));
+      expect(readFileSync(streamPath(result.receipt.stderrPath), "utf8")).toContain(scenario.diagnostic);
+    });
+  }
 
   it("names a missing Kimi model alias as unavailable", async () => {
     process.env.FAKE_KIMI_MISSING_MODEL = "1";
@@ -1563,7 +1740,7 @@ console.log(JSON.stringify({ type: "result", result: "MALFORMED_TERMINAL_EVENT" 
 
   it("kills a timed-out child and preserves a failure receipt", async () => {
     process.env.FAKE_TIMEOUT = "1";
-    const input = { ...options("claude"), timeoutMs: 30 };
+    const input = { ...options("grok"), timeoutMs: 30 };
     const result = await runLane(input);
     expect(result.exitCode).toBe(124);
     expect(existsSync(input.outputPath)).toBe(false);
@@ -1572,7 +1749,7 @@ console.log(JSON.stringify({ type: "result", result: "MALFORMED_TERMINAL_EVENT" 
 
   it("does not spawn the model when preflight exhausts the wrapper deadline", async () => {
     const modelStarted = join(scratch, "deadline-model.started");
-    const input = { ...options("claude", "preflight-deadline"), timeoutMs: 300 };
+    const input = { ...options("grok", "preflight-deadline"), timeoutMs: 300 };
     const runner = Bun.spawn(runnerArgs(input), {
       cwd: scratch,
       env: {
@@ -1597,7 +1774,7 @@ console.log(JSON.stringify({ type: "result", result: "MALFORMED_TERMINAL_EVENT" 
   });
 
   it("lets a delayed wrapper lane finish when timeout is omitted", async () => {
-    const input = options("claude", "unbounded-default");
+    const input = options("grok", "unbounded-default");
     const runner = Bun.spawn(runnerArgs(input), {
       cwd: scratch,
       env: { ...process.env, FAKE_MODEL_DELAY_MS: "400" },
@@ -1618,7 +1795,7 @@ console.log(JSON.stringify({ type: "result", result: "MALFORMED_TERMINAL_EVENT" 
 
   it("keeps a very long explicit deadline without timer overflow", async () => {
     const input = {
-      ...options("claude", "long-runtime-deadline"),
+      ...options("grok", "long-runtime-deadline"),
       timeoutMs: 2_147_483_648,
     };
     const runner = Bun.spawn(runnerArgs(input), {
@@ -1644,7 +1821,7 @@ console.log(JSON.stringify({ type: "result", result: "MALFORMED_TERMINAL_EVENT" 
     const modelStarted = join(scratch, "expired-model.started");
     process.env.FAKE_PREFLIGHT_STARTED_PATH = preflightStarted;
     process.env.FAKE_MODEL_STARTED_PATH = modelStarted;
-    const input = { ...options("claude", "expired-at-entry"), timeoutMs: 100 };
+    const input = { ...options("grok", "expired-at-entry"), timeoutMs: 100 };
     const stdout: string[] = [];
     const stderr: string[] = [];
 
@@ -1669,83 +1846,77 @@ console.log(JSON.stringify({ type: "result", result: "MALFORMED_TERMINAL_EVENT" 
   });
 
   it("spends one explicit deadline across preflight and model execution", async () => {
-    process.env.FAKE_PREFLIGHT_DELAY_MS = "1200";
-    process.env.FAKE_MODEL_DELAY_MS = "1200";
-    const input = { ...options("claude"), timeoutMs: 1_500 };
-    const result = await runLane(input);
-    const recorded = receipt(input.receiptPath);
-
-    expect(result.exitCode).toBe(124);
-    expect(recorded.status).toBe("timed-out");
-    expect(recorded.preflight.status).toBe("passed");
-    expect(recorded.elapsedMs).toBeLessThan(2_100);
+    const preflightStarted = join(scratch, "shared-preflight.started");
+    const releasePreflight = join(scratch, "shared-preflight.release");
+    const modelStarted = join(scratch, "shared-model.started");
+    const gatedFake = fake.replace(
+      'if (name === "grok" && args[0] === "models") {',
+      `if (name === "grok" && args[0] === "models") {
+        while (!existsSync(${JSON.stringify(releasePreflight)})) await Bun.sleep(10);`
+    );
+    expect(gatedFake).not.toBe(fake);
+    writeFileSync(join(bin, "grok"), gatedFake);
+    process.env.FAKE_PREFLIGHT_STARTED_PATH = preflightStarted;
+    process.env.FAKE_MODEL_STARTED_PATH = modelStarted;
+    process.env.FAKE_PREFLIGHT_DELAY_MS = "400";
+    process.env.FAKE_MODEL_DELAY_MS = "30000";
+    const input = { ...options("grok"), timeoutMs: 1_500 };
+    const started = Date.now();
+    let now = started;
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    const pending = runLane(input, started);
+    let preflightReaped = false;
+    let pendingSettled = false;
+    try {
+      await waitFor(preflightStarted);
+      // Charge 1,200 ms to the running preflight, leaving 300 ms for the model.
+      now = started + 1_200;
+      writeFileSync(releasePreflight, "release");
+      await waitFor(modelStarted);
+      await waitForExit(Number(readFileSync(preflightStarted, "utf8")));
+      preflightReaped = true;
+      now = started + input.timeoutMs;
+      const result = await within(pending, 3_000);
+      pendingSettled = true;
+      expect(result.exitCode).toBe(124);
+      expect(receipt(input.receiptPath)).toMatchObject({
+        status: "timed-out",
+        preflight: { status: "passed" },
+        elapsedMs: input.timeoutMs,
+      });
+    } finally {
+      writeFileSync(releasePreflight, "release");
+      if (!pendingSettled) {
+        if (!preflightReaped) killFixtureProcess(preflightStarted);
+        killFixtureProcess(modelStarted);
+      }
+      clock.mockRestore();
+      await within(pending, 3_000);
+    }
   });
 
   it("bounds a descendant-held pipe by the explicit deadline without fabricating a signal", async () => {
-    const descendantPidPath = join(scratch, "deadline-descendant.pid");
-    const input = { ...options("claude", "deadline-drain"), timeoutMs: 700 };
-    const runner = Bun.spawn(runnerArgs(input), {
-      cwd: scratch,
-      env: {
-        ...process.env,
-        FAKE_DESCENDANT_HOLDS_PIPES_MS: "5000",
-        FAKE_DESCENDANT_PID_PATH: descendantPidPath,
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const stdout = new Response(runner.stdout).text();
-    const stderr = new Response(runner.stderr).text();
-
-    expect(await exitWithin(runner, 2_000)).toBe(124);
-    await Promise.all([stdout, stderr]);
-    const recorded = receipt(input.receiptPath);
-    expect(recorded).toMatchObject({
+    expect(await postExitDeadlineReceipt("deadline-drain")).toMatchObject({
       status: "timed-out",
       exitCode: 0,
       signal: null,
       preflight: { status: "passed" },
     });
-    expect(recorded.elapsedMs).toBeLessThan(1_500);
-
-    const descendantPid = Number(readFileSync(descendantPidPath, "utf8"));
-    if (processIsAlive(descendantPid)) process.kill(descendantPid, "SIGKILL");
   });
 
   it("does not claim a signal was sent to an already signal-reaped child", async () => {
-    const descendantPidPath = join(scratch, "signalled-descendant.pid");
-    const input = { ...options("claude", "signalled-drain"), timeoutMs: 700 };
-    const runner = Bun.spawn(runnerArgs(input), {
-      cwd: scratch,
-      env: {
-        ...process.env,
-        FAKE_DESCENDANT_HOLDS_PIPES_MS: "5000",
-        FAKE_DESCENDANT_PID_PATH: descendantPidPath,
-        FAKE_SELF_SIGNAL: "SIGTERM",
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const stdout = new Response(runner.stdout).text();
-    const stderr = new Response(runner.stderr).text();
-
-    expect(await exitWithin(runner, 2_000)).toBe(124);
-    await Promise.all([stdout, stderr]);
-    expect(receipt(input.receiptPath)).toMatchObject({
+    expect(await postExitDeadlineReceipt("signalled-drain", "SIGTERM")).toMatchObject({
       status: "timed-out",
       exitCode: 143,
       signal: null,
       preflight: { status: "passed" },
     });
-
-    const descendantPid = Number(readFileSync(descendantPidPath, "utf8"));
-    if (processIsAlive(descendantPid)) process.kill(descendantPid, "SIGKILL");
   });
 
   it("lets manual cancellation end a post-exit pipe drain without a default timeout", async () => {
     const descendantPidPath = join(scratch, "cancel-descendant.pid");
     const modelExiting = join(scratch, "cancel-model.exiting");
-    const input = options("claude", "cancel-drain");
+    const input = options("grok", "cancel-drain");
     const runner = Bun.spawn(runnerArgs(input), {
       cwd: scratch,
       env: {
@@ -1778,7 +1949,7 @@ console.log(JSON.stringify({ type: "result", result: "MALFORMED_TERMINAL_EVENT" 
   });
 
   it("clears a losing long-deadline timer when the shipped wrapper succeeds", async () => {
-    const input = { ...options("claude", "long-deadline"), timeoutMs: 60_000 };
+    const input = { ...options("grok", "long-deadline"), timeoutMs: 60_000 };
     const runner = Bun.spawn(runnerArgs(input), {
       cwd: scratch,
       env: { ...process.env },
@@ -1794,7 +1965,7 @@ console.log(JSON.stringify({ type: "result", result: "MALFORMED_TERMINAL_EVENT" 
   });
 
   it("cancels a preflight with SIGINT and writes a terminal receipt", async () => {
-    const input = options("claude", "preflight-cancelled");
+    const input = options("grok", "preflight-cancelled");
     const started = join(scratch, "preflight-child.started");
     const terminated = join(scratch, "preflight-child.terminated");
     const isolatedRunner = join(scratch, "isolated-runner");
@@ -1935,7 +2106,7 @@ console.log(JSON.stringify({ type: "result", result: "MALFORMED_TERMINAL_EVENT" 
   });
 
   it("refuses a second writer for an already-reserved path", async () => {
-    const input = options("claude");
+    const input = options("grok");
     writeFileSync(input.outputPath, "owned");
     await expect(runLane(input)).rejects.toThrow();
     expect(readFileSync(input.outputPath, "utf8")).toBe("owned");
@@ -1943,19 +2114,31 @@ console.log(JSON.stringify({ type: "result", result: "MALFORMED_TERMINAL_EVENT" 
   });
 
   it("terminalizes catchable failures after reserving output paths", async () => {
-    const unreadable = options("claude", "unreadable-prompt");
-    chmodSync(unreadable.promptPath, 0o000);
-    const unreadableRunner = Bun.spawn(runnerArgs(unreadable), {
-      cwd: scratch,
-      env: { ...process.env },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const unreadableStdout = new Response(unreadableRunner.stdout).text();
-    const unreadableStderr = new Response(unreadableRunner.stderr).text();
-    expect(await unreadableRunner.exited).toBe(70);
-    await Promise.all([unreadableStdout, unreadableStderr]);
-    chmodSync(unreadable.promptPath, 0o600);
+    const unreadable = options("grok", "unreadable-prompt");
+    const unreadableStdout: string[] = [];
+    const unreadableStderr: string[] = [];
+    const originalRead = fs.readFileSync;
+    let injectedFailures = 0;
+    const read = spyOn(fs, "readFileSync").mockImplementation(new Proxy(originalRead, {
+      apply(target, receiver, args) {
+        if (args[0] === unreadable.promptPath) {
+          injectedFailures += 1;
+          throw new Error("fixture prompt read failure");
+        }
+        return Reflect.apply(target, receiver, args);
+      },
+    }));
+    try {
+      expect(await main(runnerArgs(unreadable).slice(1), Date.now(), {
+        stdout: (value) => unreadableStdout.push(value),
+        stderr: (value) => unreadableStderr.push(value),
+      })).toBe(70);
+      expect(injectedFailures).toBe(1);
+      expect(unreadableStdout).toEqual([]);
+      expect(unreadableStderr.join("")).toContain('"status":"child-failed"');
+    } finally {
+      read.mockRestore();
+    }
 
     const preservedReceipt = readFileSync(unreadable.receiptPath, "utf8");
     expect(statSync(unreadable.receiptPath).size).toBeGreaterThan(0);
@@ -1963,7 +2146,10 @@ console.log(JSON.stringify({ type: "result", result: "MALFORMED_TERMINAL_EVENT" 
     expect(receipt(unreadable.receiptPath)).toMatchObject({
       status: "child-failed",
       preflight: { status: "not-run" },
-      error: { message: "launcher failed after reserving output paths" },
+      error: {
+        message: "launcher failed after reserving output paths",
+        evidence: "fixture prompt read failure",
+      },
     });
 
     const samePaths = Bun.spawn(runnerArgs(unreadable), {
@@ -1978,7 +2164,7 @@ console.log(JSON.stringify({ type: "result", result: "MALFORMED_TERMINAL_EVENT" 
     await Promise.all([sameStdout, sameStderr]);
     expect(readFileSync(unreadable.receiptPath, "utf8")).toBe(preservedReceipt);
 
-    const spawnFailure = options("claude", "spawn-failure");
+    const spawnFailure = options("grok", "spawn-failure");
     const modelStarted = join(scratch, "spawn-failure-model.started");
     const spawnRunner = Bun.spawn(runnerArgs(spawnFailure), {
       cwd: scratch,
@@ -2001,8 +2187,8 @@ console.log(JSON.stringify({ type: "result", result: "MALFORMED_TERMINAL_EVENT" 
       preflight: { status: "passed" },
     });
 
-    makeExecutable("claude");
-    const retry = options("claude", "post-reservation-retry");
+    makeExecutable("grok");
+    const retry = options("grok", "post-reservation-retry");
     expect((await runLane(retry)).exitCode).toBe(0);
     expect(receipt(retry.receiptPath).status).toBe("complete");
   });
@@ -2019,6 +2205,167 @@ console.log(JSON.stringify({ type: "result", result: "MALFORMED_TERMINAL_EVENT" 
     );
     expect(existsSync(input.outputPath)).toBe(false);
     expect(existsSync(input.receiptPath)).toBe(false);
+  });
+
+  it("rejects a dated Haiku pin before it can stay pinned", async () => {
+    const input = { ...options("claude"), model: "claude-haiku-4-5-20251001" };
+    await expect(runLane(input)).rejects.toThrow(
+      "normalize it to haiku before invoking the runner"
+    );
+    expect(existsSync(input.outputPath)).toBe(false);
+    expect(existsSync(input.receiptPath)).toBe(false);
+  });
+});
+
+describe("Codex-parent claude route refusal", () => {
+  let invoked = "";
+
+  beforeEach(() => {
+    invoked = join(scratch, "claude-invoked.log");
+    writeFileSync(join(bin, "claude"), `#!/bin/sh
+printf '%s\\n' "$*" >> ${JSON.stringify(invoked)}
+exit 0
+`);
+    chmodSync(join(bin, "claude"), 0o755);
+  });
+
+  function refusedReceipt(input: RunnerOptions): RunnerReceipt {
+    return {
+      schemaVersion: 1,
+      status: "route-refused",
+      parent: "codex",
+      provider: "claude",
+      model: input.model,
+      effort: input.effort,
+      mode: input.mode,
+      cwd: input.cwd,
+      promptPath: input.promptPath,
+      outputPath: input.outputPath,
+      stdoutPath: `${input.receiptPath}.stdout`,
+      stderrPath: `${input.receiptPath}.stderr`,
+      startedAt: expect.any(String),
+      completedAt: expect.any(String),
+      elapsedMs: expect.any(Number),
+      executable: null,
+      preflight: { argv: [], status: "not-run", evidence: "" },
+      argv: [],
+      exitCode: null,
+      signal: null,
+      reportedModel: null,
+      modelVerified: false,
+      modelEvidence: null,
+      sessionId: null,
+      usage: null,
+      costUsd: null,
+      error: {
+        message: `a codex parent does not run claude lanes in the external runner; the parent dispatches claude:${input.model}@${input.effort} through its T3 Claude Agent route or records a dropout; see provider-dispatch.md#the-t3-claude-agent-route`,
+        evidence: "parent=codex provider=claude",
+      },
+    };
+  }
+
+  function streamPaths(input: RunnerOptions): readonly [string, string] {
+    return [`${input.receiptPath}.stdout`, `${input.receiptPath}.stderr`];
+  }
+
+  for (const model of ["fable", "opus", "haiku"]) {
+    for (const mode of ["read-only", "isolated-write"] as const) {
+      it(`refuses claude:${model} in ${mode} mode without touching the CLI or applying a sandbox hint`, async () => {
+        process.env.CODEX_SANDBOX_NETWORK_DISABLED = "1";
+        const preflightStarted = join(scratch, "refused-preflight.started");
+        const modelStarted = join(scratch, "refused-model.started");
+        process.env.FAKE_PREFLIGHT_STARTED_PATH = preflightStarted;
+        process.env.FAKE_MODEL_STARTED_PATH = modelStarted;
+        const which = spyOn(Bun, "which");
+        const input: RunnerOptions = {
+          ...options("claude", `refused-${model}-${mode}`),
+          model,
+          mode,
+        };
+        expect(input.parent).toBe("codex");
+
+        let result: Awaited<ReturnType<typeof runLane>>;
+        try {
+          result = await runLane(input);
+          expect(which).not.toHaveBeenCalled();
+        } finally {
+          which.mockRestore();
+        }
+
+        expect(result.exitCode).toBe(78);
+        expect(result.receipt).toEqual(refusedReceipt(input));
+        expect(receipt(input.receiptPath)).toEqual(result.receipt);
+        expect(statSync(input.receiptPath).mode & 0o777).toBe(0o600);
+        expect(existsSync(input.outputPath)).toBe(false);
+        for (const path of streamPaths(input)) {
+          expect(statSync(path).size).toBe(0);
+          expect(statSync(path).mode & 0o777).toBe(0o600);
+        }
+        expect(existsSync(invoked)).toBe(false);
+        expect(existsSync(preflightStarted)).toBe(false);
+        expect(existsSync(modelStarted)).toBe(false);
+      });
+    }
+  }
+
+  it("refuses through the CLI with exit 78 and the receipt on stderr", async () => {
+    const input = options("claude", "refused-cli");
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const exitCode = await main(runnerArgs(input).slice(1), Date.now(), {
+      stdout: (value) => stdout.push(value),
+      stderr: (value) => stderr.push(value),
+    });
+
+    expect(exitCode).toBe(78);
+    expect(stdout).toEqual([]);
+    expect(JSON.parse(stderr.join(""))).toEqual(refusedReceipt(input));
+    expect(receipt(input.receiptPath)).toEqual(refusedReceipt(input));
+    expect(existsSync(input.outputPath)).toBe(false);
+    expect(existsSync(invoked)).toBe(false);
+  });
+
+  it("refuses without reading the prompt's contents", async () => {
+    const input = options("claude", "refused-unreadable");
+    chmodSync(input.promptPath, 0o000);
+    try {
+      const result = await runLane(input);
+      expect(result.exitCode).toBe(78);
+      expect(result.receipt).toEqual(refusedReceipt(input));
+    } finally {
+      chmodSync(input.promptPath, 0o600);
+    }
+    expect(existsSync(invoked)).toBe(false);
+  });
+
+  for (const owned of ["output", "receipt", "stdout", "stderr"] as const) {
+    it(`preserves a preexisting ${owned} path and rolls back its own reservations`, async () => {
+      const input = options("claude", `refused-collision-${owned}`);
+      const [stdoutPath, stderrPath] = streamPaths(input);
+      const paths = {
+        output: input.outputPath,
+        receipt: input.receiptPath,
+        stdout: stdoutPath,
+        stderr: stderrPath,
+      };
+      writeFileSync(paths[owned], "owned");
+
+      await expect(runLane(input)).rejects.toThrow();
+
+      expect(readFileSync(paths[owned], "utf8")).toBe("owned");
+      for (const [name, path] of Object.entries(paths)) {
+        if (name !== owned) expect(existsSync(path)).toBe(false);
+      }
+      expect(existsSync(invoked)).toBe(false);
+    });
+  }
+
+  it("keeps validation ahead of the refusal", async () => {
+    const input = { ...options("claude", "refused-missing-prompt"), promptPath: join(scratch, "missing.md") };
+    await expect(runLane(input)).rejects.toThrow("prompt is not a file");
+    expect(existsSync(input.outputPath)).toBe(false);
+    expect(existsSync(input.receiptPath)).toBe(false);
+    for (const path of streamPaths(input)) expect(existsSync(path)).toBe(false);
   });
 });
 

@@ -23,12 +23,15 @@ The feature documents below define sub-features, user entry points, driving inst
 
 - `skill-invocation.md`: installed native skills, principle leaves, and project-skill self-test.
 - `setup.md`: setup/routing/model configuration and byte-exact restoration.
-- `isolation.md`: existing native logins, Codex auth symlink, and private run state.
+- `isolation.md`: existing native logins, verification launchers, Codex auth symlink, and private run state.
 - `runner.md`: parent-to-child provider dispatch and receipts.
+- `t3-app.md`: T3 app configuration, request rendezvous, candidate loading, native log binding, and cleanup.
 - `shipped-tools.md`: orchestration, watch, plan checks, audit, and evidence logging.
 - `assets.md`: manifest-declared installed assets on actual consuming harnesses.
-- `recipes.ts`: the headless cases and machine-checked assertions for every selectable feature. A selected feature without one fails the run before any session starts.
+- `recipes.ts`: the native cases and machine-checked assertions for every selectable feature. A selected feature without one fails the run before any session starts.
 
 Consumed `AGENTS.md`/`CLAUDE.md` instructions and `tests/skill-collision-repro.sh` select `project-skill`. `.mergify.yml` is explicitly `nonRuntime`. There are no blanket no-runtime exemptions for `.github/**`, `tests/**`, or `scripts/**`: unregistered instruction/enforcement paths fail closed until their ownership is reviewed and mapped.
 
 Explicit non-runtime repository changes are `no runtime change`. Changes to this verifier always select `project-skill`; they cannot bypass native proof. `--self-test` also selects that exercise, deduplicated in each harness, and is mandatory for this skill's delivery PR. Plugin-runtime proof and local CLI proof remain separate.
+
+Pass `--t3-app <config.json>` to enable app cases. The coordinator refreshes live `orchestrator_capabilities`, dispatches each case through native `delegate_task`, and binds its terminal result to the exact request with `task_status` and `t3_thread_read`. It writes response files atomically. Claude feature cases run on the permanent Claude verification instance, whose launcher the verifier arms with only the exact candidate plugin; runs never edit T3 settings. Codex uses the T3 app only for runner-dispatch cases; all other Codex cases use `codex exec --json` with the run-owned exact-head installation. Capability receipts, mock sessions, summaries, or direct model probes do not replace native app logs, skill/plugin evidence, and fixture assertions.

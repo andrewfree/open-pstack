@@ -59,7 +59,7 @@ export function isolatedEnv(state: string, _harness?: 'claude' | 'codex'): Recor
   const { HOME, USER, LOGNAME } = process.env;
   if (!HOME || !isAbsolute(HOME)) throw new Error('Real HOME must be absolute');
   if (!USER || !LOGNAME) throw new Error('Real USER and LOGNAME are required');
-  return { PATH: process.env.PATH ?? '', HOME, USER, LOGNAME,
+  return { PATH: process.env.PATH ?? '', HOME, USER, LOGNAME, DO_NOT_TRACK: '1',
     TMPDIR: join(state, 'tmp'), TERM: process.env.TERM ?? 'xterm-256color',
     XDG_CONFIG_HOME: join(state, '.config'), XDG_CACHE_HOME: join(state, '.cache'),
     GH_CONFIG_DIR: join(state, '.config/gh'),
@@ -67,6 +67,11 @@ export function isolatedEnv(state: string, _harness?: 'claude' | 'codex'): Recor
     GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'credential.helper', GIT_CONFIG_VALUE_0: '',
     ...(process.env.CLAUDE_CONFIG_DIR !== undefined ? { CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR } : {}),
     CODEX_HOME: join(state, '.codex') };
+}
+export async function initializeCodexHome(state: string): Promise<void> {
+  const home = isolatedEnv(state).CODEX_HOME!;
+  await mkdir(home, { recursive: true, mode: 0o700 });
+  await writeFile(join(home, 'config.toml'), '[analytics]\nenabled = false\n[features]\napps = false\n', { flag: 'wx', mode: 0o600 });
 }
 export async function save(path: string, value: unknown): Promise<void> {
   const json = JSON.stringify(value, null, 2);

@@ -1,4 +1,3 @@
-export const REPO = 'ericlitman/open-pstack';
 export const HARNESSES = ['claude', 'codex'] as const;
 export type Harness = typeof HARNESSES[number];
 export type Phase = 'resolve' | 'classify' | 'prepare' | 'exercise' | 'publish' | 'failed' | 'head-moved';
@@ -39,16 +38,24 @@ export interface GitHub {
   comment(pr: number, body: string): Promise<string>;
   status(sha: string, state: 'success' | 'failure', target: string, description: string): Promise<void>;
 }
-/** One headless native session, normalized by the trusted parent from the harness's own stream. */
+/** One native session, normalized by the trusted parent from the harness's own stream. */
 export interface SessionRecord {
   harness: Harness; exitCode: number; started: number;
   /** Claude: `pstack:<name>` or a project command name. Codex: `pstack:<name>` for installed SKILL.md reads, else the path read. */
   skills: string[];
   /** Shell commands the harness completed successfully. */
   commands: string[];
+  /** Observed shell attempts, including failed or background commands; receipts prove completion. */
+  commandAttempts?: string[];
+  nativeAgents?: { subagentType: string; model: string; effort?: string; declaredEffort?: string;
+    definitionPath?: string; definitionHash?: string; completed: boolean; output: string }[];
+  /** Native T3 tool attempts, including failures, retained for dispatch assertions. */
+  appTools?: { tool: string; arguments: Record<string, unknown>; result: Record<string, unknown> }[];
+  appRoutes?: { providerInstanceId: string; model: string; efforts: string[] }[];
 }
 export interface Driver {
   prepare(receipt: Receipt): Promise<Installation[]>;
   exercise(receipt: Receipt): Promise<Observation[]>;
-  cleanup?(receipt: Receipt): Promise<void>;
+  /** Resolves to a cleanup summary when it differs from the default. */
+  cleanup?(receipt: Receipt): Promise<string | void>;
 }

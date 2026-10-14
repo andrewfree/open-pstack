@@ -1,11 +1,15 @@
 ---
 name: verify-open-pstack
-description: Verify an Open Pstack PR's exact candidate head in native Claude Code and Codex sessions, judge them with machine-checked assertions, and publish the exact-SHA live gate.
+description: Verify exact-candidate behavior through native Claude app and Codex sessions, retain machine-checked evidence, and publish the live gate independently of the builder.
 ---
 
 # Verify Open Pstack
 
 ## Launch
+
+Claude model work must run through the operator's Claude app Agent route, including T3 `claudeAgent`. Headless Claude is prohibited. Supply `--t3-app <config.json>` and coordinate its requests through native T3 tools as described in `features/t3-app.md`. Without that transport, Claude selections fail closed before preparation. Do not change daily plugin settings or treat an ordinary delegated task as installed-candidate proof.
+
+The transport uses two permanent T3 verification instances that the operator adds once. Their binaries are verifier launchers. For each case the verifier arms a launcher with the exact-candidate plugin arguments, run-owned environment, and telemetry opt-out, and restores pass-through afterwards; the existing operator login is reused. The coordinating agent fetches live capabilities and calls `delegate_task`. Provider settings are read-only to the verifier; runs never edit them, and no shell helper launches Claude outside T3. Write coordinator responses atomically and retain unresolved task receipts as described in `features/t3-app.md`. The verifier binds each returned task/run to its native app log, checks the loaded plugin and skill source/body, and evaluates fixture effects. Missing or truncated required evidence fails the case, as does a session that did not start through the armed launcher.
 
 This repository-local, non-shipped skill is shared with Codex through `.agents/skills/verify-open-pstack`. Verifier-changing PRs run from a checkout of their reviewed candidate head; all other PRs run from trusted `main`. The trusted parent owns GitHub reads and publication; candidate processes never receive publisher credentials. Its only GitHub writes are one structured evidence comment and `live-gate` status on the exact candidate SHA; it never queues or merges.
 
@@ -15,25 +19,27 @@ Install development dependencies separately when testing this skill; `verify.sh`
 (cd .claude/skills/verify-open-pstack && bun install --frozen-lockfile --ignore-scripts)
 ```
 
-Then run from the trusted publisher checkout:
+Run from the independent publisher's reviewed checkout. Create the app configuration using discovered provider IDs and state paths, then coordinate the background command:
 
 ```sh
+REPOSITORY=OWNER/REPO # repository that owns the PR
 PR=111 # supplied delivery PR number
-SESSION="$(mktemp -d "${TMPDIR:-/tmp}/open-pstack-evidence.XXXXXX")"
+mkdir -p "$HOME/pstack-verification"
+SESSION="$(mktemp -d "$HOME/pstack-verification/evidence.XXXXXX")"
+chmod 700 "$SESSION"
 EVIDENCE="$SESSION/live" # must not exist yet
-.claude/skills/verify-open-pstack/scripts/verify.sh doctor --output "$SESSION/probe"
-.claude/skills/verify-open-pstack/scripts/verify.sh run --pr "$PR" --self-test --output "$EVIDENCE"
+.claude/skills/verify-open-pstack/scripts/verify.sh run --repo "$REPOSITORY" --pr "$PR" --self-test --t3-app "$SESSION/t3.json" --output "$EVIDENCE"
 ```
 
-Reuse the Claude Code and Codex logins you already have; no extra login or credential source flags. Omit `--self-test` for ordinary plugin verification; it is mandatory for this skill's delivery. An agent runs and judges the whole gate from a non-TTY shell; nothing prompts a person. `--runner-route PROVIDER:MODEL@EFFORT`, repeatable, replaces the runner recipe's fixed external route for each parent whose provider differs from the route's.
+Reuse the Claude Code and Codex logins you already have; no extra login or credential source flags. Omit `--self-test` for ordinary plugin verification; it is mandatory for this skill's delivery. The shell helper may drive supported Codex sessions. It must refuse unavailable Claude app verification; a capability-only doctor result does not grant live readiness. `--runner-route PROVIDER:MODEL@EFFORT`, repeatable, replaces the runner recipe's fixed external route for each parent whose provider differs from the route's.
 
-The publisher revision is recorded separately from the candidate SHA and must equal it when classification selects `project-skill`. Run those PRs from their reviewed candidate head; run all other PRs from trusted `main`. Use a fresh private output directory for every run. The verifier requires an open same-repository PR, pins exact head and base SHAs, classifies immutable Git objects, and rechecks them at phase and publication boundaries. Unknown paths abort; evidence never transfers to another head.
+The publisher revision is recorded separately from the candidate SHA and must equal it when classification selects `project-skill`. Run those PRs from their reviewed candidate head; run all other PRs from trusted `main`. Use a fresh private output directory for every run. The required `--repo OWNER/REPO` binds API reads, candidate clones, receipts, comments, and statuses to one repository. The PR head repository must match that value on initial resolution and later rechecks; there is no implicit upstream default. The verifier requires an open same-repository PR, pins exact head and base SHAs, classifies immutable Git objects, and rechecks them at phase and publication boundaries. Unknown paths abort; evidence never transfers to another head.
 
 ## Doctor
 
-The parent doctor checks Bun, git, both native harness CLIs, and required capabilities. There are no credential-source flags or source-directory authentication checks. Candidate-mode doctor checks only candidate-safe capabilities, not publisher authentication. Capability checks do not prove installation or live behavior; missing requirements fail closed.
+The standalone parent doctor has no app coordinator and refuses Claude before any CLI probe. Preparation with an explicit T3 transport probes Bun, git, and Codex capabilities without claiming live readiness. Candidate-mode doctor checks only candidate-safe capabilities, not publisher authentication. Reports identify `scope: capability-probe`; they never establish installation or live behavior. Missing requirements fail closed.
 
-Candidates retain real `HOME`, `USER`, and `LOGNAME`. Claude uses normal operator config/login. Codex uses a run-owned `CODEX_HOME` with `auth.json` symlinked to the operator's `${CODEX_HOME:-$HOME/.codex}/auth.json`, resolving the daily home before overriding the environment. If that source file is absent, stop with a plain message that this tool needs file-based Codex auth; do not start login. Refresh writes through the symlink to the single existing login file.
+Candidates retain real `HOME`, `USER`, and `LOGNAME`. Claude reuses normal operator config/login without changing daily plugin selection. Codex uses a run-owned `CODEX_HOME` with `auth.json` symlinked to the operator's `${CODEX_HOME:-$HOME/.codex}/auth.json`, resolving the daily home before overriding the environment. If that source file is absent, stop with a plain message that this tool needs file-based Codex auth; do not start login. Refresh writes through the symlink to the single existing login file. Before any Codex probe or plugin command, the verifier writes `[analytics] enabled = false` in that run home's private `config.toml`. The operator's daily configuration is unchanged.
 
 Temporary, GitHub, and fixture state remain run-owned; Git configuration is disabled or run-owned. This is operational state separation, not an OS security boundary. Do not read, parse, or copy credential contents, register tokens, or check public comments against credentials. No extra login directories are needed.
 
@@ -41,17 +47,19 @@ Temporary, GitHub, and fixture state remain run-owned; Git configuration is disa
 
 Read `features/README.md` and every selected feature document. Runtime instructions, consumed references, shipped tools, and installed assets require coverage on their actual consumers. Shared paths select consumers conservatively. `no runtime change` launches no harness unless `--self-test` is requested.
 
-Create detached exact-head candidate checkouts and run-owned temporary/fixture state. Every selected feature resolves to a recipe in `features/recipes.ts` before the first session starts: one or more cases, each with a fixture, a prompt, and an assertion the trusted parent evaluates. A feature without a recipe fails as `missing-recipe:<harness>/<feature>`; `assets:codex` fails as `unsupported-native-consumer` until it has a recipe. Each case runs as one fresh headless session, sequentially, and setup never runs alongside anything.
+Create detached exact-head candidate checkouts and run-owned temporary/fixture state. Every selected feature resolves to a recipe in `features/recipes.ts` before the first session starts: one or more cases, each with a fixture, a prompt, and an assertion the trusted parent evaluates. A feature without a recipe fails as `missing-recipe:<harness>/<feature>`; `assets:codex` fails as `unsupported-native-consumer` until it has a recipe. Each case runs in a fresh native session, sequentially, and setup never runs alongside anything.
 
-Claude runs with normal operator config/login and session-only `claude --plugin-dir <exact-head checkout>/plugins/pstack --settings '{"enabledPlugins":{"pstack@open-pstack":false}}'`, plus `-p --input-format stream-json --replay-user-messages --output-format stream-json --verbose --no-session-persistence --permission-mode dontAsk --allowedTools <recipe tools>`. The prompt arrives on stdin, so the replayed user message shows the slash expansion. A tool outside the pre-authorized list is denied without a prompt. Codex runs `codex exec --json` against the run-owned installation with approvals set to never, `--sandbox workspace-write`, `--add-dir` for a fixture outside its working directory, and `--dangerously-bypass-hook-trust` so the candidate's hooks run for that invocation only. Cases whose parent launches an external provider CLI use `--sandbox danger-full-access`, because those CLIs need network and their own state outside the fixture. Codex installs the exact-head marketplace/plugin in its run-owned home with `codex plugin marketplace add … --ref <sha>` and `codex plugin add`. Verify candidate plugin and project-skill sources against immutable Git provenance before and after exercise; version strings alone are insufficient.
+Claude must use a real app Agent session with only the exact candidate plugin loaded. There is no executable Claude CLI fallback. Codex runs `codex exec --json` against the run-owned installation with approvals set to never, `--sandbox workspace-write`, `--add-dir` for a fixture outside its working directory, and `--dangerously-bypass-hook-trust` so the candidate's hooks run for that invocation only. Cases whose parent launches an external provider CLI use `--sandbox danger-full-access`, because those CLIs need network and their own state outside the fixture. Codex installs the exact-head marketplace/plugin in its run-owned home with `codex plugin marketplace add … --ref <sha>` and `codex plugin add`. Verify candidate plugin and project-skill sources against immutable Git provenance before and after exercise; version strings alone are insufficient.
 
-Candidate commands and provider descendants use the recorded native-login arrangement, never GitHub publisher credentials. No extra login, implicit timeout, or weaker-model fallback is permitted. If Claude's plugin flags fail to exclude installed pstack or Codex replaces the auth symlink instead of writing through it, stop and reopen the design.
+The Codex-to-Claude runner case uses a T3 Codex app parent with the same run-owned installation, so its dispatch can use the native T3 MCP tools. Its Claude child runs on the Claude verification instance with the same armed launcher and run-owned state. Other Codex cases, including project-skill discovery from the candidate checkout, use the CLI surface above. T3 children inherit the coordinating thread's workspace; fixture paths are absolute. Claude plugin cases disable filesystem setting sources. The project-skill case enables only project settings and redirects their root with `--project-config-root <candidate>` plus `--add-dir <candidate>`. Native hook and MCP inventories must match the isolated candidate. This does not change the T3 workspace binding.
+
+Candidate commands and provider descendants use the recorded native-login arrangement, never GitHub publisher credentials. No extra login, implicit timeout, or weaker-model fallback is permitted. If Claude cannot exclude daily pstack or Codex replaces the auth symlink instead of writing through it, stop and reopen the design.
 
 For every selected feature, exercise each actual consuming native surface and retain real native tool calls and concrete fixture effects. Asset consumers come from the pinned plugin manifests; the current `plugins/pstack/assets/logo.png` is consumed by the Codex manifest only and therefore requires the Codex installed surface, not an invented Claude asset exercise. The session recorder streams each session's stdout and stderr to private files under `sessions/<harness>/<feature>/` in the run root and keeps them on any exit. For Codex it also copies the session's rollout from the run-owned home, because only the rollout records which `SKILL.md` each skill mention resolved to. A nonzero session exit fails the case. The trusted parent then parses the native stream and evaluates the case's assertions on the native skill load, the commands that ran, and files the session wrote in its fixture, and copies those files next to the stream. A model's claim that something passed never counts, and neither do direct CLI tests.
 
 For setup only, snapshot real `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/pstack-models.md` and `CLAUDE.md`, including original absence, before exercise. Restore exact bytes or absence afterwards on success or failure and verify restoration before any publication. Restoration failure stops the run and publishes nothing.
 
-For `project-skill`, invoke `/verify-open-pstack` in Claude and `$verify-open-pstack` in Codex from the candidate checkout. Ask the discovered pinned skill to run `verify.sh doctor --candidate --output <fresh-run-owned-directory>`. Assert the skill load, the doctor command, and the canonical-path doctor output; forbid recursive verification or publication. This does not replace required plugin exercises.
+For `project-skill`, invoke `verify-open-pstack` with Claude's native Skill tool after candidate discovery through the isolated project configuration root, and `$verify-open-pstack` in Codex from the candidate checkout. Ask the discovered pinned skill to run `verify.sh doctor --candidate --output <fresh-run-owned-directory>`. Assert its exact source, the doctor command, and the canonical-path doctor output; forbid recursive verification or publication. This does not replace required plugin exercises.
 
 ## Evidence
 
@@ -63,25 +71,37 @@ The parent builds `surface`, `action`, and `observed` from the recipe and its pa
 
 ## Cleanup
 
-Each headless session exits on its own. Verify any setup restoration before publication. Removing the Codex run home removes only its auth symlink, never the operator's target file. Preserve private raw evidence through merge, archive it afterwards, and let the operator delete only the named run root. No credential-copy cleanup or separate `~/.pstack-verify` login directories are needed. Do not kill unrelated processes.
+Each supported native session exits on its own; unsupported Claude selections launch no session. Verify any setup restoration before publication. Removing the Codex run home removes only its auth symlink, never the operator's target file; cleanup keeps the home while T3's Codex app-server from this run still runs. Preserve private raw evidence through merge, archive it afterwards, and let the operator delete only the named run root. No credential-copy cleanup or separate `~/.pstack-verify` login directories are needed. Do not kill unrelated processes.
 
 ## Helpers
 
 - `scripts/verify.sh doctor --output <fresh-absolute-external-directory>`: parent capability report, no installation/publication.
 - `scripts/verify.sh doctor --candidate --output <fresh-run-owned-directory>`: candidate-safe self-test probe; no publisher authentication probing.
-- `scripts/verify.sh run --pr <positive-number> [--self-test] [--runner-route PROVIDER:MODEL@EFFORT]... --output <fresh-absolute-external-directory>`: headless exact-head verification with machine-checked recipes; no terminal or prompts.
-- `features/recipes.ts`: per-feature headless cases and assertions.
+- `scripts/verify.sh run --repo <OWNER/REPO> --pr <positive-number> [--self-test] [--t3-app <config.json>] [--runner-route PROVIDER:MODEL@EFFORT]... --output <fresh-absolute-external-directory>`: exact-head verification; requires a coordinating T3 agent when Claude is selected.
+- `features/recipes.ts`: per-feature native cases and assertions.
 - `bun run test` and `bun run typecheck`: development checks after a separate frozen dependency install, not live proof.
 - `features/registry.json`: maintained path ownership; unknown runtime paths block.
 
 Read receipts as data, never shell input. Do not put credentials in prompts or public artifacts.
 
 ## Scripts
+- scripts/app-runner.test.ts
+- scripts/claude-evidence.ts
+- scripts/claude-evidence.test.ts
+- scripts/codex-app-evidence.ts
+- scripts/codex-app-evidence.test.ts
+- scripts/command-policy.ts
+- scripts/daily-state.ts
+- scripts/daily-state.test.ts
+- scripts/t3-app.ts
+- scripts/t3-app.test.ts
 - scripts/cli.test.ts
 - scripts/cli.ts
+- scripts/collision-script.test.ts
 - scripts/core.test.ts
 - scripts/core.ts
 - scripts/doctor.ts
+- scripts/doctor.test.ts
 - scripts/github.ts
 - scripts/harness.test.ts
 - scripts/harness.ts
@@ -89,6 +109,7 @@ Read receipts as data, never shell input. Do not put credentials in prompts or p
 - scripts/io.ts
 - scripts/isolation.test.ts
 - scripts/isolation.ts
+- scripts/native-consumer.ts
 - scripts/provenance.test.ts
 - scripts/provenance.ts
 - scripts/types.ts

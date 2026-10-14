@@ -1,6 +1,6 @@
-// Headless recipes for every selectable feature. The trusted parent runs each case as one fresh
-// native session and evaluates `assert` against the parsed record and the fixture it created.
-import { lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { lstat, mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises';
+import { createServer, type Server, type Socket } from 'node:net';
 import { basename, join } from 'node:path';
 import type { Command } from '../scripts/io.ts';
 import type { Harness, SessionRecord } from '../scripts/types.ts';
@@ -24,14 +24,13 @@ export interface Case {
   /** Codex parents that launch external provider CLIs need network and their CLI state outside the fixture. */
   codexSandbox?: 'danger-full-access';
   prepare?(fixture: Fixture): Promise<void>;
+  cleanup?(fixture: Fixture): Promise<void>;
   prompt(fixture: Fixture): string;
   assert(record: SessionRecord, fixture: Fixture): Promise<Evidence>;
 }
 
-/** Claude tools pre-authorized for every case; anything else is denied without a prompt and fails the case. */
-export const CLAUDE_TOOLS = 'Skill,Read,Glob,Grep,Write,Edit,Bash,Agent,Task,TodoWrite';
 export const DEFAULT_ROUTES: Record<Harness, string> = { claude: 'codex:gpt-6.1-sol@max', codex: 'claude:opus@max' };
-export const ROUTE = /^(claude|codex|grok):([A-Za-z0-9._-]+)@([a-z]+)$/;
+export const ROUTE = /^(claude|codex|grok|cursor|kimi):([A-Za-z0-9._\/-]+)@([a-z]+)$/;
 const SETUP_DESCRIPTOR = 'claude:opus@high';
 
 const rules = (dir: string): string => `Work only inside ${dir}. Do not push, post, open, merge, or modify pull requests, issues, or remote branches, and do not write outside ${dir}. Do not edit any skill, plugin, or configuration file outside ${dir}. Do not ask questions: where the skill would ask, choose its documented default and continue.`;
@@ -147,26 +146,315 @@ const projectSkill: Case = {
   },
 };
 
-function runner(harness: Harness, routes: string[]): Case[] {
-  const chosen = routes.filter(route => !route.startsWith(`${harness}:`));
-  return (chosen.length ? chosen : [DEFAULT_ROUTES[harness]]).map((route, index) => {
+export interface AppRoute { providerInstanceId: string; model: string }
+export const REQUIRED_RUNNER_ROUTES: Record<Harness, string[]> = {
+  claude: ['codex:gpt-6.1-sol@max', 'codex:gpt-6-luna@max'],
+  codex: ['claude:opus@max', 'claude:haiku@max'],
+};
+function object(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid-runner-evidence');
+  return value as Record<string, unknown>;
+}
+function highestModel(models: string[], family: string): string {
+  const pattern = new RegExp(`^claude-${family}-([0-9]+(?:-[0-9]+)*)$`);
+  const candidates = models.flatMap(model => {
+    const match = pattern.exec(model);
+    if (!match) return [];
+    const parts = match[1]!.split('-');
+    const date = parts.length > 1 && parts.at(-1)!.length === 8 ? Number(parts.pop()) : 0;
+    return [{ model, version: parts.map(Number), date }];
+  });
+  candidates.sort((a, b) => {
+    for (let i = 0; i < Math.max(a.version.length, b.version.length); i++) {
+      const difference = (b.version[i] ?? 0) - (a.version[i] ?? 0);
+      if (difference) return difference;
+    }
+    return b.date - a.date;
+  });
+  if (!candidates.length) throw new Error('app-runner-live-capability-route-missing');
+  return candidates[0]!.model;
+}
+function appRunner(route: string, target: AppRoute, index: number): Case {
+  const [, , family, effort] = ROUTE.exec(route)!;
+  if (!['opus', 'fable', 'haiku'].includes(family!)) throw new Error('app-runner-requires-family-descriptor');
+  const lane = (f: Fixture) => join(f.dir, `app-lane-${index + 1}.json`);
+  const output = (f: Fixture) => join(f.dir, `app-output-${index + 1}.md`);
+  return {
+    id: `app-route-${index + 1}`,
+    prompt: f => `${invoke(f.harness, 'poteto-mode', `Dispatch exactly one read-only external lane for descriptor ${route}, using only the operator-selected Claude provider instance ${target.providerInstanceId}. Resolve the descriptor yourself using the installed provider-dispatch.md and your native T3 catalog. Child task: Reply with exactly PONG as the final answer. Do no engineering work, spawn no agents, ask no questions, and request no plan approval. Grounding directory: ${f.dir}. Reserve the private lane record at ${lane(f)} and final output at ${output(f)} before dispatch. Complete the installed route, retain its task and thread identities, and drain the original task before finishing. Do not launch shell Claude or substitute another provider or model.`)} ${rules(f.dir)}`,
+    async assert(record, f) {
+      const calls = record.appTools ?? [], launches = calls.filter(call => call.tool === 'delegate_task');
+      if (launches.length !== 1) throw new Error('app-runner-requires-one-native-dispatch');
+      const launch = launches[0]!, catalogs = calls.filter(call => call.tool === 'orchestrator_capabilities');
+      if (catalogs.length !== 1 || calls.indexOf(catalogs[0]!) >= calls.indexOf(launch)) throw new Error('app-runner-requires-native-catalog-before-dispatch');
+      const providers = catalogs[0]!.result.providers;
+      if (!Array.isArray(providers)) throw new Error('app-runner-native-catalog-missing');
+      const provider = providers.map(object).find(p => p.providerInstanceId === target.providerInstanceId);
+      if (!provider || provider.driverKind !== 'claudeAgent' || provider.canRunChildTask !== true || provider.canRunCrossProviderChildTask !== true
+        || !Array.isArray(provider.constraints) || provider.constraints.length || !Array.isArray(provider.models)) throw new Error('app-runner-ineligible-owned-provider');
+      const models = provider.models.map(object);
+      const chosen = highestModel(models.map(m => typeof m.id === 'string' ? m.id : ''), family!);
+      const coordinator = record.appRoutes?.filter(r => r.providerInstanceId === target.providerInstanceId) ?? [];
+      if (highestModel(coordinator.map(r => r.model), family!) !== chosen) throw new Error('app-runner-coordinator-catalog-mismatch');
+      const capability = coordinator.find(r => r.model === chosen)!;
+      const model = models.find(m => m.id === chosen)!, options = model.options;
+      const effortOption = Array.isArray(options) ? options.map(object).find(option => option.id === 'effort' && option.type === 'select') : undefined;
+      if (!capability.efforts.includes(effort!) || !Array.isArray(effortOption?.options) || !effortOption.options.map(object).some(option => option.id === effort)) throw new Error('app-runner-live-capability-effort-unsupported');
+      const requested = object(launch.arguments.target);
+      if (requested.providerInstanceId !== target.providerInstanceId || requested.model !== chosen) throw new Error('app-runner-target-mismatch');
+      const requestedOptions = requested.options;
+      const actualEffort = Array.isArray(requestedOptions) ? requestedOptions.map(object).find(option => option.id === 'effort')?.value
+        : requestedOptions && typeof requestedOptions === 'object' ? object(requestedOptions).effort : undefined;
+      if (actualEffort !== effort) throw new Error('app-runner-effort-mismatch');
+      if (launch.arguments.mode !== 'async' || launch.arguments.interactionMode !== 'plan' || typeof launch.arguments.clientRequestId !== 'string' || !launch.arguments.clientRequestId.trim()) throw new Error('app-runner-dispatch-contract-mismatch');
+      if (typeof launch.result.taskId !== 'string' || !launch.result.taskId.trim()) throw new Error('app-runner-missing-task-id');
+      const statuses = calls.filter(call => call.tool === 'task_status' && call.arguments.taskId === launch.result.taskId);
+      const result = statuses.map(call => call.result).find(result => result.status === 'completed' && result.workState === 'result_available' && result.hasPendingChildRuns === false);
+      if (!result || result.taskId !== launch.result.taskId || !result.childThreadId || !result.childRunId || result.latestTerminalRunId !== result.childRunId
+        || result.latestTerminalStatus !== 'completed' || result.providerInstanceId !== target.providerInstanceId || result.model !== chosen
+        || typeof result.summary !== 'string' || result.summary.trim() !== 'PONG') throw new Error('app-runner-no-completed-PONG');
+      const receipt = object(JSON.parse(await readFile(lane(f), 'utf8')));
+      const expected = { route: 't3-claude-agent', descriptor: route, providerInstanceId: target.providerInstanceId, model: chosen, effort,
+        clientRequestId: launch.arguments.clientRequestId, taskId: result.taskId, childThreadId: result.childThreadId, status: 'completed', dropoutReason: null };
+      if (Object.entries(expected).some(([key, value]) => receipt[key] !== value)) throw new Error('app-runner-lane-record-mismatch');
+      if ((await readFile(output(f), 'utf8')).trim() !== 'PONG') throw new Error('app-runner-output-not-PONG');
+      return { assertions: [loaded(record, 'pstack:poteto-mode'), 'native-catalog-before-dispatch', 'highest-family-revision', 'coordinator-catalog-match', 'live-capability-route', 'native-t3-dispatch', 'async-plan-request', 'matching-child-run', 'lane-record', 'completed-PONG', await written(record, lane(f)), await written(record, output(f))], files: [lane(f), output(f)] };
+    },
+  };
+}
+const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
+const attempted = (record: SessionRecord, launcher: string): boolean => [...record.commandAttempts ?? [], ...record.commands].some(command => command.includes(launcher));
+const refusalSentinel = 'Existing output must survive the refused route.\n';
+function refusalCase(collision: boolean): Case {
+  const prefix = collision ? 'claude-output-collision' : 'claude-route-refusal';
+  const path = (f: Fixture, suffix: string) => join(f.dir, `${prefix}.${suffix}`);
+  const guardScript = (f: Fixture): string => `#!/bin/sh\nprintf '%s\\n' blocked-headless-claude >> ${quote(path(f, 'claude-attempted'))}\nexit 97\n`;
+  return {
+    id: prefix,
+    async prepare(f) {
+      await writeFile(path(f, 'prompt.md'), 'Reply PONG.\n', { flag: 'wx', mode: 0o600 });
+      await mkdir(path(f, 'guard'), { mode: 0o700 });
+      await writeFile(join(path(f, 'guard'), 'claude'), guardScript(f), { flag: 'wx', mode: 0o700 });
+      if (collision) await writeFile(path(f, 'output.md'), refusalSentinel, { flag: 'wx', mode: 0o600 });
+    },
+    prompt: f => `${invoke(f.harness, 'poteto-mode', `Exercise the installed launcher's refused Codex-parent Claude route without launching Claude. Run this exact command once and retain its actual exit status: env PATH=${quote(path(f, 'guard'))}:"$PATH" ${[join(f.location, 'skills/poteto-mode/scripts/runner/pstack-runner'), '--parent', 'codex', '--provider', 'claude', '--model', 'opus', '--effort', 'max', '--mode', 'read-only', '--prompt', path(f, 'prompt.md'), '--cwd', f.dir, '--output', path(f, 'output.md'), '--receipt', path(f, 'receipt.json')].map(quote).join(' ')}. The command-local PATH guard blocks and records a regressed Claude launch. Never remove or change it. The expected nonzero ${collision ? 'output collision' : 'route refusal'} is the test result. Do not delete, overwrite, synthesize, or repair any artifacts; do not rerun or authenticate Claude. Finish normally after inspecting the result.`)} ${rules(f.dir)}`,
+    async assert(record, f) {
+      const launcher = join(f.location, 'skills/poteto-mode/scripts/runner/pstack-runner');
+      if (!attempted(record, launcher)) throw new Error('refusal-launcher-not-attempted');
+      const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const guarded = new RegExp(`PATH=['"\\\\]*${escape(path(f, 'guard'))}['"\\\\]*:[^\\n;&|]*${escape(launcher)}`);
+      if (![...record.commandAttempts ?? [], ...record.commands].some(command => guarded.test(command))) throw new Error('refusal-guard-not-used');
+      const guard = join(path(f, 'guard'), 'claude'), guardStat = await lstat(guard);
+      if (!guardStat.isFile() || (guardStat.mode & 0o777) !== 0o700 || await readFile(guard, 'utf8') !== guardScript(f)) throw new Error('refusal-guard-changed');
+      if (await lstat(path(f, 'claude-attempted')).catch(() => undefined)) throw new Error('refusal-attempted-headless-Claude');
+      if (collision) {
+        if (await readFile(path(f, 'output.md'), 'utf8') !== refusalSentinel) throw new Error('refusal-existing-output-overwritten');
+        for (const suffix of ['receipt.json', 'receipt.json.stdout', 'receipt.json.stderr']) {
+          if (await lstat(path(f, suffix)).catch(() => undefined)) throw new Error('collision-created-artifact');
+        }
+        return { assertions: [loaded(record, 'pstack:poteto-mode'), 'PATH-Claude-guard-not-invoked', 'output-collision', 'existing-output-unchanged', 'no-receipt-or-sidecars'], files: [path(f, 'output.md'), join(path(f, 'guard'), 'claude')] };
+      }
+      const receiptPath = path(f, 'receipt.json'), receipt = object(JSON.parse(await readFile(receiptPath, 'utf8'))), preflight = object(receipt.preflight);
+      if (receipt.status !== 'route-refused' || receipt.parent !== 'codex' || receipt.provider !== 'claude' || receipt.model !== 'opus' || receipt.effort !== 'max'
+        || receipt.executable !== null || !Array.isArray(receipt.argv) || receipt.argv.length || preflight.status !== 'not-run' || !Array.isArray(preflight.argv) || preflight.argv.length
+        || receipt.exitCode !== null || receipt.outputPath !== path(f, 'output.md') || receipt.promptPath !== path(f, 'prompt.md') || receipt.cwd !== f.dir
+        || !(Date.parse(String(receipt.startedAt)) >= record.started) || !(Date.parse(String(receipt.completedAt)) >= Date.parse(String(receipt.startedAt)))) throw new Error('refusal-receipt-mismatch');
+      if (await lstat(path(f, 'output.md')).catch(() => undefined)) throw new Error('refusal-left-output-reservation');
+      for (const [field, suffix] of [['stdoutPath', 'stdout'], ['stderrPath', 'stderr']]) {
+        const sidecar = `${receiptPath}.${suffix}`;
+        if (receipt[field!] !== sidecar || (await readFile(sidecar)).length) throw new Error('refusal-sidecar-not-empty');
+      }
+      return { assertions: [loaded(record, 'pstack:poteto-mode'), 'PATH-Claude-guard-not-invoked', 'route-refused', 'no-executable-or-commands', 'preflight-not-run', 'empty-sidecars', await written(record, receiptPath)], files: [receiptPath, `${receiptPath}.stdout`, `${receiptPath}.stderr`, join(path(f, 'guard'), 'claude')] };
+    },
+  };
+}
+const nativeHaiku: Case = {
+  id: 'native-haiku-max',
+  prompt: f => `${invoke(f.harness, 'poteto-mode', `Dispatch one read-only lane for descriptor claude:haiku@max using the installed native Claude mapping. Child task: Reply exactly PONG, do no engineering work, spawn no agents, and ask no questions. Grounding directory: ${f.dir}. Drain the native child before finishing and write its actual final answer to ${join(f.dir, 'native-haiku-output.md')}.`)} ${rules(f.dir)}`,
+  async assert(record, f) {
+    const agents = record.nativeAgents ?? [];
+    if (agents.length !== 1 || !/^(?:pstack:)?pstack-haiku-max$/.test(agents[0]!.subagentType) || !/^claude-haiku-[0-9]+(?:-[0-9]+)*$/.test(agents[0]!.model)
+      || agents[0]!.declaredEffort !== 'max' || typeof agents[0]!.definitionPath !== 'string' || !agents[0]!.definitionPath
+      || typeof agents[0]!.definitionHash !== 'string' || !/^[a-f0-9]{64}$/.test(agents[0]!.definitionHash)
+      || !agents[0]!.completed || agents[0]!.output.trim() !== 'PONG') throw new Error('native-haiku-no-completed-candidate-agent');
+    const output = join(f.dir, 'native-haiku-output.md');
+    if ((await readFile(output, 'utf8')).trim() !== 'PONG') throw new Error('native-haiku-output-not-PONG');
+    return { assertions: [loaded(record, 'pstack:poteto-mode'), 'native-pstack-haiku-max', 'native-child-model', 'candidate-agent-declared-effort', 'completed-PONG', await written(record, output)], files: [output] };
+  },
+};
+type KimiCase = 'read-only' | 'isolated-write' | 'media-read-only' | 'media-isolated-write' | 'unavailable-model' | 'proxy-rejection';
+// A deterministic 24x24 RGB PNG whose pixels are all red.
+const MEDIA_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAIAAABvFaqvAAAAIElEQVR4nGP4z8BAFUQdU0YNGjVo1KBRg0YNGjWIIgQABMo93z5bbNQAAAAASUVORK5CYII=', 'base64');
+const MEDIA_DATA_URL = `data:image/png;base64,${MEDIA_PNG.toString('base64')}`;
+// Kimi's stream-json writes a successful ReadMediaFile result as a JSON string of content parts and a failure as plain text.
+// It passes an image this small through without re-encoding, so the delivered URL carries the fixture's exact bytes.
+function deliversMediaPng(content: string): boolean {
+  try {
+    const parts: unknown = JSON.parse(content);
+    return Array.isArray(parts) && parts.map(object).some(part => part.type === 'image_url' && object(part.imageUrl).url === MEDIA_DATA_URL);
+  } catch { return false; }
+}
+function kimiCase(kind: KimiCase): Case {
+  const id = `kimi-${kind}`, media = kind.startsWith('media-'), writer = kind.endsWith('isolated-write'), mode = writer ? 'isolated-write' : 'read-only';
+  const model = kind === 'unavailable-model' ? `kimi-code/pstack-verify-missing-${randomUUID()}` : 'kimi-code/k3';
+  const path = (f: Fixture, suffix: string) => join(f.dir, `${id}.${suffix}`);
+  const work = (f: Fixture) => path(f, 'work');
+  const source = (f: Fixture) => join(work(f), 'input.json');
+  const artifact = (f: Fixture) => join(work(f), 'result.json');
+  const image = (f: Fixture) => join(work(f), 'image.png');
+  let marker = '', proxy: Server | undefined, proxyUri = '', connections = 0;
+  const sockets = new Set<Socket>();
+  let closedSocketBytesRead = 0;
+  const observedBytesRead = () => closedSocketBytesRead + [...sockets].reduce((sum, socket) => sum + socket.bytesRead, 0);
+  let fixtureHashes: Record<string, string> = {};
+  const digest = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex');
+  const command = (f: Fixture): string => {
+    const argv = [join(f.location, 'skills/poteto-mode/scripts/runner/pstack-runner'), '--parent', f.harness, '--provider', 'kimi', '--model', model, '--effort', 'max', '--mode', mode,
+      '--prompt', path(f, 'prompt.md'), '--cwd', work(f), '--output', path(f, 'output.md'), '--receipt', path(f, 'receipt.json')];
+    const environment = kind === 'proxy-rejection' ? ['env', ...['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy'].map(name => `${name}=${proxyUri}`), 'NO_PROXY=', 'no_proxy=', 'NODE_USE_ENV_PROXY=1'] : [];
+    return [...environment, ...argv].map(quote).join(' ');
+  };
+  return {
+    id, codexSandbox: 'danger-full-access',
+    async prepare(f) {
+      marker = randomUUID();
+      await mkdir(work(f), { mode: 0o700 });
+      const input = JSON.stringify({ marker, values: [27, 15] }) + '\n', sentinel = 'Do not change this fixture file.\n';
+      fixtureHashes = { 'input.json': digest(input), 'sentinel.txt': digest(sentinel) };
+      await writeFile(source(f), input, { flag: 'wx', mode: 0o600 });
+      await writeFile(join(work(f), 'sentinel.txt'), sentinel, { flag: 'wx', mode: 0o600 });
+      if (media) {
+        await writeFile(image(f), MEDIA_PNG, { flag: 'wx', mode: 0o600 });
+        fixtureHashes['image.png'] = digest(MEDIA_PNG);
+      }
+      await writeFile(path(f, 'fixture.json'), JSON.stringify({ marker, model, mode, work: work(f), hashes: fixtureHashes }) + '\n', { flag: 'wx', mode: 0o600 });
+      const task = kind !== 'unavailable-model' && kind !== 'proxy-rejection'
+        ? `Use the Read tool to read ${source(f)}. Sum its values and return exactly a JSON object with its marker and the sum.${media ? ` Use ReadMediaFile to open ${image(f)} and add a color field naming the image's dominant color in lowercase. Do not infer the color from the filename or inspect bytes through another tool.` : ''} ${writer ? `Use the Write tool to write that same JSON object to ${artifact(f)} before returning it. Only this new result.json may be written.` : 'Do not write, edit, delete, create files, or run shell commands.'} Do not modify input.json, sentinel.txt or any image. Ask no questions and spawn no agents.`
+        : 'Reply exactly PONG. Read no files, run no commands, ask no questions and spawn no agents.';
+      await writeFile(path(f, 'prompt.md'), task + '\n', { flag: 'wx', mode: 0o600 });
+      if (kind === 'proxy-rejection') {
+        proxy = createServer({ pauseOnConnect: true }, socket => {
+          connections++;
+          sockets.add(socket);
+          socket.once('close', () => { closedSocketBytesRead += socket.bytesRead; sockets.delete(socket); });
+          socket.on('error', () => socket.destroy());
+          // Reject before a tunnel exists; never read request headers or bodies.
+          socket.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n', () => socket.destroy());
+        });
+        await new Promise<void>((resolve, reject) => {
+          proxy!.once('error', reject);
+          proxy!.listen({ host: '127.0.0.1', port: 0 }, () => { proxy!.removeListener('error', reject); resolve(); });
+        });
+        const address = proxy.address();
+        if (!address || typeof address === 'string' || address.address !== '127.0.0.1') throw new Error('kimi-proxy-loopback-bind-failed');
+        proxyUri = `http://127.0.0.1:${address.port}`;
+        await writeFile(path(f, 'proxy.json'), JSON.stringify({ proxyUri, acceptedConnections: connections, forwardingDisabled: true, forwardedConnections: 0, requestBytesRead: observedBytesRead() }) + '\n', { flag: 'wx', mode: 0o600 });
+      }
+    },
+    async cleanup() {
+      if (!proxy) return;
+      const server = proxy; proxy = undefined;
+      if (server.listening) await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    },
+    prompt: f => `${invoke(f.harness, 'poteto-mode', `Dispatch exactly this installed Kimi lane once, then drain its actual receipt to completion: ${command(f)}. Do not read the child fixture yourself or synthesize its output, receipt, or native streams. ${kind === 'unavailable-model' ? 'The unique missing alias must fail local provider preflight without a model invocation.' : kind === 'proxy-rejection' ? 'This is an explicit localhost transport fault. Its proxy rejects connections with403, never forwards, and records no request data. Preserve the actual CLI error and finish normally after the expected nonzero exit. Do not remove the proxy variables, retry directly, or change credentials.' : 'The child must perform its assigned Read/Write work using the exact pinned alias and max effort.'} Never edit configuration, inspect or copy credentials, start login, or substitute a model.`)} ${rules(f.dir)}`,
+    async assert(record, f) {
+      if (!attempted(record, join(f.location, 'skills/poteto-mode/scripts/runner/pstack-runner'))) throw new Error('kimi-launcher-not-attempted');
+      const receiptPath = path(f, 'receipt.json'), receipt = object(JSON.parse(await readFile(receiptPath, 'utf8'))), preflight = object(receipt.preflight);
+      if (receipt.parent !== f.harness || receipt.provider !== 'kimi' || receipt.model !== model || receipt.effort !== 'max' || receipt.mode !== mode || receipt.cwd !== work(f)
+        || receipt.promptPath !== path(f, 'prompt.md') || receipt.outputPath !== path(f, 'output.md') || !(Date.parse(String(receipt.startedAt)) >= record.started)
+        || !(Date.parse(String(receipt.completedAt)) >= Date.parse(String(receipt.startedAt)))) throw new Error('kimi-receipt-not-this-case');
+      if (!Array.isArray(receipt.argv) || receipt.argv[receipt.argv.indexOf('--model') + 1] !== model
+        || receipt.argv[receipt.argv.indexOf('--agent-file') + 1] !== join(f.location, `skills/poteto-mode/scripts/runner/kimi/${mode}.md`)) throw new Error('kimi-invocation-argv-mismatch');
+      const stdoutPath = `${receiptPath}.stdout`, stderrPath = `${receiptPath}.stderr`;
+      if (receipt.stdoutPath !== stdoutPath || receipt.stderrPath !== stderrPath) throw new Error('kimi-sidecar-path-mismatch');
+      const stdout = await readFile(stdoutPath, 'utf8'), stderr = await readFile(stderrPath, 'utf8');
+      for (const [name, hash] of Object.entries(fixtureHashes)) {
+        if (digest(await readFile(join(work(f), name))) !== hash) throw new Error('kimi-source-fixture-mutated');
+      }
+      const expectedFiles = ['input.json', 'sentinel.txt', ...writer ? ['result.json'] : [], ...media ? ['image.png'] : []].sort();
+      if ((await readdir(work(f))).sort().join('\n') !== expectedFiles.join('\n')) throw new Error('kimi-unexpected-fixture-write');
+      const artifacts = [receiptPath, stdoutPath, stderrPath, path(f, 'fixture.json'), source(f), join(work(f), 'sentinel.txt')];
+      if (media) artifacts.push(image(f));
+      const assertions = [loaded(record, 'pstack:poteto-mode'), 'kimi-launcher-attempted', 'matching-receipt', 'source-fixture-unchanged'];
+      if (kind === 'unavailable-model') {
+        const error = object(receipt.error);
+        if (receipt.status !== 'unavailable-model' || preflight.status !== 'failed' || !Array.isArray(preflight.argv)
+          || preflight.argv.slice(-3).join(' ') !== 'provider list --json' || receipt.exitCode !== null || stdout || stderr
+          || typeof error.message !== 'string' || !error.message.includes(`config has no model alias ${model}`)) throw new Error('kimi-missing-alias-not-preflight-only');
+        if (await lstat(path(f, 'output.md')).catch(() => undefined)) throw new Error('kimi-dropout-left-output');
+        return { assertions: [...assertions, 'real-cli-unavailable-model-preflight', 'no-model-invocation'], files: artifacts };
+      }
+      if (kind === 'proxy-rejection') {
+        const diagnostic = /^error: .*?(provider\.(?:connection|auth)_error):/m.exec(stderr.replace(/\x1b\[[0-9;]*m/g, ''))?.[1];
+        const requestBytesRead = observedBytesRead();
+        await writeFile(path(f, 'proxy.json'), JSON.stringify({ proxyUri, acceptedConnections: connections, forwardingDisabled: true, forwardedConnections: 0, requestBytesRead, nativeErrorCode: diagnostic ?? null }) + '\n', { mode: 0o600 });
+        if (!proxyUri || ![...record.commandAttempts ?? [], ...record.commands].some(command => command.includes(`HTTPS_PROXY=${proxyUri}`) && command.includes('pstack-runner'))
+          || connections < 1 || receipt.status !== 'child-failed' || preflight.status !== 'passed' || typeof receipt.exitCode !== 'number' || receipt.exitCode === 0
+          || !diagnostic || requestBytesRead !== 0) throw new Error('kimi-proxy-no-bound-native-failure');
+        if (await lstat(path(f, 'output.md')).catch(() => undefined)) throw new Error('kimi-dropout-left-output');
+        return { assertions: [...assertions, 'real-cli-local-proxy-rejection', `kimi-proxy-diagnostic:${diagnostic}`, 'child-failed', 'proxy-forwarding-disabled', 'proxy-observed-zero-request-bytes'], files: [...artifacts, path(f, 'proxy.json')] };
+      }
+      if (receipt.status !== 'complete' || preflight.status !== 'passed' || receipt.exitCode !== 0 || receipt.modelEvidence !== 'pinned-argv' || receipt.reportedModel !== null || receipt.modelVerified !== false) throw new Error('kimi-no-completed-pinned-model');
+      const result = object(JSON.parse(await readFile(path(f, 'output.md'), 'utf8')));
+      if (result.marker !== marker || result.sum !== 42 || Object.keys(result).length !== (media ? 3 : 2) || media && result.color !== 'red') throw new Error('kimi-incorrect-result');
+      const events = stdout.split('\n').filter(line => line.trim()).map(line => object(JSON.parse(line)));
+      const calls = events.flatMap(event => event.role === 'assistant' && Array.isArray(event.tool_calls) ? event.tool_calls.map(object) : []);
+      const boundTool = async (name: string, expectedPath: string): Promise<boolean> => {
+        for (const call of calls) {
+          const fn = object(call.function);
+          if (fn.name !== name || typeof fn.arguments !== 'string' || typeof call.id !== 'string') continue;
+          const args = object(JSON.parse(fn.arguments));
+          if (typeof args.path !== 'string' || await realpath(args.path).catch(() => '') !== await realpath(expectedPath)) continue;
+          for (const event of events) {
+            if (event.role !== 'tool' || event.tool_call_id !== call.id || typeof event.content !== 'string' || !event.content.length) continue;
+            if (name !== 'ReadMediaFile' || deliversMediaPng(event.content)) return true;
+          }
+        }
+        return false;
+      };
+      if (!await boundTool('Read', source(f))) throw new Error('kimi-no-native-source-Read');
+      const allowedTools = ['Read', ...media ? ['ReadMediaFile'] : [], ...writer ? ['Write'] : []];
+      if (calls.some(call => !allowedTools.includes(String(object(call.function).name)))) throw new Error('kimi-mode-unexpected-tool');
+      if (media) {
+        if (!await boundTool('ReadMediaFile', image(f))) throw new Error('kimi-no-native-image-ReadMediaFile');
+        assertions.push('native-image-ReadMediaFile', 'semantic-image-color-red', 'image-fixture-unchanged');
+      }
+      if (writer) {
+        if (!await boundTool('Write', artifact(f))) throw new Error('kimi-no-native-result-Write');
+        const writtenResult = object(JSON.parse(await readFile(artifact(f), 'utf8')));
+        if (writtenResult.marker !== marker || writtenResult.sum !== 42 || Object.keys(writtenResult).length !== (media ? 3 : 2) || media && writtenResult.color !== 'red') throw new Error('kimi-written-result-incorrect');
+        artifacts.push(artifact(f)); assertions.push('native-result-Write', 'isolated-file-write');
+      } else assertions.push('read-only-no-fixture-write');
+      return { assertions: [...assertions, 'native-source-Read', 'completed-correct-result', await written(record, path(f, 'output.md'))], files: [...artifacts, path(f, 'output.md')] };
+    },
+  };
+}
+function runner(harness: Harness, routes: string[], appRoute?: AppRoute): Case[] {
+  const selected = [...new Set([...REQUIRED_RUNNER_ROUTES[harness], ...routes.filter(route => !route.startsWith(`${harness}:`))])];
+  if (harness === 'codex' && !appRoute) throw new Error('unsupported-native-consumer:claude-app: runner verification requires an app-owned dispatch recipe; a shell-completion receipt cannot prove a T3 claudeAgent result');
+  const cases: Case[] = selected.map((route, index) => {
+    if (harness === 'codex' && route.startsWith('claude:')) return appRunner(route, appRoute!, index);
     const [, provider, model, effort] = ROUTE.exec(route)!, lane = (f: Fixture, name: string) => join(f.dir, `lane-${index + 1}.${name}`);
     return {
       id: `route-${index + 1}`,
       codexSandbox: 'danger-full-access',
       prepare: async f => { await writeFile(lane(f, 'prompt.md'), 'Reply with the single word PONG.\n'); },
-      prompt: f => `${invoke(f.harness, 'poteto-mode', `Dispatch exactly one external lane and nothing else. Run the installed launcher ${join(f.location, 'skills/poteto-mode/scripts/runner/pstack-runner')} with these arguments and wait for it to exit: --parent ${harness} --provider ${provider} --model ${model} --effort ${effort} --mode read-only --prompt ${lane(f, 'prompt.md')} --cwd ${f.dir} --output ${lane(f, 'output.md')} --receipt ${lane(f, 'receipt.json')}`)}. ${rules(f.dir)}`,
+      prompt: f => `${invoke(f.harness, 'poteto-mode', `Dispatch exactly one external lane and nothing else. Run the installed launcher ${join(f.location, 'skills/poteto-mode/scripts/runner/pstack-runner')} with these arguments and drain it to completion: --parent ${harness} --provider ${provider} --model ${model} --effort ${effort} --mode read-only --prompt ${lane(f, 'prompt.md')} --cwd ${f.dir} --output ${lane(f, 'output.md')} --receipt ${lane(f, 'receipt.json')}`)}. ${rules(f.dir)}`,
       async assert(record, f) {
         const launcher = join(f.location, 'skills/poteto-mode/scripts/runner/pstack-runner');
-        if (!record.commands.some(c => c.includes(launcher))) throw new Error('runner-not-run');
+        if (!attempted(record, launcher)) throw new Error('runner-not-run');
         const receipt = JSON.parse(await readFile(lane(f, 'receipt.json'), 'utf8'));
         if (receipt.status !== 'complete') throw new Error(`receipt-status:${receipt.status}`);
         if (receipt.parent !== harness || receipt.provider !== provider || receipt.model !== model || receipt.effort !== effort || receipt.mode !== 'read-only') throw new Error('receipt-route-mismatch');
-        if (receipt.outputPath !== lane(f, 'output.md') || !(Date.parse(receipt.startedAt) >= record.started)) throw new Error('receipt-not-this-session');
-        return { assertions: ['runner-ran', 'receipt-complete', `route:${route}`, await written(record, lane(f, 'output.md'))], files: [lane(f, 'receipt.json'), lane(f, 'output.md')] };
+        if (receipt.outputPath !== lane(f, 'output.md') || receipt.promptPath !== lane(f, 'prompt.md') || receipt.cwd !== f.dir || !(Date.parse(receipt.startedAt) >= record.started)
+          || !(Date.parse(receipt.completedAt) >= Date.parse(receipt.startedAt))) throw new Error('receipt-not-this-session');
+        if (!(receipt.modelVerified === true && receipt.modelEvidence === 'provider-report') && !(['codex', 'kimi'].includes(provider!) && receipt.reportedModel === null && receipt.modelVerified === false && receipt.modelEvidence === 'pinned-argv')) throw new Error('receipt-model-not-verified');
+        if ((await readFile(lane(f, 'output.md'), 'utf8')).trim() !== 'PONG') throw new Error('runner-output-not-PONG');
+        return { assertions: ['runner-attempted', 'receipt-complete', `route:${route}`, await written(record, lane(f, 'receipt.json')), await written(record, lane(f, 'output.md'))], files: [lane(f, 'receipt.json'), lane(f, 'output.md')] };
       },
     };
   });
+  return [...cases, ...harness === 'codex' ? [refusalCase(false), refusalCase(true)] : [nativeHaiku], ...(['read-only', 'isolated-write', 'media-read-only', 'media-isolated-write', 'unavailable-model', 'proxy-rejection'] as const).map(kimiCase)];
 }
 
 const setup: Case[] = [{
@@ -202,10 +490,10 @@ const shippedTools: Case = {
 };
 
 /** Resolve a feature's cases, or fail with a named reason before any session starts. */
-export function recipe(feature: string, harness: Harness, routes: string[] = []): Case[] {
+export function recipe(feature: string, harness: Harness, routes: string[] = [], appRoute?: AppRoute): Case[] {
   if (feature === 'assets:codex') throw new Error('unsupported-native-consumer:assets:codex');
   if (feature === 'project-skill') return [projectSkill];
-  if (feature === 'runner') return runner(harness, routes);
+  if (feature === 'runner') return runner(harness, routes, appRoute);
   if (feature === 'setup' || feature === 'skill-invocation:setup-pstack') return setup;
   if (feature === 'shipped-tools') return [shippedTools];
   const skill = /^skill-invocation:([a-z][a-z0-9-]+)$/.exec(feature)?.[1];

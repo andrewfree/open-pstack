@@ -8,7 +8,9 @@ import { requiredFeatures, validateRegistry } from './core.ts';
 import { parseChangedFiles, Publisher } from './github.ts';
 import { command, sha256 } from './io.ts';
 import { evidence, verify } from './verify.ts';
-import { HARNESSES, REPO, type Driver, type GitHub, type Pull, type Receipt } from './types.ts';
+import { HARNESSES, type Driver, type GitHub, type Pull, type Receipt } from './types.ts';
+
+const REPO = 'ericlitman/open-pstack';
 
 const SHA = 'a'.repeat(40), BASE = 'b'.repeat(40), NEXT = 'c'.repeat(40), HASH = 'd'.repeat(64), REVISION = 'e'.repeat(40);
 const URL = `https://github.com/${REPO}/pull/123#issuecomment-1`;
@@ -16,29 +18,57 @@ const roots: string[] = [];
 function temporary(): string { const root = realpathSync(mkdtempSync(join(tmpdir(), 'pstack-publish-test-'))); roots.push(root); return root; }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
-function fixture(runtime = false, selfTest = false) {
+function fixture(runtime = false, selfTest = false, repo = REPO) {
   const root = temporary();
   writeFileSync(join(root, 'retained.log'), 'reviewed transcript');
   writeFileSync(join(root, 'fixture.json'), 'reviewed artifact');
   const calls: string[] = [], saved: Receipt[] = [], comments: string[] = [];
-  const pull: Pull = { number: 123, head: { sha: SHA }, base: { sha: BASE }, state: 'open', headRepo: REPO };
+  const url = `https://github.com/${repo}/pull/123#issuecomment-1`;
+  const pull: Pull = { number: 123, head: { sha: SHA }, base: { sha: BASE }, state: 'open', headRepo: repo };
   let hook: (call: string) => void = () => {};
   const mark = (call: string) => { calls.push(call); hook(call); };
   const github: GitHub = {
     async pull() { mark('pull'); return structuredClone(pull); },
     async files(base, head) { expect(base).toBe(BASE); expect(head).toBe(SHA); mark('files'); return [{ filename: runtime ? 'plugins/pstack/skills/architect/SKILL.md' : 'README.md' }]; },
-    async comment(_pr, body) { mark('comment'); comments.push(body); expect(body).toContain(SHA); return URL; },
-    async status(sha, state, target) { mark(`status:${state}:${sha}`); expect(target).toBe(state === 'success' || comments.length ? URL : `https://github.com/${REPO}/pull/123`); },
+    async comment(_pr, body) { mark('comment'); comments.push(body); expect(body).toContain(SHA); return url; },
+    async status(sha, state, target) { mark(`status:${state}:${sha}`); expect(target).toBe(state === 'success' || comments.length ? url : `https://github.com/${repo}/pull/123`); },
   };
   const driver: Driver = {
     async prepare(r) { mark('prepare'); return HARNESSES.map(harness => ({ harness, sha: r.sha, cliVersion: 'test', pluginVersion: '1.5.0', treeHash: HASH, location: `/isolated/${harness}/plugin`, home: `/isolated/${harness}` })); },
     async exercise(r) { mark('exercise'); return HARNESSES.flatMap(harness => requiredFeatures(r).map(feature => ({ harness, feature, surface: 'native surface', action: 'invoke', observed: 'fixture changed', reviewer: 'recipe' as const, assertions: ['invoke:skill-loaded'], transcript: 'retained.log', transcriptHash: sha256('reviewed transcript'), artifacts: [{ path: 'fixture.json', sha256: sha256('reviewed artifact') }] }))); },
   };
-  const options = { pr: 123, root, selfTest, publisherRevision: REVISION, registry: validateRegistry(data), github, driver, persist: async (r: Receipt) => { saved.push(structuredClone(r)); } };
+  const options = { repo, pr: 123, root, selfTest, publisherRevision: REVISION, registry: validateRegistry(data), github, driver, persist: async (r: Receipt) => { saved.push(structuredClone(r)); } };
   return { options, calls, saved, comments, pull, hook: (fn: typeof hook) => { hook = fn; } };
 }
 
 describe('exact-head evidence publication', () => {
+  test.each([REPO, REPO.toUpperCase()])('repository casing is consistent across resolve and rechecks: %s', async repo => {
+    const f = fixture(); f.options.repo = repo;
+    f.hook(call => { if (call === 'files') f.pull.headRepo = REPO.toUpperCase(); });
+    const receipt = await verify(f.options);
+    expect(receipt.repo).toBe(REPO);
+    expect(receipt.status).toBe('success');
+    expect(f.saved.every(r => r.repo === REPO)).toBe(true);
+  });
+
+  test('explicit fork identity binds receipts and publication links', async () => {
+    const f = fixture(false, false, 'andrewfree/open-pstack');
+    const receipt = await verify(f.options);
+    expect(receipt.repo).toBe('andrewfree/open-pstack');
+    expect(receipt.commentUrl).toBe('https://github.com/andrewfree/open-pstack/pull/123#issuecomment-1');
+    expect(f.saved.every(r => r.repo === 'andrewfree/open-pstack')).toBe(true);
+  });
+
+  test('repository identity changes forbid success at later boundaries', async () => {
+    for (const boundary of ['files', 'prepare', 'exercise', 'comment']) {
+      const f = fixture(true);
+      f.hook(call => { if (call === boundary) f.pull.headRepo = 'andrewfree/open-pstack'; });
+      await expect(verify(f.options)).rejects.toThrow('repository identity changed');
+      expect(f.calls).not.toContain(`status:success:${SHA}`);
+      if (boundary !== 'comment') expect(f.comments).toHaveLength(0);
+    }
+  });
+
   test('docs-only publishes one no-runtime comment and exact-SHA live-gate without harnesses or PR mutation', async () => {
     const f = fixture(), receipt = await verify(f.options);
     expect(receipt.status).toBe('success'); expect(receipt.sha).toBe(SHA); expect(receipt.publisherRevision).toBe(REVISION);
@@ -173,6 +203,51 @@ describe('exact-head evidence publication', () => {
 });
 
 describe('publisher request boundaries', () => {
+  test.each([
+    ['AndrewFree/Open-Pstack', 'https://github.com/andrewfree/open-pstack/issues/123#issuecomment-2'],
+    ['andrewfree/open-pstack', 'https://github.com/AndrewFree/Open-Pstack/pull/123#issuecomment-2'],
+  ])('repository casing preserves canonical API endpoints and original comment URLs: %s', async (repo, url) => {
+    const publisher = new Publisher(repo, async args => {
+      expect(args[2]).toBe('repos/andrewfree/open-pstack/issues/123/comments');
+      return JSON.stringify({ html_url: url });
+    });
+    expect(await publisher.comment(123, 'evidence')).toBe(url);
+  });
+
+  test.each([
+    'https://github.com/other/open-pstack/pull/123#issuecomment-2',
+    'https://github.com/andrewfree/open-pstack-extra/pull/123#issuecomment-2',
+    'https://github.com.example/andrewfree/open-pstack/pull/123#issuecomment-2',
+    'http://github.com/andrewfree/open-pstack/pull/123#issuecomment-2',
+  ])('comment URLs must still belong to the same repository: %s', async url => {
+    const publisher = new Publisher('AndrewFree/Open-Pstack', async () => JSON.stringify({ html_url: url }));
+    await expect(publisher.comment(123, 'evidence')).rejects.toThrow('same-repository');
+  });
+
+  test('fork reads, fetches, comments and statuses all use the explicit repository', async () => {
+    const repo = 'andrewfree/open-pstack', url = `https://github.com/${repo}/pull/123#issuecomment-2`;
+    const calls: string[][] = [];
+    const publisher = new Publisher(repo, async args => {
+      calls.push(args);
+      if (args[0] === 'gh') {
+        if (args[2] === `repos/${repo}/pulls/123`) return JSON.stringify({ number: 123, head: { sha: SHA, repo: { full_name: repo } }, base: { sha: BASE }, state: 'open' });
+        if (args[2] === `repos/${repo}/issues/123/comments`) return JSON.stringify({ html_url: url });
+        if (args[2] === `repos/${repo}/statuses/${SHA}`) return '{}';
+        throw new Error(`Wrong repository endpoint: ${args[2]}`);
+      }
+      if (args[1] === 'rev-parse') return args[3]!.slice(0, 40);
+      if (args[1] === 'diff') return 'M\0README.md\0';
+      return '';
+    });
+    expect((await publisher.pull(123)).headRepo).toBe(repo);
+    expect(await publisher.files(BASE, SHA)).toEqual([{ filename: 'README.md' }]);
+    expect(calls.find(args => args[1] === 'fetch')).toContain(`https://github.com/${repo}.git`);
+    expect(await publisher.comment(123, 'evidence')).toBe(url);
+    await publisher.status(SHA, 'success', url, 'passed');
+    expect(calls.some(args => args[2] === `repos/${repo}/statuses/${SHA}`)).toBe(true);
+    expect(calls.flat().some(arg => arg.includes(REPO))).toBe(false);
+  });
+
   test('NUL diff parser preserves rename provenance and rejects malformed results', () => {
     expect(parseChangedFiles('R100\0plugins/pstack/skills/architect/SKILL.md\0docs/new.md\0M\0README.md\0')).toEqual([{ filename: 'docs/new.md', previous_filename: 'plugins/pstack/skills/architect/SKILL.md' }, { filename: 'README.md' }]);
     expect(parseChangedFiles('')).toEqual([]);
@@ -186,7 +261,7 @@ describe('publisher request boundaries', () => {
     mkdirSync(join(repository, 'runtime')); writeFileSync(join(repository, 'runtime', 'skill.md'), 'immutable runtime'); git('add', '.'); git('commit', '-qm', 'runtime'); const head = git('rev-parse', 'HEAD');
     git('rm', '-q', 'runtime/skill.md'); git('commit', '-qm', 'later docs-only branch');
     const calls: string[][] = [];
-    const publisher = new Publisher(async (args, options) => { calls.push(args); if (args[0] === 'git' && args[1] === 'fetch') args = args.map(arg => arg === `https://github.com/${REPO}.git` ? repository : arg); return command(args, options); });
+    const publisher = new Publisher(REPO, async (args, options) => { calls.push(args); if (args[0] === 'git' && args[1] === 'fetch') args = args.map(arg => arg === `https://github.com/${REPO}.git` ? repository : arg); return command(args, options); });
     expect(await publisher.files(base, head)).toEqual([{ filename: 'runtime/skill.md' }]);
     expect(calls.some(args => args[0] === 'gh')).toBe(false); expect(calls.at(-1)).toContain(`${base}...${head}`);
     await expect(publisher.files('main', head)).rejects.toThrow('Invalid diff SHA');
@@ -199,7 +274,7 @@ describe('publisher request boundaries', () => {
         import { Publisher } from ${JSON.stringify(new globalThis.URL('./github.ts', import.meta.url).pathname)};
         await interruptCommands(${JSON.stringify(signal)});
         const executed = [];
-        const publisher = new Publisher(async (args, options) => { const output = await command([process.execPath, '-e', 'console.log("{}")'], options); executed.push(args); return output; });
+        const publisher = new Publisher(${JSON.stringify(REPO)}, async (args, options) => { const output = await command([process.execPath, '-e', 'console.log("{}")'], options); executed.push(args); return output; });
         try { await publisher.status(${JSON.stringify(SHA)}, 'success', ${JSON.stringify(URL)}, 'passed'); throw new Error('ordinary write escaped interruption'); }
         catch (error) { if (!String(error).includes('Interrupted by')) throw error; }
         await publisher.status(${JSON.stringify(SHA)}, 'failure', ${JSON.stringify(URL)}, 'failed');
@@ -211,7 +286,7 @@ describe('publisher request boundaries', () => {
   });
 
   test('status targets the supplied exact SHA and evidence URL, never a branch', async () => {
-    const calls: string[][] = [], publisher = new Publisher(async args => { calls.push(args); return '{}'; });
+    const calls: string[][] = [], publisher = new Publisher(REPO, async args => { calls.push(args); return '{}'; });
     await publisher.status(SHA, 'success', URL, 'passed');
     expect(calls[0]).toContain(`repos/${REPO}/statuses/${SHA}`); expect(calls[0]).toContain('context=live-gate'); expect(calls[0]).toContain(`target_url=${URL}`);
     await expect(publisher.status('main', 'success', URL, 'passed')).rejects.toThrow('Invalid status SHA');

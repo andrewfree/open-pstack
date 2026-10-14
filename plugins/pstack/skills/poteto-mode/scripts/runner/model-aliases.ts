@@ -1,17 +1,20 @@
-export type RollingClaudeAlias = "fable" | "opus";
+const ROLLING_CLAUDE_ALIASES = ["fable", "opus", "haiku"] as const;
+
+export type RollingClaudeAlias = (typeof ROLLING_CLAUDE_ALIASES)[number];
+
+const VERSIONED_CLAUDE_MODEL = /^claude-(fable|opus|haiku)-[0-9]+(?:-[0-9]+)*$/;
 
 export function isRollingClaudeAlias(
   model: string
 ): model is RollingClaudeAlias {
-  return model === "fable" || model === "opus";
+  return (ROLLING_CLAUDE_ALIASES as readonly string[]).includes(model);
 }
 
 export function versionedClaudeAlias(
   model: string
 ): RollingClaudeAlias | null {
-  if (/^claude-fable-[0-9]+(?:-[0-9]+)*$/.test(model)) return "fable";
-  if (/^claude-opus-[0-9]+(?:-[0-9]+)*$/.test(model)) return "opus";
-  return null;
+  const family = VERSIONED_CLAUDE_MODEL.exec(model)?.[1];
+  return family !== undefined && isRollingClaudeAlias(family) ? family : null;
 }
 
 export function concreteModelMatchesRollingAlias(

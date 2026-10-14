@@ -18,6 +18,8 @@ Use the candidate's installed help and documented arguments. Create fixture stat
 
 A mock test is not live proof. Never perform PR writes from a candidate process or edit daily workflow state as a fixture. Do not infer a successful remote read from an empty response. Candidates retain real identity and reuse normal Claude login/config and Codex's symlinked daily auth as described in `isolation.md`; GitHub and temporary state remain run-owned. No credential contents are read or copied and no extra login is started. Candidates never receive publisher credentials. This does not claim OS denial of daily-home or Keychain access. Missing access fails the feature; preserve its private reason and publish only the bounded exact-SHA result, never after failed setup restoration.
 
-## Headless
+## Native recipes
 
 The `shipped-tools` recipe in `recipes.ts` has the installed `show-me-your-work` workflow run its `log.sh` against a fixture TSV. It asserts the helper command ran from the installed plugin and the persisted row, including formula escaping. `orch`, `watch-pr`, `check-plan`, and the worktree audit have no case yet.
+
+Any required Claude consumer remains blocked pending exact-candidate app transport; these recipes do not authorize headless Claude.
