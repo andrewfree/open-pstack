@@ -45,7 +45,7 @@ A rejected HTTPS CONNECT is a proxy transport failure before API TLS or authenti
 
 Producing these live would need a logged-out Kimi, an alias edited to an unserved model, or a failure injected after real tool output through a forwarding fault proxy. The first two are forbidden and the third is not built.
 
-For PR #1 only, the owner accepted on 2026-10-14 three of these as unit-tested only: credential/401 errors to `unauthenticated`, model errors to `unavailable-model`, and ignoring error-like stdout when classifying failure. Its evidence comment must name those three as unit-only and must not cite the proxy or missing-alias case for them. The decision ends with PR #1's live gate. The unrecognized-stderr change and every other behavior are outside it; each needs live evidence or a separate owner decision recorded in the evidence comment before the gate publishes.
+For PR #1 only, the owner accepted all four behaviors as unit-tested only. On 2026-10-14 the owner first accepted credential/401 errors to `unauthenticated`, model errors to `unavailable-model`, and ignoring error-like stdout when classifying failure, then extended the decision the same day to stderr text without a recognized code yielding `child-failed`. PR #1's evidence comment must name all four as unit-only and must not cite the proxy or missing-alias case for them. The decision ends with PR #1's live gate and covers no other behavior; anything else this PR changes needs live evidence.
 
 Of the classifier test strings, only the 5-hour-limit 403 diagnostic comes from a recorded native Kimi run. The 401, expired-token, login and model strings are constructed from Kimi error codes.
 
