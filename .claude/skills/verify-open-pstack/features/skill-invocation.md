@@ -10,7 +10,7 @@ In a fresh Claude T3 app child invoke `/pstack:<name>`. In Codex use the install
 
 ## Driving it with verify-open-pstack
 
-Launch with real `HOME`, `USER`, and `LOGNAME`, run-owned temporary/GitHub state, and no publisher credentials. `--t3-app <config.json>` enables Claude app cases. Each Claude case gets a temporary T3 provider configured for the exact candidate plugin; the coordinator dispatches only through native T3 `delegate_task`, then binds the terminal task and structured thread item to the pending request. Inspect the native runtime log for plugin inventory, Skill invocation, and candidate skill source/body. See `t3-app.md` and `isolation.md`.
+Launch with real `HOME`, `USER`, and `LOGNAME`, run-owned temporary/GitHub state, and no publisher credentials. `--t3-app <config.json>` enables Claude app cases. Each Claude case runs on the permanent Claude verification instance, whose launcher is armed for the exact candidate plugin; the coordinator dispatches only through native T3 `delegate_task`, then binds the terminal task and structured thread item to the pending request. Inspect the native runtime log for plugin inventory, Skill invocation, and candidate skill source/body. See `t3-app.md` and `isolation.md`.
 
 Codex uses T3 app sessions only for runner-dispatch cases. All other Codex skill cases install the exact-head candidate in a run-owned `CODEX_HOME` and use `codex exec --json`. Its `auth.json` symlinks to the daily `${CODEX_HOME:-$HOME/.codex}/auth.json`; missing file-based auth fails closed. No source flags, credential reading/copying, or extra login.
 
