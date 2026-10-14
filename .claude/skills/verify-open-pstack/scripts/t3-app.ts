@@ -5,6 +5,7 @@ import { isAbsolute, join, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import { interruption, save } from './io.ts';
 import { parseClaudeEvidence } from './claude-evidence.ts';
+import { removeCodexHome } from './isolation.ts';
 import type { NativeWritePolicy } from './command-policy.ts';
 
 export interface T3Config {
@@ -79,7 +80,7 @@ function commandLine(pid: number): string {
   try { return readFileSync(`/proc/${pid}/cmdline`, 'utf8').replaceAll('\0', ' '); }
   catch { return Bun.spawnSync(['ps', '-p', String(pid), '-o', 'command='], { stdout: 'pipe', stderr: 'ignore' }).stdout.toString(); }
 }
-const runningCodex = (pid: number): boolean => processAlive(pid) && commandLine(pid).includes('codex');
+const runningCodex = (pid: number): boolean => { if (!processAlive(pid)) return false; const command = commandLine(pid); return command.includes('codex') && command.includes('app-server'); };
 const accountEnvironment = (entry: JsonObject): boolean => entry.environment?.some((e: JsonObject) => e.sensitive === true || /TOKEN|KEY|SECRET|PASSWORD|AUTH/i.test(e.name)) ?? false;
 function caseEnvironment(env: Record<string, string>): Record<string, string> {
   const merged = { ...env, DO_NOT_TRACK: '1', DISABLE_ERROR_REPORTING: '1', CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: '1', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', GH_TOKEN: '', GITHUB_TOKEN: '', GH_ENTERPRISE_TOKEN: '', GITHUB_ENTERPRISE_TOKEN: '' };
@@ -256,6 +257,7 @@ export class T3App {
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const info = await lstat(directory);
     if (!info.isDirectory() || info.uid !== process.getuid?.() || info.mode & 0o022) throw new Error(`Launcher directory ${directory} must be a real directory owned by this user and not group- or world-writable`);
+    for (const driver of ['claude', 'codex'] as const) await this.assertLauncherSlot(driver);
     const resolvedDirectory = await realpath(directory);
     const targets = { claude: this.dailyBinary(providers, 'claude'), codex: this.dailyBinary(providers, 'codex') };
     for (const target of Object.values(targets)) {
@@ -265,10 +267,14 @@ export class T3App {
     return targets;
   }
 
-  private async writeLauncher(driver: Driver, launch: Launch): Promise<void> {
+  private async assertLauncherSlot(driver: Driver): Promise<void> {
     const path = this.launcher(driver), existing = await lstat(path).catch(() => undefined);
     if (existing && (!existing.isFile() || !(await Bun.file(path).slice(0, 256).text()).split('\n').includes(LAUNCHER_MARKER))) throw new Error(`Refusing to replace ${path}: it is not a pstack verification launcher`);
-    const temporary = `${path}.${randomUUID()}.tmp`;
+  }
+
+  private async writeLauncher(driver: Driver, launch: Launch): Promise<void> {
+    await this.assertLauncherSlot(driver);
+    const path = this.launcher(driver), temporary = `${path}.${randomUUID()}.tmp`;
     await writeFile(temporary, launcherScript(launch), { flag: 'wx', mode: 0o700 });
     await rename(temporary, path);
   }
@@ -284,27 +290,46 @@ export class T3App {
     await this.retainState();
   }
 
+  private async readLock(): Promise<{ pid: number; root: string }> {
+    const held = await readFile(this.lockPath, 'utf8').then(text => { try { return JSON.parse(text); } catch { return undefined; } }, () => undefined);
+    if (!Number.isInteger(held?.pid) || typeof held.root !== 'string') throw new Error(`${this.lockPath} is unreadable; delete it if no verification run is active`);
+    return held;
+  }
+
   private async lock(): Promise<void> {
     const owner = { pid: process.pid, root: this.root };
     try { await writeFile(this.lockPath, JSON.stringify(owner) + '\n', { flag: 'wx', mode: 0o600 }); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      const held = JSON.parse(await readFile(this.lockPath, 'utf8'));
-      if (held.pid === process.pid && held.root === this.root) { this.locked = true; return; }
-      if (processAlive(held.pid)) throw new Error(`Verification run pid ${held.pid} (${held.root}) holds the launchers; wait for it to finish`);
-      console.log(`Taking over the stale launcher lock from pid ${held.pid} (${held.root})`);
-      await save(this.lockPath, owner);
+      const held = await this.readLock();
+      if (held.pid !== process.pid || held.root !== this.root) {
+        if (processAlive(held.pid)) throw new Error(`Verification run pid ${held.pid} (${held.root}) holds the launchers; wait for it to finish, or delete ${this.lockPath} if that process is not a verification run`);
+        console.log(`Taking over the stale launcher lock from pid ${held.pid} (${held.root})`);
+        const temporary = `${this.lockPath}.${randomUUID()}.tmp`;
+        await writeFile(temporary, JSON.stringify(owner) + '\n', { flag: 'wx', mode: 0o600 });
+        await rename(temporary, this.lockPath);
+        const now = await this.readLock();
+        if (now.pid !== process.pid || now.root !== this.root) throw new Error(`Verification run pid ${now.pid} (${now.root}) took the launchers at the same time`);
+      }
     }
     this.locked = true;
   }
 
   /** T3 keeps an idle Codex app-server for about 30 minutes; a new run must not inherit one bound to an earlier run's home. */
   private async refuseLiveServers(): Promise<void> {
-    const previous = await readFile(this.serversPath, 'utf8').then(text => JSON.parse(text), () => undefined);
-    if (!previous) return;
+    const text = await readFile(this.serversPath, 'utf8').catch(() => undefined);
+    if (text === undefined) return;
+    const previous = (() => { try { return JSON.parse(text); } catch { return undefined; } })();
+    if (!Array.isArray(previous?.pids) || !Array.isArray(previous.homes)) throw new Error(`${this.serversPath} is unreadable; inspect it, remove any listed run-owned Codex homes once T3 no longer serves them, then delete it`);
     const live = (previous.pids as number[]).filter(runningCodex);
     if (live.length) throw new Error(`T3 still runs the Codex verification app-server (pid ${live.join(', ')}) from run ${previous.root}; wait for T3's idle release, about 30 minutes, or restart T3`);
+    for (const home of previous.homes as string[]) if (await lstat(join(home, '.codex')).catch(() => undefined)) await removeCodexHome(home);
     await rm(this.serversPath);
+  }
+
+  /** Cleanup keeps run-owned Codex homes that a live app-server still uses; the next run removes them once it exits. */
+  async keepCodexHomes(homes: string[], pids: number[]): Promise<void> {
+    await save(this.serversPath, { root: this.root, pids, homes });
   }
 
   /** Codex app-servers started through this run's launcher that are still running. */
@@ -340,11 +365,9 @@ export class T3App {
     const failures: string[] = [];
     if (this.armed) await this.disarm().catch(error => { failures.push(errorMessage(error)); });
     if (this.pending) failures.push(`T3 case ${this.pending} has no validated terminal receipt; check or cancel only that task before trusting this run`);
-    const live = await this.liveCodexServers();
-    if (live.length) await save(this.serversPath, { root: this.root, pids: live });
-    if (this.locked && failures.length === 0) {
-      const held = JSON.parse(await readFile(this.lockPath, 'utf8'));
-      if (held.pid === process.pid && held.root === this.root) await rm(this.lockPath);
+    if (this.locked) {
+      const held = await this.readLock().catch(() => undefined);
+      if (held?.pid === process.pid && held.root === this.root) await rm(this.lockPath);
       this.locked = false;
     }
     if (failures.length) throw new Error(failures.join('; '));

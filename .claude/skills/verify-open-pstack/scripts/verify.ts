@@ -68,10 +68,11 @@ export async function verify(options: VerifyOptions): Promise<Receipt> {
   let successAttempted = false, commentAttempted = false, cleanupComplete = false, cleanupFailed = false;
   const cleanup = async (): Promise<void> => {
     if (cleanupComplete) return;
-    try { await driver.cleanup?.(receipt); }
+    let summary: string | void;
+    try { summary = await driver.cleanup?.(receipt); }
     catch (error) { cleanupFailed = true; throw error; }
     cleanupComplete = true;
-    receipt.cleanup = 'Setup files restored and verified; run-owned Codex home removed; private raw evidence retained';
+    receipt.cleanup = summary || 'Setup files restored and verified; run-owned Codex home removed; private raw evidence retained';
   };
   const current = async (): Promise<Pull> => {
     const pull = await github.pull(receipt.pr);

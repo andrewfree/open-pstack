@@ -60,19 +60,30 @@ export class MacDriver implements Driver {
   private restorationFailed = false;
   private daily?: { paths: DailyStatePaths; before: DailyState; root: string };
   constructor(private run: Command = command, private record: Session = session, private routes: string[] = [], private app?: T3App) {}
-  async cleanup(): Promise<void> {
-    if (this.setup) await restoreSetup(this.setup);
-    if (this.restorationFailed) throw new Error('Setup restoration failed; publication forbidden');
-    await this.app?.cleanup();
-    const liveServers = await this.app?.liveCodexServers() ?? [];
-    if (liveServers.length) console.log(`Keeping the run-owned Codex home while T3's verification app-server (pid ${liveServers.join(', ')}) still uses it; T3 releases idle app-servers after about 30 minutes.`);
-    else for (const home of this.codexHomes) await removeCodexHome(home);
-    this.codexHomes = [];
+  async cleanup(): Promise<string | void> {
+    const failures: unknown[] = [];
+    const step = async (action: () => Promise<void>): Promise<void> => { try { await action(); } catch (error) { failures.push(error); } };
+    let kept = false;
+    if (this.setup) await step(() => restoreSetup(this.setup!));
+    if (this.restorationFailed) failures.push(new Error('Setup restoration failed; publication forbidden'));
+    await step(async () => { await this.app?.cleanup(); });
+    await step(async () => {
+      for (const home of this.codexHomes) await assertCodexAuth(home);
+      const liveServers = await this.app?.liveCodexServers() ?? [];
+      if (liveServers.length) {
+        await this.app!.keepCodexHomes(this.codexHomes, liveServers);
+        console.log(`Keeping the run-owned Codex home while T3's verification app-server (pid ${liveServers.join(', ')}) still uses it; the next run removes it after T3's idle release, about 30 minutes.`);
+        kept = true;
+      } else for (const home of this.codexHomes) await removeCodexHome(home);
+      this.codexHomes = [];
+    });
+    if (failures.length) throw failures[0];
     if (this.daily) {
       const after = await captureDailyState(this.daily.paths);
       await save(join(this.daily.root, 'daily-state-after.json'), after);
       assertDailyState(this.daily.before, after);
     }
+    if (kept) return "Setup files restored and verified; run-owned Codex home kept, with its auth link verified, while T3's verification app-server still runs; private raw evidence retained";
   }
   private candidate(home: string): Command {
     return (args, options = {}) => this.run(args, { ...options, env: isolatedEnv(home) });
@@ -178,7 +189,10 @@ export class MacDriver implements Driver {
                 const nativeClaude = harness === 'claude' ? await parseClaudeEvidence(text, { pluginRoot: installation.location, workspace, started, model: app!.model, writePolicy }) : undefined;
                 if (nativeClaude && nativeClaude.cliVersion !== installation.cliVersion.split(/\s/)[0]) throw new Error('Claude native CLI version changed since candidate preparation');
                 const nativeCodex = app && harness === 'codex' ? await parseCodexAppEvidence(text, { pluginRoot: installation.location, workspace,
-                  codexHome: env.CODEX_HOME!, started, prompt: app.prompt, model: app.model, writePolicy }) : undefined;
+                  codexHome: env.CODEX_HOME!, started, prompt: app.prompt, model: app.model, writePolicy }).catch((error: Error) => {
+                  if (!error.message.includes('escaped isolated candidate')) throw error;
+                  throw new Error(`${error.message}; T3 may still be serving the Codex verification instance from an app-server started outside this run, so wait for its idle release or restart T3`);
+                }) : undefined;
                 if (nativeCodex) await copyFile(nativeCodex.rolloutPath, join(records, `${c.id}.rollout.jsonl`));
                 const rollout = nativeCodex?.rollout ?? (harness === 'codex' ? await this.rollout(env.CODEX_HOME!, text, join(records, `${c.id}.rollout.jsonl`)) : '');
                 if (rollout) evidence.push(join(records, `${c.id}.rollout.jsonl`));
