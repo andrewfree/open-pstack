@@ -34,6 +34,12 @@ export function classify(files: ChangedFile[], registry: Registry): Selection {
       if (path !== 'plugins/pstack/assets/logo.png') throw new Error(`Unmapped asset consumer: ${path}`);
       features.add('codex:assets:codex'); covered = true;
     }
+    if (path === '.claude/skills/verify-open-pstack/features/recipes.ts') {
+      registry.skills.forEach(s => skills.add(s));
+      both('catalog', 'setup', 'runner', 'shipped-tools', 'hook:startup');
+      features.add('claude:agent-preload:poteto-agent');
+      covered = true;
+    }
     const catalog = registry.catalog.some(p => matches(path, p));
     if (catalog) { both('catalog', 'setup', 'runner'); covered = true; }
     if (!catalog && registry.shared.some(p => matches(path, p))) {
