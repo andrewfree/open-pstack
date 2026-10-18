@@ -26,6 +26,10 @@ async function inspected(f: Fixture, inspection = 'bun inspect.mjs'): Promise<Se
     active: data.jobs.filter((job: { state: string }) => job.state === 'running').length,
     failedIds: data.jobs.filter((job: { state: string }) => job.state === 'failed').map((job: { id: string }) => job.id),
     sourceSerial: data.source.serial }));
+  return inspectionRecord(f, inspection, text);
+}
+
+function inspectionRecord(f: Fixture, inspection: string, text: string): SessionRecord {
   const started = Date.now() - 1000;
   if (f.harness === 'codex') {
     return parseSession('codex', JSON.stringify({ type: 'item.completed', item: { id: 'inspect', type: 'command_execution',
@@ -134,6 +138,22 @@ test.each(['claude', 'codex'] as const)('%s rejects the old nonempty-result fals
     await expect(c.assert(record, f)).rejects.toThrow('never-block-handoff-mismatch');
   }
 });
+
+for (const harness of ['claude', 'codex'] as const) {
+  for (const index of [0, 1]) {
+    test.each([
+      ['export IDs without job states', 'cat exports.json'],
+      ['only the current snapshot', `bun -e 'console.log((await Bun.file("queue.json").json()).snapshot)'`],
+      ['a diagnostic with one changed job ID', `bun -e 'const diagnostic = await Bun.file("queue.json").json(); diagnostic.jobs[0].id += "-changed"; console.log(JSON.stringify(diagnostic))'`],
+    ])(`${harness} case ${index} rejects %s despite a correct handoff`, async (_name, inspection) => {
+      const { f, c } = await prepared(harness, index), record = await inspected(f);
+      expect((await c.assert(record, f)).assertions).toContain('queue-inspected');
+      const text = await command(['sh', '-c', inspection], { cwd: f.dir });
+      expect(text).toContain(JSON.parse(await readFile(join(f.dir, 'queue.json'), 'utf8')).snapshot);
+      await expect(c.assert(inspectionRecord(f, inspection, text), f)).rejects.toThrow('never-block-inspection-missing');
+    });
+  }
+}
 
 test.each(['claude', 'codex'] as const)('%s rejects fabricated facts, extra claims, and reports from a different run', async harness => {
   for (const index of [0, 1]) {
