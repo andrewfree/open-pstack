@@ -59,12 +59,25 @@ test.each(['claude', 'codex'] as const)('%s has two cases that allow an unanswer
   }
 });
 
+test.each(['claude', 'codex'] as const)('%s prepares the unknown-source case without the previous handoff', async harness => {
+  const { f, c } = await prepared(harness);
+  await c.assert(await inspected(f), f);
+  const control = recipe(feature, harness)[1]!;
+  await control.prepare!(f);
+  expect(await Bun.file(join(f.dir, 'handoff.json')).exists()).toBe(false);
+  expect((await control.assert(await inspected(f), f)).assertions).toContain('unobserved-source-not-fabricated');
+});
+
 test.each(['claude', 'codex'] as const)('%s accepts equivalent inspection and output batched with the operations notes', async harness => {
   for (const index of [0, 1]) {
     const { f, c } = await prepared(harness, index);
     for (const inspection of ['cat queue.json', 'cat README.md && bun inspect.mjs']) {
       const record = await inspected(f, inspection);
       expect((await c.assert(record, f)).assertions).toContain('queue-inspected');
+      const pretty = await readFile(join(f.dir, 'queue.json'), 'utf8');
+      const wrapped = { ...record, tools: record.tools.map(tool => ({ ...tool,
+        input: { command: `/bin/zsh -lc '${inspection}'` }, result: JSON.stringify(JSON.parse(pretty), null, 2) })) };
+      expect((await c.assert(wrapped, f)).assertions).toContain('queue-inspected');
     }
   }
 });
