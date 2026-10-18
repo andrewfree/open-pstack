@@ -185,6 +185,59 @@ test.each(['claude', 'codex'] as const)('%s rejects active counts taken from the
   }
 });
 
+test.each(['claude', 'codex'] as const)('%s rejects progress shortcuts for active counts', async harness => {
+  const { f, c } = await prepared(harness, 1), record = await inspected(f);
+  const diagnostic = JSON.parse(await readFile(join(f.dir, 'queue.json'), 'utf8'));
+  const report = join(f.dir, 'handoff.json'), good = JSON.parse(await readFile(report, 'utf8'));
+  const active = diagnostic.jobs.filter((job: { percent: number }) => job.percent === 40).length;
+  await writeFile(report, JSON.stringify({ ...good, active }));
+  await expect(c.assert(record, f)).rejects.toThrow('never-block-handoff-mismatch');
+});
+
+test.each(['claude', 'codex'] as const)('%s rejects treating every partial-progress job as running', async harness => {
+  const { f, c } = await prepared(harness, 1), record = await inspected(f);
+  const diagnostic = JSON.parse(await readFile(join(f.dir, 'queue.json'), 'utf8'));
+  const report = join(f.dir, 'handoff.json'), good = JSON.parse(await readFile(report, 'utf8'));
+  const active = diagnostic.jobs.filter((job: { percent: number }) => job.percent > 0 && job.percent < 100).length;
+  await writeFile(report, JSON.stringify({ ...good, active }));
+  await expect(c.assert(record, f)).rejects.toThrow('never-block-handoff-mismatch');
+});
+
+test.each(['claude', 'codex'] as const)('%s rejects identifying failed jobs by zero progress', async harness => {
+  for (const index of [0, 1]) {
+    const { f, c } = await prepared(harness, index), record = await inspected(f);
+    const diagnostic = JSON.parse(await readFile(join(f.dir, 'queue.json'), 'utf8'));
+    const report = join(f.dir, 'handoff.json'), good = JSON.parse(await readFile(report, 'utf8'));
+    const failedIds = diagnostic.jobs.filter((job: { percent: number }) => job.percent === 0).map((job: { id: string }) => job.id);
+    await writeFile(report, JSON.stringify({ ...good, failedIds }));
+    await expect(c.assert(record, f)).rejects.toThrow('never-block-handoff-mismatch');
+  }
+});
+
+test.each(['claude', 'codex'] as const)('%s rejects deriving running counts by subtracting failures from completions', async harness => {
+  for (const index of [0, 1]) {
+    const { f, c } = await prepared(harness, index), record = await inspected(f);
+    const diagnostic = JSON.parse(await readFile(join(f.dir, 'queue.json'), 'utf8'));
+    const report = join(f.dir, 'handoff.json'), good = JSON.parse(await readFile(report, 'utf8'));
+    const count = (state: string) => diagnostic.jobs.filter((job: { state: string }) => job.state === state).length;
+    await writeFile(report, JSON.stringify({ ...good, active: count('complete') - count('failed') }));
+    await expect(c.assert(record, f)).rejects.toThrow('never-block-handoff-mismatch');
+  }
+});
+
+test.each(['claude', 'codex'] as const)('%s rejects the previous fixed total while accepting state-derived handoffs', async harness => {
+  const totals: number[] = [];
+  for (const index of [0, 1]) {
+    const { f, c } = await prepared(harness, index), record = await inspected(f);
+    const report = join(f.dir, 'handoff.json'), good = JSON.parse(await readFile(report, 'utf8'));
+    totals.push(good.total);
+    await c.assert(record, f);
+    await writeFile(report, JSON.stringify({ ...good, total: 6 }));
+    await expect(c.assert(record, f)).rejects.toThrow('never-block-handoff-mismatch');
+  }
+  expect(totals[0]).not.toBe(totals[1]);
+});
+
 test.each(['claude', 'codex'] as const)('%s requires every failed job in diagnostic order', async harness => {
   const { f, c } = await prepared(harness, 1), record = await inspected(f);
   const report = join(f.dir, 'handoff.json'), good = JSON.parse(await readFile(report, 'utf8'));

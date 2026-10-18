@@ -88,6 +88,7 @@ Read receipts as data, never shell input. Do not put credentials in prompts or p
 - scripts/cli.ts
 - scripts/core.test.ts
 - scripts/core.ts
+- scripts/doctor.test.ts
 - scripts/doctor.ts
 - scripts/github.ts
 - scripts/harness.test.ts
@@ -96,9 +97,11 @@ Read receipts as data, never shell input. Do not put credentials in prompts or p
 - scripts/io.ts
 - scripts/isolation.test.ts
 - scripts/isolation.ts
+- scripts/never-block.test.ts
 - scripts/provenance.test.ts
 - scripts/provenance.ts
 - scripts/reflect.test.ts
+- scripts/runner.test.ts
 - scripts/types.ts
 - scripts/verify.sh
 - scripts/verify.test.ts

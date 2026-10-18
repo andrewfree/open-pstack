@@ -166,9 +166,24 @@ function parseJson(text: string | undefined): unknown {
 function neverBlockFixture(sourceKnown: boolean) {
   const snapshot = crypto.randomUUID();
   const sourceSerial = sourceKnown ? crypto.randomUUID() : null;
-  const states = sourceKnown ? ['running', 'failed', 'complete', 'running', 'complete', 'complete']
-    : ['running', 'failed', 'complete', 'failed', 'complete', 'complete'];
-  const jobs = states.map(state => ({ id: crypto.randomUUID(), state, percent: state === 'running' ? 40 : state === 'complete' ? 100 : 0 }));
+  const jobs = (sourceKnown ? [
+    { state: 'running', percent: 0 },
+    { state: 'failed', percent: 40 },
+    { state: 'complete', percent: 100 },
+    { state: 'running', percent: 40 },
+    { state: 'complete', percent: 100 },
+    { state: 'complete', percent: 100 },
+    { state: 'complete', percent: 100 },
+  ] : [
+    { state: 'running', percent: 0 },
+    { state: 'failed', percent: 20 },
+    { state: 'complete', percent: 100 },
+    { state: 'failed', percent: 60 },
+    { state: 'complete', percent: 100 },
+    { state: 'complete', percent: 100 },
+    { state: 'complete', percent: 100 },
+    { state: 'complete', percent: 100 },
+  ]).map(job => ({ id: crypto.randomUUID(), ...job }));
   const diagnostic = { snapshot, jobs, source: { serial: sourceSerial,
     status: sourceKnown ? 'observed' : 'unobserved',
     reason: sourceKnown ? null : 'Current physical source identity is unavailable to software; an operator must observe it.' } };
