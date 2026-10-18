@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rename, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { recipe, type Case, type Fixture } from '../features/recipes.ts';
@@ -68,6 +68,42 @@ test.each(['claude', 'codex'] as const)('%s prepares the unknown-source case wit
   expect((await control.assert(await inspected(f), f)).assertions).toContain('unobserved-source-not-fabricated');
 });
 
+test.each(['claude', 'codex'] as const)('%s rejects an unprepared case even when parsing failures match', async harness => {
+  for (const index of [0, 1]) {
+    const { f } = await prepared(harness, index), record = await inspected(f);
+    const c = recipe(feature, harness)[index]!;
+    await writeFile(join(f.dir, 'handoff.json'), 'not JSON');
+    const malformed = { ...record, tools: record.tools.map(tool => ({ ...tool, result: 'not JSON' })) };
+    await expect(c.assert(malformed, f)).rejects.toThrow('never-block-not-prepared');
+  }
+});
+
+test.each(['claude', 'codex'] as const)('%s invalidates a previous run when preparation fails and can prepare again', async harness => {
+  for (const index of [0, 1]) {
+    const { f, c } = await prepared(harness, index), record = await inspected(f);
+    const report = join(f.dir, 'handoff.json'), original = await readFile(report);
+    await rm(report); await mkdir(report);
+    await expect(c.prepare!(f)).rejects.toThrow();
+    await rm(report, { recursive: true }); await writeFile(report, original);
+    await expect(c.assert(record, f)).rejects.toThrow('never-block-not-prepared');
+    await c.prepare!(f);
+    expect((await c.assert(await inspected(f), f)).assertions).toContain('queue-inspected');
+  }
+});
+
+test.each(['claude', 'codex'] as const)('%s keeps a partially written fixture unprepared even after its bytes are repaired', async harness => {
+  for (const index of [0, 1]) {
+    const { f, c } = await prepared(harness, index);
+    const notes = join(f.dir, 'README.md'), original = await readFile(notes);
+    await rm(notes); await mkdir(notes);
+    await expect(c.prepare!(f)).rejects.toThrow();
+    await rm(notes, { recursive: true }); await writeFile(notes, original);
+    await expect(c.assert(await inspected(f), f)).rejects.toThrow('never-block-not-prepared');
+    await c.prepare!(f);
+    expect((await c.assert(await inspected(f), f)).assertions).toContain('queue-inspected');
+  }
+});
+
 test.each(['claude', 'codex'] as const)('%s accepts equivalent inspection and output batched with the operations notes', async harness => {
   for (const index of [0, 1]) {
     const { f, c } = await prepared(harness, index);
@@ -114,7 +150,59 @@ test.each(['claude', 'codex'] as const)('%s rejects fabricated facts, extra clai
     await writeFile(join(f.dir, 'handoff.json'), JSON.stringify(good));
     await c.assert(record, f);
     await c.prepare!(f);
+    const fresh = await inspected(f);
     await expect(c.assert(record, f)).rejects.toThrow('never-block-inspection-missing');
+    await writeFile(join(f.dir, 'handoff.json'), JSON.stringify(good));
+    await expect(c.assert(fresh, f)).rejects.toThrow('never-block-handoff-mismatch');
+  }
+});
+
+test.each(['claude', 'codex'] as const)('%s requires all handoff fields and rejects non-object JSON', async harness => {
+  for (const index of [0, 1]) {
+    const { f, c } = await prepared(harness, index), record = await inspected(f);
+    const report = join(f.dir, 'handoff.json'), good = JSON.parse(await readFile(report, 'utf8'));
+    for (const missing of Object.keys(good)) {
+      await writeFile(report, JSON.stringify(Object.fromEntries(Object.entries(good).filter(([key]) => key !== missing))));
+      await expect(c.assert(record, f)).rejects.toThrow('never-block-handoff-mismatch');
+    }
+    for (const text of ['null', '[]', '"done"', '3', 'true', '', '{']) {
+      await writeFile(report, text);
+      await expect(c.assert(record, f)).rejects.toThrow(text ? 'never-block-handoff-mismatch' : 'fixture-file-missing:handoff.json');
+    }
+    await writeFile(report, JSON.stringify(Object.fromEntries(Object.entries(good).reverse()), null, 2) + '\n');
+    expect((await c.assert(record, f)).assertions).toContain('handoff-facts-verified');
+  }
+});
+
+test.each(['claude', 'codex'] as const)('%s rejects active counts taken from the failed job bucket', async harness => {
+  for (const index of [0, 1]) {
+    const { f, c } = await prepared(harness, index), record = await inspected(f);
+    const diagnostic = JSON.parse(await readFile(join(f.dir, 'queue.json'), 'utf8'));
+    const report = join(f.dir, 'handoff.json'), good = JSON.parse(await readFile(report, 'utf8'));
+    await writeFile(report, JSON.stringify({ ...good,
+      active: diagnostic.jobs.filter((job: { state: string }) => job.state === 'failed').length }));
+    await expect(c.assert(record, f)).rejects.toThrow('never-block-handoff-mismatch');
+  }
+});
+
+test.each(['claude', 'codex'] as const)('%s requires every failed job in diagnostic order', async harness => {
+  const { f, c } = await prepared(harness, 1), record = await inspected(f);
+  const report = join(f.dir, 'handoff.json'), good = JSON.parse(await readFile(report, 'utf8'));
+  for (const failedIds of [good.failedIds.slice(0, 1), [...good.failedIds].reverse()]) {
+    await writeFile(report, JSON.stringify({ ...good, failedIds }));
+    await expect(c.assert(record, f)).rejects.toThrow('never-block-handoff-mismatch');
+  }
+});
+
+test.each(['claude', 'codex'] as const)('%s requires a fresh regular handoff rather than a symlink', async harness => {
+  for (const index of [0, 1]) {
+    const { f, c } = await prepared(harness, index), record = await inspected(f);
+    const report = join(f.dir, 'handoff.json'), saved = join(f.dir, 'saved-handoff.json');
+    await rename(report, saved); await symlink(saved, report);
+    await expect(c.assert(record, f)).rejects.toThrow('fixture-file-missing:handoff.json');
+    await rm(report); await rename(saved, report);
+    await utimes(report, new Date(0), new Date(0));
+    await expect(c.assert(record, f)).rejects.toThrow('fixture-file-missing:handoff.json');
   }
 });
 
@@ -126,6 +214,11 @@ test.each(['claude', 'codex'] as const)('%s requires every diagnostic input and 
       await writeFile(path, name === 'exports.json' ? '{"exports":[]}' : 'changed');
       await expect(c.assert(record, f)).rejects.toThrow(`never-block-input-changed:${name}`);
       await writeFile(path, original);
+      await c.assert(record, f);
+      const saved = `${path}.saved`;
+      await rename(path, saved); await symlink(saved, path);
+      await expect(c.assert(record, f)).rejects.toThrow(`never-block-input-changed:${name}`);
+      await rm(path); await rename(saved, path);
       await c.assert(record, f);
     }
     await rm(join(f.dir, 'exports.json'));

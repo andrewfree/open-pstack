@@ -204,6 +204,13 @@ describe('registry and ownership', () => {
       expect(classify([{ filename }], registry).features).toEqual(both('project-skill'));
     }
   });
+  test('shared recipe expansion survives overlapping catalog ownership without broadening ordinary catalog paths', () => {
+    const path = '.claude/skills/verify-open-pstack/features/recipes.ts';
+    const overlapping = { ...registry, catalog: [...registry.catalog, path], shared: [...registry.shared, path] };
+    expect(classify([{ filename: path }], overlapping)).toEqual(classify([{ filename: path }], registry));
+    const catalog = registry.catalog[0]!;
+    expect(classify([{ filename: catalog }], overlapping)).toEqual(classify([{ filename: catalog }], registry));
+  });
   test('ordinary repository documentation selects no harnesses', () => {
     const s = classify([{ filename: 'README.md' }, { filename: 'docs/guide.md' }], registry);
     expect(s.noRuntime).toBe(true);
