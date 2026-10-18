@@ -29,11 +29,11 @@ async function inspected(f: Fixture, inspection = 'bun inspect.mjs'): Promise<Se
   return inspectionRecord(f, inspection, text);
 }
 
-function inspectionRecord(f: Fixture, inspection: string, text: string): SessionRecord {
+function inspectionRecord(f: Fixture, inspection: string, text: string, commandExit = 0, sessionExit = 0): SessionRecord {
   const started = Date.now() - 1000;
   if (f.harness === 'codex') {
     return parseSession('codex', JSON.stringify({ type: 'item.completed', item: { id: 'inspect', type: 'command_execution',
-      command: inspection, aggregated_output: text, exit_code: 0 } }), 0, started,
+      command: inspection, aggregated_output: text, exit_code: commandExit } }), sessionExit, started,
     JSON.stringify({ type: 'response_item', payload: { content: [{ text: '<skill>\n<name>pstack:principle-never-block-on-the-human</name>\n<path>/run/.codex/plugins/cache/open-pstack/pstack/test/skills/principle-never-block-on-the-human/SKILL.md</path>' }] } }));
   }
   return parseSession('claude', [
@@ -41,8 +41,16 @@ function inspectionRecord(f: Fixture, inspection: string, text: string): Session
       { type: 'tool_use', id: 'load', name: 'Skill', input: { skill: 'pstack:principle-never-block-on-the-human' } },
       { type: 'tool_use', id: 'inspect', name: 'Bash', input: { command: inspection } },
     ] } },
-    { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'inspect', is_error: false, content: text }] } },
-  ].map(event => JSON.stringify(event)).join('\n'), 0, started);
+    { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'inspect', is_error: commandExit !== 0, content: text }] } },
+  ].map(event => JSON.stringify(event)).join('\n'), sessionExit, started);
+}
+
+async function capturedInspection(f: Fixture, inspection: string) {
+  const child = Bun.spawn(['sh', '-c', inspection], { cwd: f.dir, stdout: 'pipe', stderr: 'pipe' });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+  ]);
+  return { stdout, stderr, exitCode, record: inspectionRecord(f, inspection, stdout + stderr, exitCode) };
 }
 
 test.each(['claude', 'codex'] as const)('%s has two cases that allow an unanswered remainder without overriding other recipes', async harness => {
@@ -128,7 +136,6 @@ test.each(['claude', 'codex'] as const)('%s rejects the old nonempty-result fals
     await writeFile(join(f.dir, 'result.md'), 'Waiting for you to approve inspection. I did not inspect anything.');
     await expect(c.assert({ ...record, commands: [], tools: [] }, f)).rejects.toThrow('never-block-inspection-missing');
     for (const tools of [
-      record.tools.map(tool => ({ ...tool, failed: true })),
       record.tools.map(tool => ({ ...tool, result: 'I inspected the queue and it is fine.' })),
       record.tools.map(tool => ({ ...tool, result: undefined })),
     ]) await expect(c.assert({ ...record, tools }, f)).rejects.toThrow('never-block-inspection-missing');
@@ -141,6 +148,38 @@ test.each(['claude', 'codex'] as const)('%s rejects the old nonempty-result fals
 
 for (const harness of ['claude', 'codex'] as const) {
   for (const index of [0, 1]) {
+    test(`${harness} case ${index} accepts a captured diagnostic before a failing unrelated tail`, async () => {
+      const { f, c } = await prepared(harness, index), inspection = 'bun inspect.mjs; cat handoff.json';
+      expect(await Bun.file(join(f.dir, 'handoff.json')).exists()).toBe(false);
+      const { stdout, stderr, exitCode, record } = await capturedInspection(f, inspection);
+      expect(exitCode).toBe(1);
+      expect(stdout).toBe(await readFile(join(f.dir, 'queue.json'), 'utf8'));
+      expect(stderr).toContain('handoff.json');
+      expect(record.tools.find(tool => tool.input.command === inspection)?.failed).toBe(true);
+      expect(await Bun.file(join(f.dir, 'handoff.json')).exists()).toBe(false);
+      await inspected(f);
+      expect((await c.assert(record, f)).assertions).toContain('queue-inspected');
+      expect(() => inspectionRecord(f, inspection, stdout + stderr, exitCode, 1)).toThrow('exit:1');
+    });
+    for (const { name, inspection, stale } of [
+      { name: 'absent output', inspection: 'true', stale: false },
+      { name: 'partial diagnostic', inspection: `bun -e 'console.log(JSON.stringify({snapshot:(await Bun.file("queue.json").json()).snapshot}))'`, stale: false },
+      { name: 'truncated diagnostic', inspection: 'head -c 120 queue.json', stale: false },
+      { name: 'current diagnostic with a changed fact', inspection: `bun -e 'const diagnostic = await Bun.file("queue.json").json(); diagnostic.jobs[0].id += "-changed"; console.log(JSON.stringify(diagnostic))'`, stale: false },
+      { name: 'stale diagnostic', inspection: 'bun inspect.mjs', stale: true },
+    ]) {
+      test(`${harness} case ${index} rejects ${name} after a failing tail`, async () => {
+        const { f, c } = await prepared(harness, index);
+        const { stdout, stderr, exitCode, record } = await capturedInspection(f, `${inspection}; cat handoff.json`);
+        expect(exitCode).toBe(1);
+        expect(stderr).toContain('handoff.json');
+        if (name === 'absent output') expect(stdout).toBe('');
+        else expect(stdout).toContain(JSON.parse(await readFile(join(f.dir, 'queue.json'), 'utf8')).snapshot);
+        if (stale) await c.prepare!(f);
+        expect((await c.assert(await inspected(f), f)).assertions).toContain('queue-inspected');
+        await expect(c.assert(record, f)).rejects.toThrow('never-block-inspection-missing');
+      });
+    }
     test.each([
       ['export IDs without job states', 'cat exports.json'],
       ['only the current snapshot', `bun -e 'console.log((await Bun.file("queue.json").json()).snapshot)'`],

@@ -219,7 +219,7 @@ function neverBlock(): Case[] {
           const info = await lstat(join(f.dir, name)).catch(() => undefined);
           if (!info?.isFile() || await readFile(join(f.dir, name), 'utf8') !== content) throw new Error(`never-block-input-changed:${name}`);
         }
-        const inspected = record.tools.some(tool => ['command', 'Bash'].includes(tool.name) && !tool.failed &&
+        const inspected = record.tools.some(tool => ['command', 'Bash'].includes(tool.name) &&
           typeof tool.input.command === 'string' &&
           (Bun.deepEquals(parseJson(tool.result), run.diagnostic) ||
             tool.result?.split('\n').some(line => Bun.deepEquals(parseJson(line), run.diagnostic))));
