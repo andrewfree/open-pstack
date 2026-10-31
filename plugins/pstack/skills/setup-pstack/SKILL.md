@@ -1,6 +1,6 @@
 ---
 name: setup-pstack
-description: Configure pstack's provider-qualified models, per-family requested effort, and parent-owned routes per role. Verifies the assigned native and external lanes before writing the override sheet. Use for /setup-pstack, "configure pstack models", or changing pstack's model choices.
+description: Configure pstack's provider-qualified models, per-family requested effort, and parent-owned routes per role. Verifies the assigned native, T3 Claude Agent, and external lanes before writing the override sheet. Use for /setup-pstack, "configure pstack models", or changing pstack's model choices.
 ---
 
 # Setup pstack
@@ -61,24 +61,28 @@ Except on the qualifying rerun above, ask one effort question for each assigned 
 
 ### 5. Probe the requested pairs
 
-Before any external CLI availability/authentication check or model probe, resolve the selected families through this parent's route table. On a Codex parent, name the assigned external families and inspect the parent's effective permission instructions for network access and the state paths and host prerequisites in each provider's [notes](../poteto-mode/references/model-catalog.md#provider-notes), including any required outside-workspace writes. Do not inspect credential contents or attempt a denied write to establish permission. `CODEX_SANDBOX_NETWORK_DISABLED=1` in the parent's own environment is evidence that external CLI network access is disabled; inspect it before child-environment scrubbing. `CODEX_SANDBOX` identifies a sandbox backend, not a complete permission policy. Missing markers, a config-file preference, or the name `workspace-write` alone do not prove sufficient access. Use the effective session permissions and required paths, not a blanket ban on every path outside the workspace.
+Before any availability/authentication check or model probe, resolve the selected families through this parent's route table. On a Codex parent, resolve Claude families through [the T3 Claude Agent route](../poteto-mode/references/provider-dispatch.md#the-t3-claude-agent-route), using the live instance, model, and effort catalog. Never probe them through the Claude CLI. If that route is unavailable, report its named dropout and stop without writing; the operator can restart in T3 with an eligible Claude Agent instance or explicitly change the affected role assignments through steps 2–4.
+
+For Codex-parent Claude assignments, distinguish read-only availability from writer availability before probing. List every affected code-writing role, including `hardest tasks` and any Claude assignment to feature, bug-fix, performance, hillclimb, swarm, arena, or architect work that requires file writes. Those lanes always drop out as `no-isolated-worktree` under this route, even when the read-only probe passes. Offer explicit reassignment through steps 2–4. If the operator keeps them, name the accepted writer limitation again at confirmation and in the final report; do not claim those roles are fully available. Read-only design and review responses remain eligible.
+
+For the external runner families assigned on a Codex parent, name those families and inspect the parent's effective permission instructions for network access and the state paths and host prerequisites in each provider's [notes](../poteto-mode/references/model-catalog.md#provider-notes), including any required outside-workspace writes. Do not inspect credential contents or attempt a denied write to establish permission. `CODEX_SANDBOX_NETWORK_DISABLED=1` in the parent's own environment is evidence that external CLI network access is disabled; inspect it before child-environment scrubbing. `CODEX_SANDBOX` identifies a sandbox backend, not a complete permission policy. Missing markers, a config-file preference, or the name `workspace-write` alone do not prove sufficient access. Use the effective session permissions and required paths, not a blanket ban on every path outside the workspace.
 
 If required access is blocked, explain the affected assigned families and the restriction before invoking their CLIs. If permission information is unavailable or incomplete, call it **unknown**, say which required access cannot be established, and resolve it before external checks or probes. Offer exactly two paths when access is blocked or remains unknown:
 
 1. Restart the parent with suitable permissions, chosen deliberately by the operator; stop this setup without writing. See provider-dispatch's **Host and parent prerequisites**, including Grok's and Kimi's nested-sandbox limitation.
 2. Explicitly choose native-only role assignments for this parent. Show each affected role and proposed replacement and obtain the operator's named changes, then return to steps 2–4 to validate the revised map and efforts before native probes. On Codex, families of the `codex` provider are native; `inherit-parent` and `auto` also stay native. Do not change any lane automatically, reduce its effort, or launch an external CLI for a now-unassigned family. State any reduction in provider diversity.
 
-If all chosen families are native, no external CLI permission check or probe is needed; the separate final-write check still applies. When the effective permissions allow the selected external lanes, proceed with the existing routes and requested efforts unchanged. Never change sandbox settings or escalate permissions as part of setup.
+If no chosen family uses the external runner, no external CLI permission check or probe is needed; the separate final-write check still applies. When the effective permissions allow the selected external lanes, proceed with the existing routes and requested efforts unchanged. Never change sandbox settings or escalate permissions as part of setup.
 
 Probe only the selected `provider:model@effort` pair of each assigned family. Run one probe per family in the role map, even when two families share a provider. Do not enumerate or offer older models as substitutes. A failed probe writes nothing: report the failing pair and provider, stop, and keep the active sheet plus parent integration bytes unchanged. A failed first run creates neither artifact.
 
 If a Grok probe fails because the host cannot enforce its bounded sandbox, see [Host and parent prerequisites](../poteto-mode/references/provider-dispatch.md#host-and-parent-prerequisites); keep the active configuration unchanged.
 
-Find the family's provider in the [route table](../poteto-mode/references/model-catalog.md#routes). A native route gets a native one-turn probe: on Claude Code, the family's `pstack-<family>-<effort>` agent; on Codex, `spawn_agent` with the descriptor's model and `reasoning_effort`. An external route gets one `pstack-runner` call with a tiny read-only probe prompt. The runner's preflight checks the CLI, the login and the model, and its receipt is the result.
+Find the family's provider in the [route table](../poteto-mode/references/model-catalog.md#routes). A native route gets a native one-turn probe: on Claude Code, the family's `pstack-<family>-<effort>` agent; on Codex, `spawn_agent` with the descriptor's model and `reasoning_effort`. The T3 Claude Agent route gets one `delegate_task` probe with the catalog-selected Claude Agent instance and concrete model ID, explicit `options.effort`, `mode: "async"`, and `interactionMode: "plan"`. Retain the task handle and require `status: "completed"`, `workState: "result_available"`, and the exact marker in its final response. An external route gets one `pstack-runner` call with a tiny read-only probe prompt. The runner's preflight checks the CLI, the login and the model, and its receipt is the result.
 
-Use a tiny read-only probe that returns a unique marker. A login-status command alone proves credentials, not that the requested model and effort flags run. Record native and external results separately. Never call the external launcher for the parent's own provider.
+Use a tiny read-only probe that returns a unique marker. A login-status command alone proves credentials, not that the requested model and effort flags run. Record native, T3 Claude Agent, and external results separately. Never call the external launcher for the parent's own provider.
 
-Receipts and native transcripts prove the requested effort and the route. They do not prove a provider's hidden applied reasoning depth. There is no implicit timeout, weaker-model fallback, same-provider external fallback, or second mutable configuration source.
+Runner receipts, T3 lane records, and native transcripts record the requested effort and the route. They do not prove a provider's hidden applied reasoning depth. There is no implicit timeout, weaker-model fallback, same-provider external fallback, or second mutable configuration source.
 
 ### 6. Render, preserving role families
 
@@ -117,7 +121,7 @@ Do not copy the model sheet between harnesses without rerunning the parent-speci
 
 ### 9. Behavioral smoke
 
-Before declaring setup complete, run one small read-only mixed panel from this parent: every distinct chosen descriptor, distinct output/receipt paths, and an independent cross-judge. Launch Claude-native agents and every external process in the background with retained handles, then drain them. Verify the native transcript entries and every external receipt. A structural config check or unit test is not a substitute.
+Before declaring setup complete, run one small read-only mixed panel from this parent: every distinct chosen descriptor, distinct output/receipt paths, and an independent cross-judge. Launch native agents, T3 Claude Agent tasks, and every external process in the background with retained handles, then drain them. Verify the native transcript entries, completed T3 task results and lane records, and every external receipt. A structural config check or unit test is not a substitute.
 
 Report the sheet path, parent route table, requested-effort probe results, smoke results, and external elapsed/token/cost receipts. Re-running this skill re-probes and updates the same sheet. Do not claim the provider exposed hidden applied-effort observability.
 

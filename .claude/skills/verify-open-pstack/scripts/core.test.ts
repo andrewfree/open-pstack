@@ -8,10 +8,10 @@ import { HARNESSES, type Receipt } from './types.ts';
 import codexManifest from '../../../../plugins/pstack/.codex-plugin/plugin.json';
 import claudeManifest from '../../../../plugins/pstack/.claude-plugin/plugin.json';
 
-export const SHA = 'a'.repeat(40), BASE = 'b'.repeat(40);
+export const REPO = 'ericlitman/open-pstack', SHA = 'a'.repeat(40), BASE = 'b'.repeat(40);
 export const registry = validateRegistry(registryData);
 export function receipt(selfTest = false): Receipt {
-  const r = newReceipt(90, SHA, BASE, selfTest, '/tmp/evidence');
+  const r = newReceipt(REPO, 90, SHA, BASE, selfTest, '/tmp/evidence');
   r.selection = classify([{ filename: 'README.md' }], registry);
   return r;
 }
@@ -243,10 +243,12 @@ describe('registry and ownership', () => {
 
 describe('receipt and evidence boundaries', () => {
   test('validates exact immutable SHAs, PR, and optional publisher revision', () => {
-    for (const pr of [0, -1, 1.1, NaN]) expect(() => newReceipt(pr, SHA, BASE, false, '/tmp')).toThrow();
-    for (const sha of ['main', 'a'.repeat(39), 'A'.repeat(40)]) expect(() => newReceipt(90, sha, BASE, false, '/tmp')).toThrow();
-    expect(newReceipt(90, SHA, BASE, false, '/tmp', 'c'.repeat(40)).publisherRevision).toBe('c'.repeat(40));
-    for (const revision of ['', 'main', 'c'.repeat(39), 'c'.repeat(64), 'C'.repeat(40)]) expect(() => newReceipt(90, SHA, BASE, false, '/tmp', revision)).toThrow('publisher revision');
+    for (const pr of [0, -1, 1.1, NaN]) expect(() => newReceipt(REPO, pr, SHA, BASE, false, '/tmp')).toThrow();
+    for (const sha of ['main', 'a'.repeat(39), 'A'.repeat(40)]) expect(() => newReceipt(REPO, 90, sha, BASE, false, '/tmp')).toThrow();
+    expect(newReceipt(REPO, 90, SHA, BASE, false, '/tmp', 'c'.repeat(40)).publisherRevision).toBe('c'.repeat(40));
+    for (const revision of ['', 'main', 'c'.repeat(39), 'c'.repeat(64), 'C'.repeat(40)]) expect(() => newReceipt(REPO, 90, SHA, BASE, false, '/tmp', revision)).toThrow('publisher revision');
+    expect(newReceipt('andrewfree/open-pstack', 90, SHA, BASE, false, '/tmp').repo).toBe('andrewfree/open-pstack');
+    expect(() => newReceipt('open-pstack', 90, SHA, BASE, false, '/tmp')).toThrow('Repository must be OWNER/REPO');
   });
   test('ordinary no-runtime has no install requirement', () => expect(() => completeEvidence(receipt())).not.toThrow());
   test('self-test is separate and required in both harnesses', () => {

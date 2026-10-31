@@ -10,7 +10,8 @@ import { newReceipt } from './core.ts';
 import { sourceDigest } from './provenance.ts';
 import { evidence, verify } from './verify.ts';
 import { command, freshRoot, isolatedEnv, retainedFile, treeHash, type Command, type Session } from './io.ts';
-import { REPO, type Harness, type Installation, type Receipt } from './types.ts';
+import { type Harness, type Installation, type Receipt } from './types.ts';
+const REPO = 'ericlitman/open-pstack';
 const roots: string[] = [];
 const gitEnv = { PATH: process.env.PATH ?? '', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
 async function fixture(): Promise<string> { const root = await realpath(await mkdtemp(join(tmpdir(), 'pstack-test-'))); roots.push(root); return root; }
@@ -92,6 +93,25 @@ describe('isolated harness boundaries', () => {
     await doctor(root, run, 'darwin', true);
     expect(JSON.parse(await readFile(join(root, 'doctor.json'), 'utf8')).result).toBe('pass');
     expect(calls.every(c => c.includes('--help') || c.includes('--version'))).toBe(true);
+  });
+  test('doctor disables Codex analytics in its run-owned home before any Codex command', async () => {
+    const root = await fixture(), daily = await loginFixture(root), dailyConfig = join(daily, '..', 'config.toml');
+    await writeFile(dailyConfig, '[analytics]\nenabled = true\n');
+    const calls: string[][] = [];
+    const run: Command = async (args, options) => {
+      if (args[0] === 'codex') {
+        calls.push(args);
+        const config = join(options!.env!.CODEX_HOME!, 'config.toml');
+        expect(Bun.TOML.parse(await readFile(config, 'utf8'))).toEqual({ analytics: { enabled: false } });
+        expect((await stat(config)).mode & 0o777).toBe(0o600);
+        expect(options!.env!.DO_NOT_TRACK).toBe('1');
+      }
+      return args.includes('--version') ? 'version' : '--plugin-dir --settings --json local path';
+    };
+    await doctor(root, run, 'darwin', true);
+    await doctor(root, run, 'darwin', true);
+    expect(calls).toHaveLength(6);
+    expect(await readFile(dailyConfig, 'utf8')).toBe('[analytics]\nenabled = true\n');
   });
   test('project self-test accepts real candidate doctor output through canonical workspace paths', async () => {
     const root = await fixture(), workspace = join(root, 'workspace');
@@ -185,7 +205,7 @@ describe('isolated harness boundaries', () => {
       Object.defineProperty(process, 'platform', { ...platform, value: 'darwin' });
       process.env.HOME = operatorHome; process.env.USER = 'operator-user'; process.env.LOGNAME = 'operator-login';
       process.env.CLAUDE_CONFIG_DIR = join(operatorHome, 'claude-config');
-      const receipt = newReceipt(111, sha, sha, true, root), preparation = driver.prepare(receipt);
+      const receipt = newReceipt(REPO, 111, sha, sha, true, root), preparation = driver.prepare(receipt);
       if (failInstall) await expect(preparation).rejects.toThrow('fixture installation failed');
       else {
         const installs = await preparation; receipt.installations = installs;
@@ -195,7 +215,7 @@ describe('isolated harness boundaries', () => {
         expect(installs[0]!.sourceHash).toBe(installs[1]!.sourceHash);
         expect(calls.some(c => c.join(' ') === 'codex plugin add pstack@open-pstack --json')).toBe(true);
         for (const installation of installs) {
-          const one = newReceipt(111, sha, sha, true, root); one.installations = [installation];
+          const one = newReceipt(REPO, 111, sha, sha, true, root); one.installations = [installation];
           await expect(driver.exercise(one)).rejects.toThrow('fixture native surface reached');
         }
         expect(sessions.map(args => args[0])).toEqual(['claude', 'codex']);
@@ -237,7 +257,7 @@ describe('isolated harness boundaries', () => {
     const original = Buffer.from([0, 13, 10, 255, 97]);
     await writeFile(join(config, instructions), original);
     if (harness === 'codex') await writeFile(join(config, 'pstack-models.md'), original);
-    const receipt = newReceipt(111, 'a'.repeat(40), 'b'.repeat(40), false, root);
+    const receipt = newReceipt(REPO, 111, 'a'.repeat(40), 'b'.repeat(40), false, root);
     receipt.runFeatures = [`${harness}:setup`];
     receipt.installations = [{ harness, home, location: join(workspace, 'plugins/pstack'), sha: receipt.sha, cliVersion: 'test', pluginVersion: 'test', treeHash: await treeHash(join(workspace, 'plugins/pstack')), sourceHash: await sourceDigest(workspace) }];
     const driver = new MacDriver(command, async args => {
@@ -301,7 +321,7 @@ async function candidate(harness: Harness): Promise<{ root: string; installation
   return { root, installation: { harness, home, location, sha: 'a'.repeat(40), cliVersion: 'test', pluginVersion: 'test', treeHash: await treeHash(location), sourceHash: await sourceDigest(workspace) } };
 }
 function selected(root: string, installation: Installation, features: string[]): Receipt {
-  const receipt = newReceipt(111, 'a'.repeat(40), 'b'.repeat(40), false, root);
+  const receipt = newReceipt(REPO, 111, 'a'.repeat(40), 'b'.repeat(40), false, root);
   receipt.runFeatures = features.map(feature => `${installation.harness}:${feature}`);
   receipt.installations = [installation];
   return receipt;
@@ -448,7 +468,7 @@ describe('headless recipes', () => {
     const { root, installation } = await candidate('claude');
     const mac = new MacDriver(command, stub(claudeStream({ command: 'pstack:architect' })).record);
     const comments: string[] = [], statuses: string[] = [], sha = 'a'.repeat(40), base = 'b'.repeat(40);
-    await expect(verify({ pr: 111, selfTest: false, features: ['claude:skill-invocation:architect'], root, publisherRevision: 'c'.repeat(40), persist: async () => {},
+    await expect(verify({ repo: REPO, pr: 111, selfTest: false, features: ['claude:skill-invocation:architect'], root, publisherRevision: 'c'.repeat(40), persist: async () => {},
       registry: { skills: ['architect'], shared: [], catalog: [], assets: [], setup: [], runner: [], tools: [], project: [], nonRuntime: [] },
       github: {
         async pull() { return { number: 111, head: { sha }, base: { sha: base }, state: 'open', headRepo: REPO }; },
