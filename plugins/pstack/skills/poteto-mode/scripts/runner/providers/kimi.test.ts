@@ -114,6 +114,15 @@ describe("kimi preflight", () => {
     expect(preflight(0, fixture("provider-list.json"), "", { model: "kimi-code/k9" })).toEqual({ kind: "unavailable-model" });
   });
 
+  it("lets a stderr diagnostic decide a listing that lacks the alias or effort", () => {
+    const login = "error: auth.login_required: Sign in again.";
+    expect(preflight(0, fixture("provider-list.json"), login, { model: "kimi-code/k9" })).toEqual({ kind: "unauthenticated" });
+    expect(preflight(0, fixture("provider-list.json"), login, { model: "kimi-code/kimi-for-coding-highspeed", effort: "low" }))
+      .toEqual({ kind: "unauthenticated" });
+    expect(preflight(0, fixture("provider-list.json"), "warning: slow network", { model: "kimi-code/k9" }))
+      .toEqual({ kind: "unavailable-model" });
+  });
+
   it("checks only that the alias exists for effort default", () => {
     expect(preflight(0, fixture("provider-list.json"), "", { model: "kimi-code/kimi-for-coding-highspeed", effort: "default" }))
       .toMatchObject({ kind: "passed" });
