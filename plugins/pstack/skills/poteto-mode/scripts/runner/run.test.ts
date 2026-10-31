@@ -28,6 +28,7 @@ import type { AccessKind, RunnerReceipt } from "./types.ts";
 let scratch = "";
 let bin = "";
 let previousPath: string | undefined;
+let previousCodexHome: string | undefined;
 
 function streamPath(path: string | null): string {
   if (path === null) throw new Error("expected a reserved stream artifact path");
@@ -136,6 +137,9 @@ if (stage === "model" && process.env.GROK_FAKE_SELF_SIGNAL) {
 if (name === "claude") {
   console.log(JSON.stringify({result:"CLAUDE_OK",session_id:"c1",usage:{input_tokens:10,output_tokens:2},total_cost_usd:0.01,modelUsage:{[reportedModel]:{}}}));
 } else if (name === "codex") {
+  if (process.env.FAKE_CODEX_TRUST_BLOCK) {
+    appendFileSync(process.env.CODEX_HOME + "/config.toml", process.env.FAKE_CODEX_TRUST_BLOCK);
+  }
   console.log(JSON.stringify({type:"thread.started",thread_id:"o1"}));
   console.log(JSON.stringify({type:"item.completed",item:{type:"agent_message",text:"CODEX_OK"}}));
   console.log(JSON.stringify({type:"turn.completed",usage:{input_tokens:20,cached_input_tokens:5,output_tokens:3,reasoning_output_tokens:1}}));
@@ -271,6 +275,9 @@ beforeEach(() => {
   for (const name of ["claude", "codex", "grok"]) makeExecutable(name);
   previousPath = process.env.PATH;
   process.env.PATH = `${bin}:${dirname(process.execPath)}:${previousPath ?? ""}`;
+  previousCodexHome = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = join(scratch, "codex-home");
+  delete process.env.FAKE_CODEX_TRUST_BLOCK;
   delete process.env.GROK_FAKE_TIMEOUT;
   delete process.env.GROK_FAKE_INVALID_MODEL;
   delete process.env.GROK_FAKE_CANCEL;
@@ -298,6 +305,9 @@ beforeEach(() => {
 
 afterEach(() => {
   process.env.PATH = previousPath;
+  if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+  else process.env.CODEX_HOME = previousCodexHome;
+  delete process.env.FAKE_CODEX_TRUST_BLOCK;
   delete process.env.GROK_FAKE_TIMEOUT;
   delete process.env.GROK_FAKE_INVALID_MODEL;
   delete process.env.GROK_FAKE_CANCEL;
@@ -882,6 +892,102 @@ printf '%s\\n' '{"type":"thread.started","thread_id":"isolated"}' '{"type":"item
       reportedModel: null,
       modelVerified: false,
       modelEvidence: "pinned-argv",
+    });
+  });
+
+  it("starts Codex with the user's MCP servers and the ChatGPT apps switched off", async () => {
+    mkdirSync(join(scratch, "codex-home"));
+    writeFileSync(
+      join(scratch, "codex-home", "config.toml"),
+      '[mcp_servers.node_repl]\ncommand = "node"\n[mcp_servers.forgejo]\ncommand = "forgejo-mcp"\n'
+    );
+    const input = options("codex", "codex-mcp-off");
+    expect((await runLane(laneOf(input))).exitCode).toBe(0);
+    const { argv } = receipt(input.receiptPath);
+    const at = argv.indexOf("apps") - 1;
+    expect(argv.slice(at, argv.indexOf("--json"))).toEqual([
+      "--disable",
+      "apps",
+      "--config",
+      "features.multi_agent_v2={enabled=false, max_concurrent_threads_per_session=1}",
+      "--config",
+      "mcp_servers.node_repl.enabled=false",
+      "--config",
+      "mcp_servers.forgejo.enabled=false",
+    ]);
+  });
+
+  it("stops a Codex lane before launch when a user MCP server cannot be switched off", async () => {
+    mkdirSync(join(scratch, "codex-home"));
+    writeFileSync(join(scratch, "codex-home", "config.toml"), '[mcp_servers."a.b"]\ncommand = "x"\n');
+    const started = join(scratch, "codex-unaddressable.started");
+    process.env.GROK_FAKE_PREFLIGHT_STARTED_PATH = started;
+    process.env.GROK_FAKE_MODEL_STARTED_PATH = started;
+    const input = options("codex", "codex-unaddressable");
+    expect((await runLane(laneOf(input))).exitCode).toBe(70);
+    expect(existsSync(started)).toBe(false);
+    expect(existsSync(input.outputPath)).toBe(false);
+    expect(receipt(input.receiptPath)).toMatchObject({
+      status: "child-failed",
+      preflight: { status: "not-run" },
+      error: { evidence: 'Codex MCP server "a.b" cannot be switched off with --config' },
+    });
+  });
+
+  describe("Codex project trust", () => {
+    function plainGit(...args: string[]): void {
+      const run = Bun.spawnSync(["git", "-c", "core.hooksPath=/dev/null", ...args], { stdout: "ignore", stderr: "pipe" });
+      if (run.exitCode !== 0) throw new Error(run.stderr.toString());
+    }
+
+    function gitWorktree(): { readonly repo: string; readonly worktree: string } {
+      const repo = join(scratch, "trust-repo");
+      const worktree = join(scratch, "trust-worktree");
+      plainGit("init", "-q", "-b", "main", repo);
+      writeFileSync(join(repo, "README.md"), "x\n");
+      plainGit("-C", repo, "add", ".");
+      plainGit("-C", repo, "-c", "user.email=t@example.invalid", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-qm", "init");
+      plainGit("-C", repo, "worktree", "add", "-q", "--detach", worktree);
+      return { repo: realpathSync(repo), worktree };
+    }
+
+    function codexConfig(text: string): string {
+      mkdirSync(join(scratch, "codex-home"), { recursive: true });
+      const path = join(scratch, "codex-home", "config.toml");
+      writeFileSync(path, text);
+      return path;
+    }
+
+    const original = 'model = "any"\n\n[projects."/Users/someone/own-repo"]\ntrust_level = "trusted"\n';
+
+    for (const writerSandbox of ["bounded", "full-access"] as const) {
+      it(`removes the trust a ${writerSandbox} Codex writer lane records for its project`, async () => {
+        const { repo, worktree } = gitWorktree();
+        const config = codexConfig(original);
+        process.env.FAKE_CODEX_TRUST_BLOCK = `\n[projects.${JSON.stringify(repo)}]\ntrust_level = "trusted"\n`;
+        const input = { ...options("codex", `codex-trust-${writerSandbox}`), mode: "isolated-write" as const, writerSandbox, cwd: worktree };
+        expect((await runLane(laneOf(input))).exitCode).toBe(0);
+        expect(readFileSync(config, "utf8")).toBe(original);
+      });
+    }
+
+    it("keeps trust the user had already given the project", async () => {
+      const { repo, worktree } = gitWorktree();
+      const trusted = `${original}\n[projects.${JSON.stringify(repo)}]\ntrust_level = "trusted"\n`;
+      const config = codexConfig(trusted);
+      const input = { ...options("codex", "codex-trust-kept"), mode: "isolated-write" as const, cwd: worktree };
+      expect((await runLane(laneOf(input))).exitCode).toBe(0);
+      expect(readFileSync(config, "utf8")).toBe(trusted);
+    });
+
+    it("leaves a trust entry it cannot match exactly", async () => {
+      const { repo, worktree } = gitWorktree();
+      const config = codexConfig(original);
+      const unusual = `\n[projects.${JSON.stringify(repo)}]\ntrust_level = "trusted"\nnote = "kept"\n`;
+      process.env.FAKE_CODEX_TRUST_BLOCK = unusual;
+      const input = { ...options("codex", "codex-trust-odd"), mode: "isolated-write" as const, cwd: worktree };
+      expect((await runLane(laneOf(input))).exitCode).toBe(0);
+      expect(readFileSync(config, "utf8")).toBe(`${original}${unusual}`);
     });
   });
 
