@@ -9,7 +9,7 @@ Verifier-changing PRs run from their reviewed candidate head, with publisher rev
 ## Candidate process state
 
 - Preserve real `HOME`, `USER`, and `LOGNAME`.
-- Claude uses normal operator login/config with `claude --plugin-dir <exact-head checkout>/plugins/pstack --settings '{"enabledPlugins":{"pstack@open-pstack":false}}'`. These flags load only the candidate for that session, without persistent installation or settings changes.
+- Claude reuses the operator's T3 app login and config. Each case runs on the permanent Claude verification instance, whose launcher the verifier arms with `--setting-sources '' --plugin-dir <installed candidate> --strict-mcp-config` and the run-owned environment, then restores to pass-through; see `t3-app.md`. These arguments load only the candidate for that session, without persistent installation or settings changes, and the verifier never edits T3 settings. Headless Claude is never started.
 - Codex installs the exact-head marketplace with `codex plugin marketplace add … --ref <sha>` and `codex plugin add` in a run-owned `CODEX_HOME`. Symlink its `auth.json` to the operator's `${CODEX_HOME:-$HOME/.codex}/auth.json`, resolving the daily home before overriding the environment.
 - If the daily home has no `auth.json`, fail closed: this tool needs file-based Codex auth. Do not read credentials, copy them, or start login. Native refresh writes through the symlink to the single existing login file.
 - Keep temporary, GitHub, and fixture state run-owned; disable global/system Git configuration and credential helpers for candidate commands. Provider descendants use the same native-login arrangement, never publisher credentials.

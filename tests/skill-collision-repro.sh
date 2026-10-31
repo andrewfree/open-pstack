@@ -6,6 +6,11 @@ fail=0
 
 note() { printf '%s\n' "$*"; }
 
+if [ "${PSTACK_STATIC_ONLY:-0}" != "1" ]; then
+  note "unsupported-app-surface:claude-app: this script no longer starts headless Claude; prove installed Claude skill invocation with verify-open-pstack's T3 app transport (features/t3-app.md)"
+  exit 1
+fi
+
 legacy_command_dir="$repo/plugins/pstack/commands"
 if [ -e "$legacy_command_dir" ]; then
   note "FAIL: legacy command layer still exists: $legacy_command_dir"
@@ -410,54 +415,5 @@ note "Checking non-shipped verification helper"
   bun run test
   bun run typecheck
 )
-
-if [ "${PSTACK_STATIC_ONLY:-0}" = "1" ]; then
-  exit "$fail"
-fi
-
-scratch="$(mktemp -d)"
-trap 'rm -rf "$scratch"' EXIT
-mkdir -p "$scratch/.claude-plugin" "$scratch/skills/foo"
-printf '%s\n' '{"name": "testplug", "version": "0.0.1", "description": "native skill repro"}' \
-  > "$scratch/.claude-plugin/plugin.json"
-cat > "$scratch/skills/foo/SKILL.md" <<'EOF'
----
-name: foo
-description: collision test skill
----
-
-Say exactly: SKILL-RAN
-Then stop. Do not invoke any skill or tool.
-EOF
-
-run() {
-  claude -p --plugin-dir "$scratch" --model fable --effort max --max-turns 3 "$1" < /dev/null 2>&1
-}
-
-check() {
-  if printf '%s' "$3" | grep -q "$2"; then
-    note "ok: $1 -> $2"
-  else
-    note "FAIL: $1 expected $2, got: $3"
-    fail=1
-  fi
-}
-
-invoke='Call the Skill tool with skill "testplug:foo" exactly once and follow what it says.'
-
-check "model-initiated Skill-tool invocation" "SKILL-RAN" "$(run "$invoke")"
-check "user /testplug:foo invocation" "SKILL-RAN" "$(run '/testplug:foo')"
-
-preloaded_agent_output="$(
-  claude -p \
-    'Use the Agent tool once with subagent_type pstack:poteto-agent. Give it this task verbatim: "Without invoking Skill or reading files, reply with the first Core principle named in the preloaded poteto-mode skill." Return only the child response.' \
-    --plugin-dir "$plugin" \
-    --model fable \
-    --effort max \
-    --max-turns 5 \
-    --tools Agent \
-    < /dev/null 2>&1 || true
-)"
-check "poteto-agent preloaded skill" "Laziness Protocol" "$preloaded_agent_output"
 
 exit "$fail"

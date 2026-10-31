@@ -10,7 +10,7 @@ Start a new Claude Code or Codex session with the plugin installed and enabled. 
 
 ## Driving it with verify-open-pstack
 
-Start one fresh headless session with a trivial prompt. Claude loads the candidate through `--plugin-dir`. Codex runs against the run-owned installation, and `--dangerously-bypass-hook-trust` lets the candidate's hook run for that invocation only, so the case does not exercise the trust prompt.
+Start one fresh native session with a trivial prompt. Claude runs as a T3 Claude Agent child that loads the candidate through the armed launcher's `--plugin-dir`, and its record comes from T3's native provider log. Codex runs against the run-owned installation, and `--dangerously-bypass-hook-trust` lets the candidate's hook run for that invocation only, so the case does not exercise the trust prompt.
 
 ## Gotchas
 
@@ -18,6 +18,6 @@ A model saying it sees `You have pstack.` is not evidence. Running `session-star
 
 ## Headless
 
-The `hook:startup` recipe in `recipes.ts` has one case, `startup`, in each harness. It reads the installed `hooks/session-start-context.md` and requires the harness's own record to carry that text, trailing newlines aside. In Claude, the record is a stream-json `system` event with subtype `hook_response`, `hook_event` `SessionStart`, exit code 0 and outcome `success`, whose `stdout` Claude adds to context as plain text. In Codex, the JSON stream does not show hook output, so the record is a `developer` message in the session's rollout, which is the model input Codex built from the hook. The verifier writes the matched record text to `session-context.md` as the retained artifact. The model's reply is never read.
+The `hook:startup` recipe in `recipes.ts` has one case, `startup`, in each harness. It reads the installed `hooks/session-start-context.md` and requires the harness's own record to carry that text, trailing newlines aside. In Claude, the record is a native `system` event with subtype `hook_response`, `hook_event` `SessionStart`, exit code 0 and outcome `success`, whose `stdout` Claude adds to context as plain text. In Codex, the JSON stream does not show hook output, so the record is a `developer` message in the session's rollout, which is the model input Codex built from the hook. The verifier writes the matched record text to `session-context.md` as the retained artifact. The model's reply is never read.
 
 The Windows runner in `.github/workflows/windows-hooks.yml` is separate evidence beside the Mac live gate. On every pull request it runs the wrapper the way Codex runs `commandWindows`, with no login.

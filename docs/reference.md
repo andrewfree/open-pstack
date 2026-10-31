@@ -64,7 +64,7 @@ The marketplace install is the normal user path. Direct links are only for testi
 │   │   └── poteto-mode/scripts/      # bun/bash/node tooling: watch-pr, orch, runner, resolve-codex-transcript, check-plan.mjs, worktree-audit.sh
 │   ├── hooks/                        # SessionStart auto-fire: injects the poteto-mode mandate (Claude Code only)
 │   └── agents/                       # Claude subagents, including a native lane for each Claude family at each selectable effort
-├── tests/skill-collision-repro.sh    # native-skill package invariants and Claude invocation checks
+├── tests/skill-collision-repro.sh    # native-skill package invariants
 ├── LICENSE                           # pstack upstream MIT
 ├── LICENSE-cursor-team-kit           # cursor-team-kit upstream MIT
 ├── LICENSE-superpowers               # superpowers upstream MIT (hook runner)
