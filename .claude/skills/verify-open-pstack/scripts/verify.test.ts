@@ -281,6 +281,36 @@ describe('exact-head evidence publication', () => {
 });
 
 describe('publisher request boundaries', () => {
+  test.each([REPO, REPO.toUpperCase()])('repository casing is consistent across resolve and rechecks: %s', async repo => {
+    const f = fixture(); f.options.repo = repo;
+    f.hook(call => { if (call === 'files') f.pull.headRepo = REPO.toUpperCase(); });
+    const receipt = await verify(f.options);
+    expect(receipt.repo).toBe(REPO);
+    expect(receipt.status).toBe('success');
+    expect(f.saved.every(r => r.repo === REPO)).toBe(true);
+  });
+
+  test.each([
+    ['AndrewFree/Open-Pstack', 'https://github.com/andrewfree/open-pstack/issues/123#issuecomment-2'],
+    ['andrewfree/open-pstack', 'https://github.com/AndrewFree/Open-Pstack/pull/123#issuecomment-2'],
+  ])('repository casing keeps canonical API endpoints and original comment URLs: %s', async (repo, url) => {
+    const publisher = new Publisher(repo, async args => {
+      expect(args[2]).toBe('repos/andrewfree/open-pstack/issues/123/comments');
+      return JSON.stringify({ html_url: url });
+    });
+    expect(await publisher.comment(123, 'evidence')).toBe(url);
+  });
+
+  test.each([
+    'https://github.com/other/open-pstack/pull/123#issuecomment-2',
+    'https://github.com/andrewfree/open-pstack-extra/pull/123#issuecomment-2',
+    'https://github.com.example/andrewfree/open-pstack/pull/123#issuecomment-2',
+    'http://github.com/andrewfree/open-pstack/pull/123#issuecomment-2',
+  ])('comment URLs must still belong to the same repository: %s', async url => {
+    const publisher = new Publisher('AndrewFree/Open-Pstack', async () => JSON.stringify({ html_url: url }));
+    await expect(publisher.comment(123, 'evidence')).rejects.toThrow('same-repository');
+  });
+
   test('NUL diff parser preserves rename provenance and rejects malformed results', () => {
     expect(parseChangedFiles('R100\0plugins/pstack/skills/architect/SKILL.md\0docs/new.md\0M\0README.md\0')).toEqual([{ filename: 'docs/new.md', previous_filename: 'plugins/pstack/skills/architect/SKILL.md' }, { filename: 'README.md' }]);
     expect(parseChangedFiles('')).toEqual([]);
