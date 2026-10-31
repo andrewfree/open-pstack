@@ -4,7 +4,7 @@ import { CLAUDE_TOOLS, recipe, type Fixture } from '../features/recipes.ts';
 import { requiredFeatures, requiredHarnesses } from './core.ts';
 import { command, isolatedEnv, retainedFile, save, session, treeHash, type Command, type Session } from './io.ts';
 import { doctor } from './doctor.ts';
-import { assertCodexAuth, linkCodexAuth, removeCodexHome, restoreSetup, snapshotSetup, type SetupSnapshot } from './isolation.ts';
+import { assertCodexAuth, disableCodexAnalytics, linkCodexAuth, removeCodexHome, restoreSetup, snapshotSetup, type SetupSnapshot } from './isolation.ts';
 import { sourceDigest, sourceHash } from './provenance.ts';
 import { publishable } from './verify.ts';
 import { REPO, type Driver, type Harness, type Installation, type Observation, type Receipt, type SessionRecord } from './types.ts';
@@ -107,6 +107,7 @@ export class MacDriver implements Driver {
       const home = join(root, 'state', harness), workspace = join(home, 'workspace');
       await mkdir(join(home, 'tmp'), { recursive: true, mode: 0o700 });
       for (const dir of ['.codex', '.config/gh', '.cache']) await mkdir(join(home, dir), { recursive: true, mode: 0o700 });
+      await disableCodexAnalytics(home);
       const env = isolatedEnv(home, harness);
       const candidateRun = this.candidate(home);
       await candidateRun(['git', 'clone', '--no-checkout', '--', `https://github.com/${REPO}.git`, workspace], { env });

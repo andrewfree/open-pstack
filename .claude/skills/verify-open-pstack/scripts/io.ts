@@ -58,7 +58,7 @@ export function isolatedEnv(state: string, _harness?: 'claude' | 'codex'): Recor
   const { HOME, USER, LOGNAME } = process.env;
   if (!HOME || !isAbsolute(HOME)) throw new Error('Real HOME must be absolute');
   if (!USER || !LOGNAME) throw new Error('Real USER and LOGNAME are required');
-  return { PATH: process.env.PATH ?? '', HOME, USER, LOGNAME,
+  return { PATH: process.env.PATH ?? '', HOME, USER, LOGNAME, DO_NOT_TRACK: '1',
     TMPDIR: join(state, 'tmp'), TERM: process.env.TERM ?? 'xterm-256color',
     XDG_CONFIG_HOME: join(state, '.config'), XDG_CACHE_HOME: join(state, '.cache'),
     GH_CONFIG_DIR: join(state, '.config/gh'),
