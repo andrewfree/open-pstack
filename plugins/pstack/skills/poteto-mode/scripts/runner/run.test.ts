@@ -728,6 +728,24 @@ process.exit(${scenario.endsWith("nonzero") ? 1 : 0});
 });
 
 describe("runLane", () => {
+  it("starts Grok with its imported MCP servers switched off", async () => {
+    const captured = join(scratch, "grok-mcp-env.txt");
+    writeFileSync(join(bin, "grok"), fake.replace("const startedPath =",
+      `appendFileSync(${JSON.stringify(captured)}, stage + " " + Object.entries(process.env)
+        .filter(([key]) => /^GROK_(CLAUDE|CURSOR|CODEX)_MCPS_ENABLED$/.test(key))
+        .map(([key, value]) => key + "=" + value).sort().join(",") + "\\n");
+const startedPath =`));
+    process.env.GROK_CLAUDE_MCPS_ENABLED = "true";
+    try {
+      const result = await runLane(laneOf(options("grok", "grok-mcp-env")));
+      expect(result.exitCode).toBe(0);
+      const switches = "GROK_CLAUDE_MCPS_ENABLED=false,GROK_CODEX_MCPS_ENABLED=false,GROK_CURSOR_MCPS_ENABLED=false";
+      expect(readFileSync(captured, "utf8")).toBe(`preflight ${switches}\nmodel ${switches}\n`);
+    } finally {
+      delete process.env.GROK_CLAUDE_MCPS_ENABLED;
+    }
+  });
+
   for (const startup of ["dotenv", "bunfig", "bun-options", "node-options", "combined", "hostile-path", "bare-name"]) {
     it(`shipped launcher startup isolation: ${startup}`, async () => {
       const input = options("codex", startup);
@@ -2036,6 +2054,7 @@ describe("childEnvironment", () => {
       ["HTTPS_PROXY", true],
       ["https_proxy", true],
       ["NODE_EXTRA_CA_CERTS", true],
+      ["GROK_CLAUDE_MCPS_ENABLED", false],
       ["GITHUB_TOKEN", false],
       ["ANTHROPIC_API_KEY", false],
       ["XAIX_KEY", false],
@@ -2044,9 +2063,12 @@ describe("childEnvironment", () => {
       ["CLAUDECODE", false],
     ];
     const source = Object.fromEntries(cases.map(([name]) => [name, `${name}-value`]));
-    const kept = Object.fromEntries(
-      cases.filter(([, keep]) => keep).map(([name]) => [name, `${name}-value`])
-    );
+    const kept = {
+      ...Object.fromEntries(cases.filter(([, keep]) => keep).map(([name]) => [name, `${name}-value`])),
+      GROK_CLAUDE_MCPS_ENABLED: "false",
+      GROK_CURSOR_MCPS_ENABLED: "false",
+      GROK_CODEX_MCPS_ENABLED: "false",
+    };
     for (const mode of ["read-only", "isolated-write"] as const) {
       expect(childEnvironment(laneOf({ ...options("grok"), mode }), source)).toEqual(kept);
     }
@@ -2081,7 +2103,9 @@ describe("childEnvironment", () => {
     const kept = Object.fromEntries(cases.filter(([, keep]) => keep).map(([name]) => [name, `${name}-value`]));
     const devin = laneOf({ ...options("grok"), provider: "devin", model: "swe-2", effort: "max" });
     expect(childEnvironment(devin, source)).toEqual(kept);
-    const grokOnly = ["GROK_HOME", "XAI_API_KEY"];
+    const grokOnly = [
+      "GROK_HOME", "XAI_API_KEY", "GROK_CLAUDE_MCPS_ENABLED", "GROK_CURSOR_MCPS_ENABLED", "GROK_CODEX_MCPS_ENABLED",
+    ];
     expect(Object.keys(childEnvironment(laneOf(options("grok")), source)).sort())
       .toEqual([...Object.keys(kept), ...grokOnly].sort());
   });

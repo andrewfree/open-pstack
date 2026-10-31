@@ -97,10 +97,12 @@ The runner refuses an access mode outside a provider's Access modes cell before 
 - Executable: `grok`.
 - Host prerequisites: Linux: Landlock and `bwrap`.
 - State paths: `~/.grok/`, which the CLI writes (for example `~/.grok/managed_config.toml`).
-- Child environment: only `PATH` `HOME` `USER` `LOGNAME` `SHELL` `TMPDIR` `LANG` `TERM` `COLORTERM` `TZ` `HTTP_PROXY` `HTTPS_PROXY` `NO_PROXY` `ALL_PROXY` `http_proxy` `https_proxy` `no_proxy` `all_proxy` `SSL_CERT_FILE` `SSL_CERT_DIR` `NODE_EXTRA_CA_CERTS`, and variables starting with `LC_`, `XDG_`, `GROK_`, `XAI_`.
+- Child environment: only `PATH` `HOME` `USER` `LOGNAME` `SHELL` `TMPDIR` `LANG` `TERM` `COLORTERM` `TZ` `HTTP_PROXY` `HTTPS_PROXY` `NO_PROXY` `ALL_PROXY` `http_proxy` `https_proxy` `no_proxy` `all_proxy` `SSL_CERT_FILE` `SSL_CERT_DIR` `NODE_EXTRA_CA_CERTS`, and variables starting with `LC_`, `XDG_`, `GROK_`, `XAI_`; sets `GROK_CLAUDE_MCPS_ENABLED=false`, `GROK_CURSOR_MCPS_ENABLED=false`, `GROK_CODEX_MCPS_ENABLED=false`.
 - `fast` is part of Cursor's Grok selector, not a Grok Build CLI model or effort flag.
 - The preflight passes when `grok models` reports a login (`logged in`, `You are using XAI_API_KEY.`, or `You are authenticated via deployment key.`) and lists the lane's model on a line under `Available models:`. A model named only above that header, such as on the `Default model:` line, or output without the header, is `unavailable-model`/69.
 - The authentication preflight has one bounded retry. If the first `grok models` result would be classified as unauthenticated, the runner waits five seconds and tries the same preflight once more. A second failure is terminal. The delay and second attempt share the runner's absolute deadline and cancellation latch, and the receipt keeps evidence from both attempts. Model execution is never retried.
+- Grok's `--tools` allowlist names the shell `run_terminal_cmd`. Grok's stream and error text call the same tool `run_terminal_command`, but Grok 1.0.46 drops the whole allowlist when `--tools` carries a name it does not recognize, such as `run_terminal_command`. After a Grok CLI upgrade, check the tool list in the init event.
+- Grok imports MCP servers from Claude, Cursor, and Codex config, and `--tools` does not filter their tools. A Grok lane sets `GROK_CLAUDE_MCPS_ENABLED`, `GROK_CURSOR_MCPS_ENABLED`, and `GROK_CODEX_MCPS_ENABLED` to `false` so that none of the imported servers start, and passes `--deny 'MCPTool(*)'` so that it cannot call a tool from a server that Grok's own config or a trusted project's `.grok/config.toml` still starts. The init event's `mcp_servers` list shows what loaded.
 
 ### devin: Devin CLI
 

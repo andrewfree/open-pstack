@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { access } from "../registry/contract.ts";
 import type { LaneRequest } from "../registry/index.ts";
 import { adapterSuite, testLane } from "./adapter-suite.ts";
 import { grok } from "./grok.ts";
@@ -29,6 +30,8 @@ describe("grok launch", () => {
       "read_file,grep,list_dir,run_terminal_cmd",
       "--disallowed-tools",
       "Agent,search_tool,use_tool",
+      "--deny",
+      "MCPTool(*)",
       "--output-format",
       "streaming-messages-json",
       "--cwd",
@@ -52,6 +55,21 @@ describe("grok launch", () => {
       ])
     );
     expect(args).not.toContain("--always-approve");
+  });
+
+  it("keeps imported and configured MCP servers out of both Grok modes", () => {
+    for (const mode of ["read-only", "isolated-write"] as const) {
+      const args = argv({ mode });
+      expect(args[args.indexOf("--deny") + 1]).toBe("MCPTool(*)");
+      expect(grok.environment(access(mode), null)).toMatchObject({
+        kind: "allowlist",
+        set: {
+          GROK_CLAUDE_MCPS_ENABLED: "false",
+          GROK_CURSOR_MCPS_ENABLED: "false",
+          GROK_CODEX_MCPS_ENABLED: "false",
+        },
+      });
+    }
   });
 
   it("covers low, medium, and high", () => {
@@ -108,6 +126,16 @@ describe("grok parse", () => {
       });
     });
   }
+
+  it("keeps the provider's own Grok error text and classifies cancelled subtypes", () => {
+    const denied = "run_terminal_command was denied by the headless approval policy";
+    expect(parse(JSON.stringify({ type: "result", subtype: "cancelled", is_error: true, result: denied })))
+      .toMatchObject({ kind: "provider-failure", status: "cancelled", message: denied });
+    expect(parse(JSON.stringify({
+      type: "result", subtype: "error_during_execution", is_error: true,
+      error: { message: "upstream refused the request" },
+    }))).toMatchObject({ kind: "provider-failure", status: "child-failed", message: "upstream refused the request" });
+  });
 
   it("issue78 rejects incomplete terminal status", () => {
     for (const terminal of [
