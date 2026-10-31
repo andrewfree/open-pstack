@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { ACCESS_MODES, PARENTS, type Parent } from "../types.ts";
+import { appRoute } from "./app-routes.ts";
 import { access, type EnvPolicy, type ProviderAdapter } from "./contract.ts";
 import { defaultDescriptor, effortsOf, modelIds, REGISTRY, type Registry } from "./index.ts";
 
@@ -30,7 +31,9 @@ const table = (header: readonly string[], rows: readonly (readonly string[])[]):
 ];
 
 function route(adapter: ProviderAdapter, parent: Parent): string {
-  return adapter.id === parent ? `native ${code(PARENTS[parent].native)}` : "external runner";
+  if (adapter.id === parent) return `native ${code(PARENTS[parent].native)}`;
+  const app = appRoute(parent, adapter.id);
+  return app === null ? "external runner" : `[${app.name}](provider-dispatch.md#${app.anchor}); otherwise dropout`;
 }
 
 function policy(value: EnvPolicy, long: boolean): string {

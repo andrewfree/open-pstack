@@ -7,7 +7,7 @@ description: "Use for \"interrogate\", \"adversarial review\", \"multi-model rev
 
 Spawn one reviewer per configured model to adversarially review code changes. The adversarial signal comes from model diversity, not assigned personas. The deliverable is a synthesized verdict. Do NOT auto-apply changes.
 
-**Dispatch contract.** Read [`provider-dispatch.md`](../poteto-mode/references/provider-dispatch.md) before launching reviewers. Configured entries are provider-qualified descriptors; the parent starts native and external read-only lanes directly. On Codex, resolve remaining Claude tool names via [`codex-tools.md`](../poteto-mode/references/codex-tools.md).
+**Dispatch contract.** Read [`provider-dispatch.md`](../poteto-mode/references/provider-dispatch.md) before launching reviewers. Configured entries are provider-qualified descriptors; the parent starts native, T3 Claude Agent, and external read-only lanes directly. On Codex, resolve remaining Claude tool names via [`codex-tools.md`](../poteto-mode/references/codex-tools.md).
 
 ## Step 1, Scope
 
@@ -25,7 +25,7 @@ Before spawning reviewers, state the intent in one clear paragraph from the user
 
 ## Step 3, Spawn Reviewers
 
-Start all reviewers in one fan-out phase, one per entry on the `interrogate reviewers` line of the current harness's pstack model sheet, labeled Reviewer A, B, and so on to match the entry count. If the sheet or that line is missing, use its [role default](../poteto-mode/references/model-catalog.md#role-defaults). Native reviewers use the parent subagent primitive. External reviewers use the launcher directly and must return a complete, model-verified receipt.
+Start all reviewers in one fan-out phase, one per entry on the `interrogate reviewers` line of the current harness's pstack model sheet, labeled Reviewer A, B, and so on to match the entry count. If the sheet or that line is missing, use its [role default](../poteto-mode/references/model-catalog.md#role-defaults). Native reviewers use the parent subagent primitive. Codex-parent Claude reviewers use the T3 Claude Agent route and completion rule in `provider-dispatch.md`, with a parent-owned lane record. External runner reviewers use the launcher directly and must meet its receipt completion rule.
 
 Route each reviewer's descriptor with `read-only` access and a unique output and receipt path. Use the parent subagent primitive without a model override for an `auto` or `inherit-parent` entry, so that reviewer runs on the parent model.
 

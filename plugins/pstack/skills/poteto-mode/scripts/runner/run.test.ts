@@ -69,10 +69,10 @@ if (delay > 0) await Bun.sleep(delay);
 if (process.env.GROK_FAKE_TIMEOUT === "1" && !args.includes("status") && !args.includes("models")) {
   await Bun.sleep(5_000);
 }
+if (isPreflight && process.env.GROK_FAKE_REMOVE_EXECUTABLE_AFTER_PREFLIGHT === "1") {
+  unlinkSync(process.argv[1]);
+}
 if (name === "claude" && args[0] === "auth") {
-  if (process.env.GROK_FAKE_REMOVE_EXECUTABLE_AFTER_PREFLIGHT === "1") {
-    unlinkSync(process.argv[1]);
-  }
   console.log(JSON.stringify({loggedIn:true}));
   process.exit(0);
 }
@@ -353,24 +353,24 @@ describe("Codex parent sandbox diagnostics", () => {
   it("names likely Codex sandbox cause after child failure", async () => {
     process.env.CODEX_SANDBOX_NETWORK_DISABLED = "1";
     const invoked = join(scratch, "model-invoked.json");
-    writeFileSync(join(bin, "claude"), `#!/usr/bin/env bun
+    writeFileSync(join(bin, "grok"), `#!/usr/bin/env bun
 import { writeFileSync } from "node:fs";
-if (process.argv[2] === "auth") {
-  console.log(JSON.stringify({ loggedIn: true }));
+if (process.argv[2] === "models") {
+  console.log("You are logged in with grok.com.\\nAvailable models:\\n  * grok-4.6 (default)");
   process.exit(0);
 }
 writeFileSync(${JSON.stringify(invoked)}, JSON.stringify({
   argv: process.argv.slice(2),
   networkDisabled: process.env.CODEX_SANDBOX_NETWORK_DISABLED ?? null,
 }));
-console.error("ENOTFOUND api.anthropic.com");
+console.error("ENOTFOUND api.x.ai");
 process.exit(1);
 `);
-    const input = options("claude");
+    const input = options("grok");
     const result = await runLane(laneOf(input));
     const saved = receipt(input.receiptPath);
     expect(JSON.parse(readFileSync(invoked, "utf8"))).toMatchObject({
-      argv: expect.arrayContaining(["--model", "fable"]),
+      argv: expect.arrayContaining(["--model", "grok-4.6"]),
       networkDisabled: null,
     });
     expect(result.exitCode).toBe(70);
@@ -380,31 +380,31 @@ process.exit(1);
     expect(saved.error?.message).toContain("child exited with status 1");
     expect(saved.error?.message).toContain("likely cause: Codex parent sandbox has network disabled");
     expect(saved.error?.evidence).toStartWith("likely cause: Codex parent sandbox has network disabled");
-    expect(saved.error?.evidence).toContain("ENOTFOUND api.anthropic.com");
+    expect(saved.error?.evidence).toContain("ENOTFOUND api.x.ai");
     expect(saved.error?.message).toContain("provider-dispatch.md#host-and-parent-prerequisites");
     expect(saved.schemaVersion).toBe(1);
     expect(saved.model).toBe(input.model);
     expect(saved.effort as string).toBe(input.effort);
-    expect(readFileSync(streamPath(saved.stderrPath), "utf8")).toBe("ENOTFOUND api.anthropic.com\n");
+    expect(readFileSync(streamPath(saved.stderrPath), "utf8")).toBe("ENOTFOUND api.x.ai\n");
     expect(existsSync(input.outputPath)).toBe(false);
   });
 
   for (const marker of [undefined, "0", "true"]) {
     it(`does not infer blocked network from marker ${marker}`, async () => {
       if (marker !== undefined) process.env.CODEX_SANDBOX_NETWORK_DISABLED = marker;
-      writeFileSync(join(bin, "claude"), `#!/usr/bin/env bun
-if (process.argv[2] === "auth") {
-  console.log(JSON.stringify({ loggedIn: true }));
+      writeFileSync(join(bin, "grok"), `#!/usr/bin/env bun
+if (process.argv[2] === "models") {
+  console.log("You are logged in with grok.com.\\nAvailable models:\\n  * grok-4.6 (default)");
   process.exit(0);
 }
-console.error("ENOTFOUND api.anthropic.com; EACCES local-state");
+console.error("ENOTFOUND api.x.ai; EACCES local-state");
 process.exit(1);
 `);
-      const result = await runLane(laneOf(options("claude")));
+      const result = await runLane(laneOf(options("grok")));
       expect(result.exitCode).toBe(70);
       expect(result.receipt.error).toEqual({
         message: "child exited with status 1",
-        evidence: "ENOTFOUND api.anthropic.com; EACCES local-state",
+        evidence: "ENOTFOUND api.x.ai; EACCES local-state",
       });
     });
   }
@@ -476,15 +476,13 @@ process.exit(1);
     });
   }
 
-  for (const provider of ["claude", "grok"] as const) {
-    it(`leaves successful ${provider} lanes unchanged with the marker`, async () => {
-      process.env.CODEX_SANDBOX_NETWORK_DISABLED = "1";
-      const result = await runLane(laneOf({ ...options(provider), parent: "codex" }));
-      expect(result.exitCode).toBe(0);
-      expect(result.receipt.status).toBe("complete");
-      expect(result.receipt.error).toBeNull();
-    });
-  }
+  it("leaves successful grok lanes unchanged with the marker", async () => {
+    process.env.CODEX_SANDBOX_NETWORK_DISABLED = "1";
+    const result = await runLane(laneOf({ ...options("grok"), parent: "codex" }));
+    expect(result.exitCode).toBe(0);
+    expect(result.receipt.status).toBe("complete");
+    expect(result.receipt.error).toBeNull();
+  });
 
   for (const status of ["unavailable-model", "unauthenticated", "timed-out"] as const) {
     it(`does not enrich ${status} with a sandbox hint`, async () => {
@@ -832,7 +830,7 @@ printf '%s\\n' '{"type":"thread.started","thread_id":"isolated"}' '{"type":"item
     });
   }
 
-  for (const provider of ["claude", "codex", "grok"] as const) {
+  for (const provider of ["codex", "grok"] as const) {
     it(`executes and receipts the ${provider} external lane`, async () => {
       const input = options(provider);
       const result = await runLane(laneOf(input));
@@ -853,9 +851,6 @@ printf '%s\\n' '{"type":"thread.started","thread_id":"isolated"}' '{"type":"item
       expect(readFileSync(streamPath(saved.stderrPath))).toEqual(Buffer.alloc(0));
       for (const path of [saved.stdoutPath, saved.stderrPath]) {
         expect(statSync(streamPath(path)).mode & 0o777).toBe(0o600);
-      }
-      if (provider === "claude") {
-        expect(receipt(input.receiptPath).reportedModel).toBe("claude-fable-9-9");
       }
     });
   }
@@ -1172,7 +1167,7 @@ process.exit(0);
   }, 10_000);
 
   it("keeps both ends of a long launcher failure after reserving output paths", async () => {
-    const input = options("claude", "long-launcher-failure");
+    const input = options("grok", "long-launcher-failure");
     const lane = laneOf(input);
     const failing: Lane = {
       ...lane,
@@ -1515,7 +1510,7 @@ const startedPath =`));
 
   it("kills a timed-out child and preserves a failure receipt", async () => {
     process.env.GROK_FAKE_TIMEOUT = "1";
-    const input = { ...options("claude"), timeoutMs: 30 };
+    const input = { ...options("grok"), timeoutMs: 30 };
     const result = await runLane(laneOf(input));
     expect(result.exitCode).toBe(124);
     expect(existsSync(input.outputPath)).toBe(false);
@@ -1524,7 +1519,7 @@ const startedPath =`));
 
   it("does not spawn the model when preflight exhausts the wrapper deadline", async () => {
     const modelStarted = join(scratch, "deadline-model.started");
-    const input = { ...options("claude", "preflight-deadline"), timeoutMs: 300 };
+    const input = { ...options("grok", "preflight-deadline"), timeoutMs: 300 };
     const runner = Bun.spawn(runnerArgs(input), {
       cwd: scratch,
       env: {
@@ -1549,7 +1544,7 @@ const startedPath =`));
   });
 
   it("lets a delayed wrapper lane finish when timeout is omitted", async () => {
-    const input = options("claude", "unbounded-default");
+    const input = options("grok", "unbounded-default");
     const runner = Bun.spawn(runnerArgs(input), {
       cwd: scratch,
       env: { ...process.env, GROK_FAKE_MODEL_DELAY_MS: "400" },
@@ -1570,7 +1565,7 @@ const startedPath =`));
 
   it("keeps a very long explicit deadline without timer overflow", async () => {
     const input = {
-      ...options("claude", "long-runtime-deadline"),
+      ...options("grok", "long-runtime-deadline"),
       timeoutMs: 2_147_483_648,
     };
     const runner = Bun.spawn(runnerArgs(input), {
@@ -1596,7 +1591,7 @@ const startedPath =`));
     const modelStarted = join(scratch, "expired-model.started");
     process.env.GROK_FAKE_PREFLIGHT_STARTED_PATH = preflightStarted;
     process.env.GROK_FAKE_MODEL_STARTED_PATH = modelStarted;
-    const input = { ...options("claude", "expired-at-entry"), timeoutMs: 100 };
+    const input = { ...options("grok", "expired-at-entry"), timeoutMs: 100 };
     const stdout: string[] = [];
     const stderr: string[] = [];
 
@@ -1623,7 +1618,7 @@ const startedPath =`));
   it("spends one explicit deadline across preflight and model execution", async () => {
     process.env.GROK_FAKE_PREFLIGHT_DELAY_MS = "1200";
     process.env.GROK_FAKE_MODEL_DELAY_MS = "1200";
-    const input = { ...options("claude"), timeoutMs: 1_500 };
+    const input = { ...options("grok"), timeoutMs: 1_500 };
     const result = await runLane(laneOf(input));
     const recorded = receipt(input.receiptPath);
 
@@ -1635,7 +1630,7 @@ const startedPath =`));
 
   it("bounds a descendant-held pipe by the explicit deadline without fabricating a signal", async () => {
     const descendantPidPath = join(scratch, "deadline-descendant.pid");
-    const input = { ...options("claude", "deadline-drain"), timeoutMs: 700 };
+    const input = { ...options("grok", "deadline-drain"), timeoutMs: 700 };
     const runner = Bun.spawn(runnerArgs(input), {
       cwd: scratch,
       env: {
@@ -1666,7 +1661,7 @@ const startedPath =`));
 
   it("does not claim a signal was sent to an already signal-reaped child", async () => {
     const descendantPidPath = join(scratch, "signalled-descendant.pid");
-    const input = { ...options("claude", "signalled-drain"), timeoutMs: 700 };
+    const input = { ...options("grok", "signalled-drain"), timeoutMs: 700 };
     const runner = Bun.spawn(runnerArgs(input), {
       cwd: scratch,
       env: {
@@ -1697,7 +1692,7 @@ const startedPath =`));
   it("lets manual cancellation end a post-exit pipe drain without a default timeout", async () => {
     const descendantPidPath = join(scratch, "cancel-descendant.pid");
     const modelExiting = join(scratch, "cancel-model.exiting");
-    const input = options("claude", "cancel-drain");
+    const input = options("grok", "cancel-drain");
     const runner = Bun.spawn(runnerArgs(input), {
       cwd: scratch,
       env: {
@@ -1730,7 +1725,7 @@ const startedPath =`));
   });
 
   it("clears a losing long-deadline timer when the shipped wrapper succeeds", async () => {
-    const input = { ...options("claude", "long-deadline"), timeoutMs: 60_000 };
+    const input = { ...options("grok", "long-deadline"), timeoutMs: 60_000 };
     const runner = Bun.spawn(runnerArgs(input), {
       cwd: scratch,
       env: { ...process.env },
@@ -1746,7 +1741,7 @@ const startedPath =`));
   });
 
   it("cancels a preflight with SIGINT and writes a terminal receipt", async () => {
-    const input = options("claude", "preflight-cancelled");
+    const input = options("grok", "preflight-cancelled");
     const started = join(scratch, "preflight-child.started");
     const terminated = join(scratch, "preflight-child.terminated");
     const isolatedRunner = join(scratch, "isolated-runner");
@@ -1887,7 +1882,7 @@ const startedPath =`));
   });
 
   it("refuses a second writer for an already-reserved path", async () => {
-    const input = options("claude");
+    const input = options("grok");
     writeFileSync(input.outputPath, "owned");
     await expect(runLane(laneOf(input))).rejects.toThrow();
     expect(readFileSync(input.outputPath, "utf8")).toBe("owned");
@@ -1895,7 +1890,7 @@ const startedPath =`));
   });
 
   it("terminalizes catchable failures after reserving output paths", async () => {
-    const unreadable = options("claude", "unreadable-prompt");
+    const unreadable = options("grok", "unreadable-prompt");
     chmodSync(unreadable.promptPath, 0o000);
     const unreadableRunner = Bun.spawn(runnerArgs(unreadable), {
       cwd: scratch,
@@ -1930,7 +1925,7 @@ const startedPath =`));
     await Promise.all([sameStdout, sameStderr]);
     expect(readFileSync(unreadable.receiptPath, "utf8")).toBe(preservedReceipt);
 
-    const spawnFailure = options("claude", "spawn-failure");
+    const spawnFailure = options("grok", "spawn-failure");
     const modelStarted = join(scratch, "spawn-failure-model.started");
     const spawnRunner = Bun.spawn(runnerArgs(spawnFailure), {
       cwd: scratch,
@@ -1953,8 +1948,8 @@ const startedPath =`));
       preflight: { status: "passed" },
     });
 
-    makeExecutable("claude");
-    const retry = options("claude", "post-reservation-retry");
+    makeExecutable("grok");
+    const retry = options("grok", "post-reservation-retry");
     expect((await runLane(laneOf(retry))).exitCode).toBe(0);
     expect(receipt(retry.receiptPath).status).toBe("complete");
   });
@@ -1968,10 +1963,11 @@ const startedPath =`));
     const modelStarted = join(scratch, "refused-model.started");
     process.env.GROK_FAKE_PREFLIGHT_STARTED_PATH = preflightStarted;
     process.env.GROK_FAKE_MODEL_STARTED_PATH = modelStarted;
-    const input = { ...options("claude"), mode: "isolated-write" as const, cwd: lane };
-    const exitCode = await main(runnerArgs(input).slice(1), Date.now(), {
-      stdout: () => {},
-      stderr: () => {},
+    const input = { ...options("grok"), mode: "isolated-write" as const, cwd: lane };
+    const writer = laneOf(input);
+    const { exitCode } = await runLane({
+      ...writer,
+      adapter: { ...writer.adapter, launch: { ...writer.adapter.launch, needsSharedGitDir: () => true } },
     });
     expect(exitCode).toBe(70);
     const refused = receipt(input.receiptPath);

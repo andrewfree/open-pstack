@@ -42,7 +42,8 @@ export type ReceiptStatus =
   | "unavailable-model"
   | "timed-out"
   | "child-failed"
-  | "malformed-output";
+  | "malformed-output"
+  | "route-refused";
 
 export interface NormalizedUsage {
   readonly inputTokens?: number;

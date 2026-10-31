@@ -28,7 +28,7 @@ export interface Case {
 }
 
 export const CLAUDE_TOOLS = 'Skill,Read,Glob,Grep,Write,Edit,Bash,Agent,Task,TodoWrite';
-export const DEFAULT_ROLES: Record<Harness, string> = { claude: 'bug-fix', codex: 'judgment and prose' };
+export const DEFAULT_ROLES: Record<Harness, string> = { claude: 'bug-fix', codex: 'feature, refactoring' };
 export const ROUTE = /^([a-z][a-z0-9-]*):([A-Za-z0-9._/-]+)@([a-z]+)$/;
 const SETUP_DESCRIPTOR = 'claude:opus@high';
 const DESCRIPTOR = /\b[a-z][a-z0-9-]*:[A-Za-z0-9._/-]+@[a-z]+/g;
@@ -40,7 +40,7 @@ const WRITER_ROLE = 'feature, refactoring', WRITER_LANE = 'codex:gpt-6.1-sol@max
 export interface Catalog {
   defaults: Map<string, string[]>;
   kept: Map<string, string>;
-  route(harness: Harness, descriptor: string): 'native' | 'external';
+  route(harness: Harness, descriptor: string): 'native' | 'external' | 't3';
 }
 
 export async function readCatalog(location: string): Promise<Catalog> {
@@ -59,7 +59,8 @@ export async function readCatalog(location: string): Promise<Catalog> {
     if (!descriptor.includes(':')) return 'native';
     const cell = routes.find(row => row[0] === descriptor.slice(0, descriptor.indexOf(':')))?.[column[harness]];
     if (cell === undefined) throw new Error(`catalog-route-missing:${descriptor}`);
-    return cell.startsWith('native') ? 'native' : 'external';
+    if (cell.startsWith('native')) return 'native';
+    return cell.startsWith('[T3 Claude Agent]') ? 't3' : 'external';
   } };
 }
 
@@ -274,28 +275,25 @@ const projectSkill: Case = {
   },
 };
 
-const writer: Case = {
-  id: 'linked-worktree-writer',
-  codexSandbox: 'danger-full-access',
+const claudeRefusal: Case = {
+  id: 'claude-route-refusal',
   async prepare(f) {
-    const repo = join(f.dir, 'writer-repo');
-    await git(f, 'init', '-q', '-b', 'main', repo);
-    await git(f, '-C', repo, 'commit', '-q', '--allow-empty', '-m', 'init');
-    await git(f, '-C', repo, 'worktree', 'add', '-q', '-b', 'writer', join(f.dir, 'writer-lane'));
-    await writeFile(join(f.dir, 'writer.prompt.md'), 'Create the file WRITTEN.md in the current directory containing the single word PONG, then reply DONE.\n');
+    await mkdir(join(f.dir, 'guard'));
+    await writeFile(join(f.dir, 'guard/claude'), `#!/bin/sh\nprintf '%s\\n' "$*" >> ${sh(join(f.dir, 'claude-attempted'))}\nexit 1\n`, { mode: 0o700 });
+    await writeFile(join(f.dir, 'refusal.prompt.md'), 'Reply with the single word PONG.\n');
   },
-  prompt: f => `${invoke(f.harness, 'poteto-mode', `Dispatch exactly one external lane and nothing else. Run the installed launcher ${join(f.location, 'skills/poteto-mode/scripts/runner/pstack-runner')} with these arguments and wait for it to exit: --parent codex --provider claude --model opus --effort max --mode isolated-write --prompt ${join(f.dir, 'writer.prompt.md')} --cwd ${join(f.dir, 'writer-lane')} --output ${join(f.dir, 'writer.output.md')} --receipt ${join(f.dir, 'writer.receipt.json')}`)}. ${rules(f.dir)}`,
+  prompt: f => `${invoke(f.harness, 'poteto-mode', `Exercise the installed launcher's refused Codex-parent Claude route without launching Claude. Run this exact command once and wait for it to exit; it exits 78: env PATH=${sh(join(f.dir, 'guard'))}:"$PATH" ${sh(join(f.location, 'skills/poteto-mode/scripts/runner/pstack-runner'))} --parent codex --provider claude --model opus --effort max --mode read-only --prompt ${sh(join(f.dir, 'refusal.prompt.md'))} --cwd ${sh(f.dir)} --output ${sh(join(f.dir, 'refusal.output.md'))} --receipt ${sh(join(f.dir, 'refusal.receipt.json'))}`)}. ${rules(f.dir)}`,
   async assert(record, f) {
-    if (!record.commands.some(c => c.includes('pstack-runner'))) throw new Error('runner-not-run');
-    const receipt = JSON.parse(await readFile(join(f.dir, 'writer.receipt.json'), 'utf8')), lane = join(f.dir, 'writer-lane');
-    if (receipt.status !== 'complete') throw new Error(`receipt-status:${receipt.status}`);
-    if (receipt.parent !== 'codex' || receipt.provider !== 'claude' || receipt.model !== 'opus' || receipt.effort !== 'max' || receipt.mode !== 'isolated-write' || receipt.cwd !== lane) throw new Error('receipt-route-mismatch');
-    if (receipt.outputPath !== join(f.dir, 'writer.output.md') || !(Date.parse(receipt.startedAt) >= record.started)) throw new Error('receipt-not-this-session');
-    const settings = parseJson(receipt.argv[receipt.argv.indexOf('--settings') + 1]) as { sandbox?: { filesystem?: { denyWrite?: unknown } } } | undefined;
-    if (!Bun.deepEquals(settings?.sandbox?.filesystem?.denyWrite, [await realpath(join(f.dir, 'writer-repo/.git'))])) throw new Error('shared-git-not-denied');
-    const effect = await written(record, join(lane, 'WRITTEN.md'));
-    if ((await readFile(join(lane, 'WRITTEN.md'), 'utf8')).trim() !== 'PONG') throw new Error('writer-effect-mismatch:WRITTEN.md');
-    return { assertions: ['runner-ran', 'receipt-complete', 'shared-git-denied', effect], files: [join(f.dir, 'writer.receipt.json'), join(lane, 'WRITTEN.md')] };
+    if (!record.commands.some(c => c.includes('pstack-runner') && c.includes('--provider claude'))) throw new Error('runner-not-run');
+    if (await lstat(join(f.dir, 'claude-attempted')).catch(() => undefined)) throw new Error('refusal-attempted-headless-claude');
+    const path = join(f.dir, 'refusal.receipt.json'), receipt = JSON.parse(await readFile(path, 'utf8'));
+    if (receipt.status !== 'route-refused') throw new Error(`receipt-status:${receipt.status}`);
+    if (receipt.parent !== 'codex' || receipt.provider !== 'claude' || receipt.model !== 'opus' || receipt.effort !== 'max' || receipt.mode !== 'read-only') throw new Error('receipt-route-mismatch');
+    if (receipt.outputPath !== join(f.dir, 'refusal.output.md') || !(Date.parse(receipt.startedAt) >= record.started)) throw new Error('receipt-not-this-session');
+    if (receipt.executable !== null || receipt.argv.length || receipt.preflight.status !== 'not-run' || receipt.preflight.argv.length) throw new Error('refusal-launched-a-command');
+    if (await lstat(join(f.dir, 'refusal.output.md')).catch(() => undefined)) throw new Error('refusal-left-output-reservation');
+    for (const sidecar of [receipt.stdoutPath, receipt.stderrPath]) if ((await readFile(sidecar)).length) throw new Error('refusal-sidecar-not-empty');
+    return { assertions: ['runner-ran', 'route-refused', 'claude-not-invoked', 'no-command-or-preflight', await written(record, path)], files: [path] };
   },
 };
 
@@ -374,7 +372,7 @@ function runner(harness: Harness, routes: string[]): Case[] {
       },
     };
   });
-  return harness === 'codex' ? [...cases, writer] : [...cases, codexWriter(true), codexWriter(false)];
+  return harness === 'codex' ? [...cases, claudeRefusal] : [...cases, codexWriter(true), codexWriter(false)];
 }
 
 const setup: Case[] = [{
@@ -630,7 +628,7 @@ function consumeSheet(harness: Harness, optIn: boolean): Case {
         .map(r => ({ ...r, routes: r.descriptors.map(d => installed.route(harness, d)) })),
         writerSandbox: optIn && installed.route(harness, WRITER_LANE) === 'external' ? 'full-access' : null };
     },
-    prompt: f => `${invoke(f.harness, 'poteto-mode', `Do no engineering work and launch no lane. For this task the pstack model sheet is ${sheet(f)}; use it in place of any configured sheet. For each of these roles, in this order, find the descriptors this parent would dispatch and the route of each: ${expected.roles.map(r => JSON.stringify(r.role)).join(', ')}. Write to ${report(f)} only JSON of the form {"roles":[{"role":"<role>","descriptors":["<provider:model@effort>"],"routes":["native" or "external"]}],"writerSandbox":"<value>" or null}, one route per descriptor, where "native" is this parent's own subagent primitive and "external" is the external runner. writerSandbox is the --writer-sandbox value this parent would pass when it dispatches the first descriptor of the ${JSON.stringify(WRITER_ROLE)} role as an isolated-write writer, or null if it would pass none.`)} ${rules(f.dir)}`,
+    prompt: f => `${invoke(f.harness, 'poteto-mode', `Do no engineering work and launch no lane. For this task the pstack model sheet is ${sheet(f)}; use it in place of any configured sheet. For each of these roles, in this order, find the descriptors this parent would dispatch and the route of each: ${expected.roles.map(r => JSON.stringify(r.role)).join(', ')}. Write to ${report(f)} only JSON of the form {"roles":[{"role":"<role>","descriptors":["<provider:model@effort>"],"routes":["native", "external", or "t3"]}],"writerSandbox":"<value>" or null}, one route per descriptor, where "native" is this parent's own subagent primitive, "external" is the external runner, and "t3" is the T3 Claude Agent route. writerSandbox is the --writer-sandbox value this parent would pass when it dispatches the first descriptor of the ${JSON.stringify(WRITER_ROLE)} role as an isolated-write writer, or null if it would pass none.`)} ${rules(f.dir)}`,
     async assert(record, f) {
       const assertions = [loaded(record, 'pstack:poteto-mode'), await written(record, report(f))];
       if (!Bun.deepEquals(parseJson(await readFile(report(f), 'utf8')), expected)) throw new Error('catalog-route-mismatch');

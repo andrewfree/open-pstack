@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:f
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { readCatalog, recipe, type Case, type Catalog, type Fixture } from '../features/recipes.ts';
+import { DEFAULT_ROLES, readCatalog, recipe, type Case, type Catalog, type Fixture } from '../features/recipes.ts';
 import { command } from './io.ts';
 import type { Harness, SessionRecord } from './types.ts';
 
@@ -49,6 +49,8 @@ test('reads role defaults, kept predecessors and routes from the generated catal
     expect(installed.route(harness, 'kimi:any@max')).toBe('external');
     expect(installed.route(harness, 'inherit-parent')).toBe('native');
   }
+  expect(installed.route('claude', 'claude:any@max')).toBe('native');
+  expect(installed.route('codex', 'claude:any@max')).toBe('t3');
   expect(() => installed.route('claude', 'kiro:any@max')).toThrow('catalog-route-missing');
 });
 
@@ -71,8 +73,8 @@ for (const harness of ['claude', 'codex'] as const) {
     ]);
     expect(report.roles.slice(3).map(r => [r.descriptors, r.routes])).toEqual([
       [['codex:gpt-6-luna@max'], [harness === 'codex' ? 'native' : 'external']],
-      [['claude:claude-opus-5-5@max'], [harness === 'claude' ? 'native' : 'external']],
-      [['claude:sonnet@high'], [harness === 'claude' ? 'native' : 'external']],
+      [['claude:claude-opus-5-5@max'], [harness === 'claude' ? 'native' : 't3']],
+      [['claude:sonnet@high'], [harness === 'claude' ? 'native' : 't3']],
       [['devin:swe-2@max'], ['external']],
       [['opencode:opencode/deepseek-v4.1-flash-free@max'], ['external']],
       [['kimi:kimi-code/k3@max'], ['external']],
@@ -185,7 +187,7 @@ for (const harness of ['claude', 'codex'] as const) {
   test(`${harness}: the runner recipe's default route is the candidate's role default for this parent`, async () => {
     const f = await fixture(harness), [c] = recipe('runner', harness), installed = await readCatalog(location);
     await c!.prepare!(f);
-    const [route] = installed.defaults.get(harness === 'claude' ? 'bug-fix' : 'judgment and prose')!;
+    const [route] = installed.defaults.get(DEFAULT_ROLES[harness])!;
     const [provider, rest] = route!.split(':'), [model, effort] = rest!.split('@');
     expect(provider).not.toBe(harness);
     expect(c!.prompt(f)).toContain(`--parent ${harness} --provider ${provider} --model ${model} --effort ${effort} --mode read-only`);

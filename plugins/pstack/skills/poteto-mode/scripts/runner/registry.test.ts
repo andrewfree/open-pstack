@@ -144,13 +144,17 @@ describe("registry data", () => {
     expect(catalog).toContain("Every documented role remains present.");
   });
 
-  it("routes each provider natively only from its own parent", () => {
+  it("routes each provider natively only from its own parent and Codex-parent Claude through T3", () => {
     const routes = renderCatalog(REGISTRY).content.split("\n## Routes\n")[1]!.split("\n## ")[0]!;
     for (const adapter of REGISTRY.adapters) {
       const cells = routes.split("\n").find((line) => line.startsWith(`| ${adapter.id} |`))!.split(" | ");
       expect(cells.slice(1, 3)).toEqual([
         adapter.id === "claude" ? "native `Agent`" : "external runner",
-        adapter.id === "codex" ? "native `spawn_agent`" : "external runner",
+        adapter.id === "codex"
+          ? "native `spawn_agent`"
+          : adapter.id === "claude"
+            ? "[T3 Claude Agent](provider-dispatch.md#the-t3-claude-agent-route); otherwise dropout"
+            : "external runner",
       ]);
     }
   });
