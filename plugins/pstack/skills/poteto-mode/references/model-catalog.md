@@ -65,7 +65,7 @@ Rolling aliases:
 
 | Provider | Claude Code parent | Codex parent | Access modes | Prompt | Model proof | Child environment | Host prerequisites |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| claude | native `Agent` | external runner | `read-only`, `isolated-write` | stdin | provider report | read-only: inherited; isolated-write: inherited without `GIT_*` | - |
+| claude | native `Agent` | [T3 Claude Agent](provider-dispatch.md#the-t3-claude-agent-route); otherwise dropout | `read-only`, `isolated-write` | stdin | provider report | read-only: inherited; isolated-write: inherited without `GIT_*` | - |
 | codex | external runner | native `spawn_agent` | `read-only`, `isolated-write`, `isolated-write-full-access` | stdin | pinned argv | inherited | - |
 | grok | external runner | external runner | `read-only`, `isolated-write` | file | provider report | allowlist | Linux: Landlock and `bwrap` |
 | devin | external runner | external runner | `read-only` | file | provider report | allowlist | - |

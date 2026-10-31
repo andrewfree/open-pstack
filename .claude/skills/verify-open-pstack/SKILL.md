@@ -18,11 +18,12 @@ Install development dependencies separately when testing this skill; `verify.sh`
 Then run from the trusted publisher checkout:
 
 ```sh
+REPOSITORY=OWNER/REPO # repository that owns the PR
 PR=111 # supplied delivery PR number
 SESSION="$(mktemp -d "${TMPDIR:-/tmp}/open-pstack-evidence.XXXXXX")"
 EVIDENCE="$SESSION/live" # must not exist yet
 .claude/skills/verify-open-pstack/scripts/verify.sh doctor --output "$SESSION/probe"
-.claude/skills/verify-open-pstack/scripts/verify.sh run --pr "$PR" --feature claude:project-skill --self-test --output "$EVIDENCE"
+.claude/skills/verify-open-pstack/scripts/verify.sh run --repo "$REPOSITORY" --pr "$PR" --feature claude:project-skill --self-test --output "$EVIDENCE"
 ```
 
 Pick the features that exercise the PR's changed behavior and pass each as `--feature <harness>:<feature>`, repeatable. List the same features in the PR body, where review sees them. The run exercises only the named features, plus `project-skill` in both harnesses when classification reaches it or under `--self-test`. Before any install or GitHub write, `verify.sh run` makes three checks:
@@ -33,13 +34,13 @@ Pick the features that exercise the PR's changed behavior and pass each as `--fe
 
 Reuse the Claude Code and Codex logins you already have; no extra login or credential source flags. Omit `--self-test` for ordinary plugin verification; it is mandatory for this skill's delivery. An agent runs and judges the whole gate from a non-TTY shell; nothing prompts a person. `--runner-route PROVIDER:MODEL@EFFORT`, repeatable, replaces the runner recipe's default route, a role default from the installed candidate's model catalog, for each parent whose provider differs from the route's.
 
-The publisher revision is recorded separately from the candidate SHA and must equal it when classification selects `project-skill`. Run those PRs from their reviewed candidate head; run all other PRs from trusted `main`. Use a fresh private output directory for every run. The verifier requires an open same-repository PR, pins exact head and base SHAs, classifies immutable Git objects, and rechecks them at phase and publication boundaries. Unknown paths abort; evidence never transfers to another head.
+The publisher revision is recorded separately from the candidate SHA and must equal it when classification selects `project-skill`. Run those PRs from their reviewed candidate head; run all other PRs from trusted `main`. Use a fresh private output directory for every run. The required `--repo OWNER/REPO` binds API reads, candidate clones, receipts, comments, and statuses to one repository, and the PR head repository must match it on the first read and every recheck; there is no implicit upstream default. The verifier requires an open same-repository PR, pins exact head and base SHAs, classifies immutable Git objects, and rechecks them at phase and publication boundaries. Unknown paths abort; evidence never transfers to another head.
 
 ## Doctor
 
 The parent doctor checks Bun, git, both native harness CLIs, required capabilities, and each harness's login state: `claude auth status` must print `"loggedIn": true`, and `codex login status` must exit 0 with a probe `CODEX_HOME` whose `auth.json` links to the operator's file. It reads only what the CLIs print and never reads or copies credential files or Keychain items. `verify.sh run` performs these checks for the required harnesses before any install or GitHub write. A failed check exits nonzero with the fix on stderr and publishes nothing. There are no credential-source flags. Candidate-mode doctor checks only candidate-safe capabilities, not logins or publisher authentication. Capability checks do not prove installation or live behavior; missing requirements fail closed.
 
-Candidates retain real `HOME`, `USER`, and `LOGNAME`. Claude uses normal operator config/login. Codex uses a run-owned `CODEX_HOME` with `auth.json` symlinked to the operator's `${CODEX_HOME:-$HOME/.codex}/auth.json`, resolving the daily home before overriding the environment. If that source file is absent, stop with a plain message that this tool needs file-based Codex auth; do not start login. Refresh writes through the symlink to the single existing login file.
+Candidates retain real `HOME`, `USER`, and `LOGNAME`. Claude uses normal operator config/login. Codex uses a run-owned `CODEX_HOME` with `auth.json` symlinked to the operator's `${CODEX_HOME:-$HOME/.codex}/auth.json`, resolving the daily home before overriding the environment. If that source file is absent, stop with a plain message that this tool needs file-based Codex auth; do not start login. Refresh writes through the symlink to the single existing login file. Before any Codex command, the verifier writes `[analytics] enabled = false` to that run home's private `config.toml`, and every candidate process gets `DO_NOT_TRACK=1`. The operator's daily configuration is unchanged.
 
 Temporary, GitHub, and fixture state remain run-owned; Git configuration is disabled or run-owned. This is operational state separation, not an OS security boundary. Do not read, parse, or copy credential contents, register tokens, or check public comments against credentials. No extra login directories are needed.
 
@@ -75,7 +76,7 @@ Each headless session exits on its own. Verify any setup restoration before publ
 
 - `scripts/verify.sh doctor --output <fresh-absolute-external-directory>`: parent capability and login-state report, no installation/publication.
 - `scripts/verify.sh doctor --candidate --output <fresh-run-owned-directory>`: candidate-safe self-test probe; no publisher authentication probing.
-- `scripts/verify.sh run --pr <positive-number> --feature <harness>:<feature>... [--self-test] [--runner-route PROVIDER:MODEL@EFFORT]... [--wide <reason>] --output <fresh-absolute-external-directory>`: headless exact-head verification of the named features with machine-checked recipes; no terminal or prompts. The evidence comment lists only the features that ran.
+- `scripts/verify.sh run --repo <OWNER/REPO> --pr <positive-number> --feature <harness>:<feature>... [--self-test] [--runner-route PROVIDER:MODEL@EFFORT]... [--wide <reason>] --output <fresh-absolute-external-directory>`: headless exact-head verification of the named features with machine-checked recipes; no terminal or prompts. The evidence comment lists only the features that ran.
 - `features/recipes.ts`: per-feature headless cases and assertions.
 - `bun run test` and `bun run typecheck`: development checks after a separate frozen dependency install, not live proof.
 - `features/registry.json`: maintained path ownership; it decides which features a PR can reach, and unknown runtime paths block.

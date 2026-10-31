@@ -1,7 +1,7 @@
 import { recipe } from '../features/recipes.ts';
-import { classify, completeEvidence, newReceipt, requiredFeatures, requiredHarnesses } from './core.ts';
+import { classify, completeEvidence, newReceipt, repositoryName, requiredFeatures, requiredHarnesses } from './core.ts';
 import { retainedFile, sha256 } from './io.ts';
-import { REPO, type Driver, type GitHub, type Pull, type Receipt, type Registry } from './types.ts';
+import { type Driver, type GitHub, type Pull, type Receipt, type Registry } from './types.ts';
 
 class HeadMoved extends Error {}
 export class Refused extends Error {}
@@ -51,6 +51,7 @@ export async function revalidateEvidence(receipt: Receipt): Promise<void> {
 }
 
 type VerifyOptions = {
+  repo: string;
   pr: number;
   selfTest: boolean;
   features: string[];
@@ -66,9 +67,10 @@ type VerifyOptions = {
 
 export async function verify(options: VerifyOptions): Promise<Receipt> {
   const { github, driver, persist } = options;
+  const repo = repositoryName(options.repo);
   const initial = await github.pull(options.pr);
-  if (initial.state !== 'open' || initial.headRepo !== REPO) throw new Error('Require an open same-repository PR');
-  const receipt = newReceipt(options.pr, initial.head.sha, initial.base.sha, options.selfTest, options.root, options.publisherRevision);
+  if (initial.state !== 'open' || initial.headRepo.toLowerCase() !== repo) throw new Error('Require an open same-repository PR');
+  const receipt = newReceipt(repo, options.pr, initial.head.sha, initial.base.sha, options.selfTest, options.root, options.publisherRevision);
   let successAttempted = false, commentAttempted = false, cleanupComplete = false, cleanupFailed = false;
   const cleanup = async (): Promise<void> => {
     if (cleanupComplete) return;
@@ -79,7 +81,7 @@ export async function verify(options: VerifyOptions): Promise<Receipt> {
   };
   const current = async (): Promise<Pull> => {
     const pull = await github.pull(receipt.pr);
-    if (pull.head.sha !== receipt.sha || pull.base.sha !== receipt.base || pull.state !== 'open' || pull.headRepo !== REPO) throw new HeadMoved('PR head/base or open repository identity changed; run again');
+    if (pull.head.sha !== receipt.sha || pull.base.sha !== receipt.base || pull.state !== 'open' || pull.headRepo.toLowerCase() !== repo) throw new HeadMoved('PR head/base or open repository identity changed; run again');
     return pull;
   };
   const phase = async (next: Receipt['phase']): Promise<void> => {
@@ -145,7 +147,7 @@ export async function verify(options: VerifyOptions): Promise<Receipt> {
         catch (publicationError) { appendFailure('publish failure evidence', publicationError); }
       }
       try {
-        await github.status(receipt.sha, 'failure', receipt.commentUrl ?? `https://github.com/${REPO}/pull/${receipt.pr}`, successAttempted ? 'Verification aborted; rerun required' : 'Verification failed; rerun required');
+        await github.status(receipt.sha, 'failure', receipt.commentUrl ?? `https://github.com/${repo}/pull/${receipt.pr}`, successAttempted ? 'Verification aborted; rerun required' : 'Verification failed; rerun required');
         receipt.status = 'failure';
       } catch (statusError) { appendFailure('publish failure live-gate', statusError); }
     }

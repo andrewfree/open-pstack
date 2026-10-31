@@ -4,10 +4,10 @@ import { CLAUDE_TOOLS, recipe, type Fixture } from '../features/recipes.ts';
 import { requiredFeatures, requiredHarnesses } from './core.ts';
 import { command, isolatedEnv, retainedFile, save, session, treeHash, type Command, type Session } from './io.ts';
 import { doctor } from './doctor.ts';
-import { assertCodexAuth, linkCodexAuth, removeCodexHome, restoreSetup, snapshotSetup, type SetupSnapshot } from './isolation.ts';
+import { assertCodexAuth, disableCodexAnalytics, linkCodexAuth, removeCodexHome, restoreSetup, snapshotSetup, type SetupSnapshot } from './isolation.ts';
 import { sourceDigest, sourceHash } from './provenance.ts';
 import { publishable } from './verify.ts';
-import { REPO, type Driver, type Harness, type Installation, type Observation, type Receipt, type SessionRecord } from './types.ts';
+import { type Driver, type Harness, type Installation, type Observation, type Receipt, type SessionRecord } from './types.ts';
 
 const setupFeature = (feature: string): boolean => feature === 'setup' || feature === 'skill-invocation:setup-pstack';
 export function launch(harness: Harness, workspace: string, options: { cwd: string; addDirs: string[]; codexSandbox?: 'danger-full-access'; claudePermission?: 'bypassPermissions' }): string[] {
@@ -97,7 +97,7 @@ export class MacDriver implements Driver {
     const referenceHome = join(root, 'source-home'), reference = join(referenceHome, 'workspace');
     await mkdir(join(referenceHome, 'tmp'), { recursive: true, mode: 0o700 });
     const trustedRun: Command = (args, options = {}) => this.run(args, { ...options, env: isolatedEnv(referenceHome) });
-    await trustedRun(['git', 'clone', '--no-checkout', '--', `https://github.com/${REPO}.git`, reference]);
+    await trustedRun(['git', 'clone', '--no-checkout', '--', `https://github.com/${receipt.repo}.git`, reference]);
     await trustedRun(['git', 'fetch', 'origin', receipt.sha], { cwd: reference });
     await trustedRun(['git', '-c', 'core.hooksPath=/dev/null', 'checkout', '--detach', receipt.sha], { cwd: reference });
     const pinnedSource = await sourceHash(reference, receipt.sha, trustedRun);
@@ -107,9 +107,10 @@ export class MacDriver implements Driver {
       const home = join(root, 'state', harness), workspace = join(home, 'workspace');
       await mkdir(join(home, 'tmp'), { recursive: true, mode: 0o700 });
       for (const dir of ['.codex', '.config/gh', '.cache']) await mkdir(join(home, dir), { recursive: true, mode: 0o700 });
+      await disableCodexAnalytics(home);
       const env = isolatedEnv(home, harness);
       const candidateRun = this.candidate(home);
-      await candidateRun(['git', 'clone', '--no-checkout', '--', `https://github.com/${REPO}.git`, workspace], { env });
+      await candidateRun(['git', 'clone', '--no-checkout', '--', `https://github.com/${receipt.repo}.git`, workspace], { env });
       await candidateRun(['git', 'fetch', 'origin', receipt.sha], { cwd: workspace, env });
       await candidateRun(['git', 'checkout', '--detach', receipt.sha], { cwd: workspace, env });
       if ((await candidateRun(['git', 'rev-parse', 'HEAD'], { cwd: workspace, env })).trim() !== receipt.sha) throw new Error('Candidate checkout SHA mismatch');

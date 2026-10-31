@@ -1,7 +1,7 @@
 import { mkdir, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { command, isolatedEnv, save, type Command } from './io.ts';
-import { linkCodexAuth, removeCodexHome } from './isolation.ts';
+import { disableCodexAnalytics, linkCodexAuth, removeCodexHome } from './isolation.ts';
 import { HARNESSES, type Harness } from './types.ts';
 
 export class LoginRequired extends Error {}
@@ -14,6 +14,7 @@ export async function doctor(root: string, run: Command = command, platform = pr
     if (platform !== 'darwin') throw new Error('Live gate requires an operator Mac (Darwin)');
     const home = join(root, 'probe-home');
     for (const dir of ['tmp', '.codex', '.config/gh', '.cache']) await mkdir(join(home, dir), { recursive: true, mode: 0o700 });
+    await disableCodexAnalytics(home);
     const env = isolatedEnv(home);
     for (const binary of candidate ? ['bun', 'git', 'claude', 'codex'] : ['bun', 'git', 'claude', 'codex', 'gh']) checks[binary] = (await run([binary, '--version'], { env })).trim();
     const claude = await run(['claude', '--help'], { env });

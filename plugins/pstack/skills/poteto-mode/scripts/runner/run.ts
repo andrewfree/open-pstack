@@ -12,6 +12,7 @@ import {
   writeSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { type AppRoute, appRoute } from "./registry/app-routes.ts";
 import { type Lane, type LaunchFacts, LaunchRefusal, type ParseResult } from "./registry/index.ts";
 import {
   ERROR_EVIDENCE_LIMIT,
@@ -593,6 +594,8 @@ function statusExitCode(status: ReceiptStatus): number {
       return 77;
     case "timed-out":
       return 124;
+    case "route-refused":
+      return 78;
   }
 }
 
@@ -1087,11 +1090,47 @@ async function executeLane(
   return { exitCode: statusExitCode(receipt.status), receipt };
 }
 
+function refuseAppRoute(lane: Lane, route: AppRoute, started: number): RunResult {
+  const streams = reserveOutputs(lane);
+  try {
+    closeSync(streams.stdout);
+  } finally {
+    closeSync(streams.stderr);
+  }
+  const completed = Date.now();
+  const receipt = completeReceipt(lane, {
+    status: "route-refused",
+    startedAt: new Date(started).toISOString(),
+    completedAt: new Date(completed).toISOString(),
+    elapsedMs: completed - started,
+    executable: null,
+    preflight: { argv: [], status: "not-run", evidence: "" },
+    argv: [],
+    exitCode: null,
+    signal: null,
+    reportedModel: null,
+    modelVerified: false,
+    modelEvidence: null,
+    sessionId: null,
+    usage: null,
+    costUsd: null,
+    error: {
+      message: `a ${lane.parent} parent does not run ${lane.adapter.id} lanes in the external runner; the parent dispatches ${lane.adapter.id}:${lane.model}@${lane.effort} through its ${route.name} route or records a dropout; see provider-dispatch.md#${route.anchor}`,
+      evidence: `parent=${lane.parent} provider=${lane.adapter.id}`,
+    },
+  });
+  removeIfExists(lane.outputPath);
+  writeReceipt(lane.receiptPath, receipt);
+  return { exitCode: statusExitCode(receipt.status), receipt };
+}
+
 export async function runLane(
   lane: Lane,
   started: number = Date.now()
 ): Promise<RunResult> {
   validateLane(lane);
+  const route = appRoute(lane.parent, lane.adapter.id);
+  if (route !== null) return refuseAppRoute(lane, route, started);
   const deadlineAt = lane.timeoutMs === null ? null : started + lane.timeoutMs;
   const progress: LaneProgress = {
     executable: null,
