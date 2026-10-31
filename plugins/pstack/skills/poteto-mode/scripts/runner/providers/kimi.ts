@@ -1,9 +1,10 @@
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import { adapter, type LaunchFacts, type ModelRun, type ParseResult, type PreflightVerdict } from "../registry/contract.ts";
 import type { AccessMode } from "../types.ts";
-import { BASE_ALLOWLIST, BASE_PREFIXES, boundedOutput, failedPreflight, namedPreflightFailure, nullableString, object } from "./shared.ts";
+import { BASE_ALLOWLIST, BASE_PREFIXES, nullableString, object } from "./shared.ts";
 
 const READ_ONLY_PROFILE = `(version 1)
 (allow default)
@@ -24,6 +25,28 @@ const WRITE_PROFILE = `${READ_ONLY_PROFILE}
 const NESTED_SEATBELT = "sandbox_apply: Operation not permitted";
 const NO_METADATA = { reportedModel: null, sessionId: null, usage: null, costUsd: null };
 
+const AUTH_ERRORS = new Set(["provider.auth_error", "Provider authentication error", "Provider authentication failed"]);
+const UNAUTHENTICATED = new Set([
+  "auth.login_required",
+  "auth.provisioning_required",
+  "auth.token_missing",
+  "auth.token_unauthorized",
+  "Login required",
+  "Provider provisioning required",
+  "Provider credential missing",
+  "Provider credential unauthorized",
+]);
+const UNAVAILABLE_MODEL = new Set([
+  "model.not_found",
+  "model.not_configured",
+  "model.config_invalid",
+  "auth.model_not_resolved",
+  "Model not found",
+  "No model configured",
+  "Invalid model configuration",
+  "Model not resolved",
+]);
+
 function realPath(path: string): string {
   return existsSync(path) ? realpathSync(path) : path;
 }
@@ -41,7 +64,7 @@ function agentFile(mode: AccessMode): string {
     writer
       ? "description: pstack external lane whose writes are confined to its assigned working directory."
       : "description: pstack external lane that reads the repository and runs commands without writing outside Kimi's own state.",
-    `tools: ${writer ? "Read, Write, Edit, Grep, Glob, Bash" : "Read, Grep, Glob, Bash"}`,
+    `tools: ${writer ? "Read, ReadMediaFile, Write, Edit, Grep, Glob, Bash" : "Read, ReadMediaFile, Grep, Glob, Bash"}`,
     "subagents: []",
     "---",
     "${base_prompt}",
@@ -66,6 +89,23 @@ function supportedEfforts(listing: string, model: string): readonly string[] | n
   if (entry === null) return null;
   const efforts: readonly unknown[] = Array.isArray(entry.supportEfforts) ? entry.supportEfforts : [];
   return efforts.filter((effort): effort is string => typeof effort === "string");
+}
+
+function diagnosticStatus(stderr: string): "unauthenticated" | "unavailable-model" | null {
+  const lines = stripVTControlCharacters(stderr).split(/\r?\n/);
+  const at = lines.findIndex((line) => line.startsWith("error: "));
+  if (at === -1) return null;
+  const message = (lines[at] ?? "").replace(/^error: (?:failed to (?:run prompt|start shell): )?/, "");
+  const code = /^([a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+):/.exec(message)?.[1];
+  const name = code ?? message;
+  if (AUTH_ERRORS.has(name)) {
+    const detail = code !== undefined
+      ? message.slice(code.length + 1).trimStart()
+      : /^\s*message:\s*\n([^\n]*)/.exec(lines.slice(at + 1).join("\n"))?.[1] ?? "";
+    return /^403\b/.test(detail) ? null : "unauthenticated";
+  }
+  if (UNAUTHENTICATED.has(name)) return "unauthenticated";
+  return UNAVAILABLE_MODEL.has(name) ? "unavailable-model" : null;
 }
 
 function listed(listing: string): boolean {
@@ -132,8 +172,8 @@ export const kimi = adapter({
     argv: () => ["provider", "list", "--json"],
     retryAfterUnauthenticatedMs: null,
     classify(run, lane): PreflightVerdict {
-      if (run.exitCode !== 0) return { kind: namedPreflightFailure(boundedOutput(run)) ?? "inconclusive" };
-      if (!listed(run.stdout)) return failedPreflight(run, "unavailable-model");
+      if (run.exitCode !== 0) return { kind: diagnosticStatus(run.stderr) ?? "inconclusive" };
+      if (!listed(run.stdout)) return { kind: diagnosticStatus(run.stderr) ?? "unavailable-model" };
       const efforts = supportedEfforts(run.stdout, lane.cliModel);
       if (efforts === null) return { kind: "unavailable-model" };
       return lane.effort === "default" || efforts.includes(lane.effort)
@@ -173,6 +213,7 @@ export const kimi = adapter({
     ],
   },
   parse: (run) => parse(run),
+  failureStatus: (run) => diagnosticStatus(run.stderr) ?? "child-failed",
   proof: { report: "absent", matches: () => false },
   environment: () => ({
     kind: "allowlist",
@@ -188,15 +229,15 @@ export const kimi = adapter({
     ],
     notes: [
       "A Kimi lane pins a model alias from the CLI's own config, such as `kimi-code/k3` for Kimi K3. `kimi provider list --json` lists the configured aliases and the efforts each one accepts in `models.<alias>.supportEfforts`. An unregistered alias takes any pstack effort at the runner, and the preflight refuses one the alias does not list.",
-      "The preflight runs `kimi provider list --json` outside the sandbox. It reads local config only, so it proves that the alias exists and accepts the requested effort, and records the fixed evidence `model <alias> configured with effort <effort>; local config, credentials are checked by the model call`. A lapsed login surfaces as the model call's own error. A listing without the alias, or an alias that does not list the requested effort, is `unavailable-model`/69; the runner never maps an effort to a neighbor. Effort `default` checks only that the alias exists. When the command exits 0 but prints output that is not a JSON listing with a `models` object, the verdict is also `unavailable-model`/69 unless the output names a login failure. A non-zero exit is `child-failed`/70 unless its output names a login or model failure.",
+      "The preflight runs `kimi provider list --json` outside the sandbox. It reads local config only, so it proves that the alias exists and accepts the requested effort, and records the fixed evidence `model <alias> configured with effort <effort>; local config, credentials are checked by the model call`. A lapsed login surfaces as the model call's own error. A listing without the alias, or an alias that does not list the requested effort, is `unavailable-model`/69; the runner never maps an effort to a neighbor. Effort `default` checks only that the alias exists. When the command exits 0 but prints output that is not a JSON listing with a `models` object, the verdict is also `unavailable-model`/69 unless stderr carries a recognized Kimi authentication or model diagnostic. A non-zero exit is `child-failed`/70 unless its stderr does. Both read stderr as a failed model call does, below; stdout never names the failure.",
       "The CLI has no effort flag. The runner sets `KIMI_MODEL_THINKING_EFFORT` to the lane's effort and leaves it unset for effort `default`. The variable is not on the environment allowlist, so a value in the parent's environment never reaches the lane.",
       "Kimi has no sandbox of its own, and its prompt mode approves every tool call. It rejects `--auto` next to `--prompt`, because prompt mode already runs that way. The runner therefore launches Kimi under macOS Seatbelt: `sandbox-exec -D KIMI_HOME=<realpath of the Kimi home> [-D WRITE_ROOT=<realpath of the cwd>] -p <profile> kimi ...`. Both modes may write only `/dev/null`, `/dev/zero`, `/dev/dtracehelper`, `/dev/tty*`, `/dev/fd/*`, `/private/tmp`, `/private/var/folders` and the Kimi home; `isolated-write` may also write its assigned directory. Seatbelt rejects an empty path, so an empty `KIMI_CODE_HOME` means `~/.kimi-code`. Point a read-only lane at a checkout outside the temporary directories, which stay writable. Preflight runs outside the sandbox.",
       "A host without `sandbox-exec` gets `unavailable-cli`/69 with `sandbox-exec executable not found; kimi lanes need it to confine writes` before the preflight, never an unconfined run.",
       "Seatbelt profiles do not nest. Under a parent that already runs in a sandbox, such as a Codex parent in its default `workspace-write` mode, `sandbox-exec` exits 71 with `sandbox_apply: Operation not permitted` before Kimi starts. That receipt is `child-failed`/70 with a message naming the nested sandbox, not the Codex network hint. Kimi lanes under Codex need the parent started deliberately with `danger-full-access`.",
-      "Each lane passes `--agent-file` with its run-owned `<receipt>.provider/agent.md`. It allowlists `Read`, `Grep`, `Glob` and `Bash`, plus `Write` and `Edit` for a writer, names no subagents, and keeps Kimi's own system prompt through `${base_prompt}`. That removes Kimi's subagent, web, scheduling and MCP tools from the lane.",
+      "Each lane passes `--agent-file` with its run-owned `<receipt>.provider/agent.md`. It allowlists `Read`, `ReadMediaFile`, `Grep`, `Glob` and `Bash`, plus `Write` and `Edit` for a writer, names no subagents, and keeps Kimi's own system prompt through `${base_prompt}`. That removes Kimi's subagent, web, scheduling and MCP tools from the lane. `ReadMediaFile` is Kimi's read-only media reader, so a lane can read a screenshot.",
       "Kimi reads no prompt file or stdin, so the prompt travels as the `--prompt=<prompt>` argument, and macOS's 1 MiB argument limit bounds it. The receipt's argv shows `--prompt=<contents of PATH>` in its place.",
       "The stream-json output has no terminal event, served-model report, usage or cost. The lane output is the last assistant message, and the session is the `session.resume_hint` meta event's `session_id`. A stream whose last assistant event carries only tool calls, or that has no assistant event, is `malformed-output`/65. The proof is the pinned argv (`pinned-argv`).",
-      "Kimi prints no error result: a failed call exits non-zero with its error on stderr.",
+      "Kimi prints no error result: a failed call exits non-zero with its error on stderr. Through the optional `failureStatus` adapter hook, the runner classifies the failure from the first stderr line that starts with `error: `, after removing terminal escape sequences. Kimi 2.1.1 writes that line as `error: [failed to run prompt: |failed to start shell: ]<code>: <message>`, or as a title followed by a `message:` field. `provider.auth_error`, `auth.login_required`, `auth.provisioning_required`, `auth.token_missing`, `auth.token_unauthorized` and their titles are `unauthenticated`/77. Kimi 2.1.1 also labels HTTP 403 refusals, such as its 5-hour usage limit, `provider.auth_error`, so an authentication error whose detail starts with `403` stays `child-failed`/70; for a title, the detail is the first line of the `message:` field. `model.not_found`, `model.not_configured`, `model.config_invalid`, `auth.model_not_resolved` and their titles are `unavailable-model`/69. Connection errors, other codes, later stderr lines and stderr without an `error: ` line are `child-failed`/70, even when they mention authentication or a model. Stdout carries reviewed source, tool results and assistant text, so it never changes the status. The raw evidence keeps both streams.",
     ],
   },
 });

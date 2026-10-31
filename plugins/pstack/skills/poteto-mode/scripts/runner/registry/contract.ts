@@ -147,6 +147,7 @@ export interface ProviderAdapter {
     guardHostState?(lane: Lane, env: NodeJS.ProcessEnv, facts: LaunchFacts): () => void;
   };
   parse(run: ModelRun, lane: Lane): ParseResult;
+  failureStatus?(run: ChildRun): "unauthenticated" | "unavailable-model" | "child-failed";
   readonly proof: {
     readonly report: "required" | "absent";
     matches(lane: Lane, reported: string): boolean;

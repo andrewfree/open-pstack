@@ -1010,7 +1010,7 @@ async function executeLane(
       ? "cancelled"
       : result.timedOut
         ? "timed-out"
-        : providerFailure?.status ?? modelFailureStatus(rawFailureEvidence);
+        : providerFailure?.status ?? adapter.failureStatus?.(result) ?? modelFailureStatus(rawFailureEvidence);
     const sandboxHint = status === "child-failed" && providerFailure === null && parentNetworkDisabled
       ? "likely cause: Codex parent sandbox has network disabled; see provider-dispatch.md#host-and-parent-prerequisites"
       : null;
