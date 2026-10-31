@@ -9,8 +9,9 @@ import { parseChangedFiles, Publisher } from './github.ts';
 import { command, sha256, type Command } from './io.ts';
 import { MacDriver } from './harness.ts';
 import { evidence, Refused, SESSION_LIMIT, verify } from './verify.ts';
-import { HARNESSES, REPO, type ChangedFile, type Driver, type GitHub, type Pull, type Receipt } from './types.ts';
+import { HARNESSES, type ChangedFile, type Driver, type GitHub, type Pull, type Receipt } from './types.ts';
 
+const REPO = 'ericlitman/open-pstack';
 const SHA = 'a'.repeat(40), BASE = 'b'.repeat(40), NEXT = 'c'.repeat(40), HASH = 'd'.repeat(64), REVISION = 'e'.repeat(40);
 const URL = `https://github.com/${REPO}/pull/123#issuecomment-1`;
 const roots: string[] = [];
@@ -36,7 +37,7 @@ function fixture(runtime = false, selfTest = false) {
     async prepare(r) { mark('prepare'); return requiredHarnesses(r).map(harness => ({ harness, sha: r.sha, cliVersion: 'test', pluginVersion: '1.5.0', treeHash: HASH, location: `/isolated/${harness}/plugin`, home: `/isolated/${harness}` })); },
     async exercise(r) { mark('exercise'); return requiredHarnesses(r).flatMap(harness => requiredFeatures(r, harness).map(feature => ({ harness, feature, surface: 'native surface', action: 'invoke', observed: 'fixture changed', reviewer: 'recipe' as const, assertions: ['invoke:skill-loaded'], transcript: 'retained.log', transcriptHash: sha256('reviewed transcript'), artifacts: [{ path: 'fixture.json', sha256: sha256('reviewed artifact') }] }))); },
   };
-  const options = { pr: 123, root, selfTest, features: runtime ? ['claude:skill-invocation:architect'] : [], wide: undefined as string | undefined, publisherRevision: REVISION, registry: validateRegistry(data), github, driver, persist: async (r: Receipt) => { saved.push(structuredClone(r)); } };
+  const options = { repo: REPO, pr: 123, root, selfTest, features: runtime ? ['claude:skill-invocation:architect'] : [], wide: undefined as string | undefined, publisherRevision: REVISION, registry: validateRegistry(data), github, driver, persist: async (r: Receipt) => { saved.push(structuredClone(r)); } };
   return { options, calls, saved, comments, pull, hook: (fn: typeof hook) => { hook = fn; } };
 }
 
@@ -293,7 +294,7 @@ describe('publisher request boundaries', () => {
     mkdirSync(join(repository, 'runtime')); writeFileSync(join(repository, 'runtime', 'skill.md'), 'immutable runtime'); git('add', '.'); git('commit', '-qm', 'runtime'); const head = git('rev-parse', 'HEAD');
     git('rm', '-q', 'runtime/skill.md'); git('commit', '-qm', 'later docs-only branch');
     const calls: string[][] = [];
-    const publisher = new Publisher(async (args, options) => { calls.push(args); if (args[0] === 'git' && args[1] === 'fetch') args = args.map(arg => arg === `https://github.com/${REPO}.git` ? repository : arg); return command(args, options); });
+    const publisher = new Publisher(REPO, async (args, options) => { calls.push(args); if (args[0] === 'git' && args[1] === 'fetch') args = args.map(arg => arg === `https://github.com/${REPO}.git` ? repository : arg); return command(args, options); });
     expect(await publisher.files(base, head)).toEqual([{ filename: 'runtime/skill.md' }]);
     expect(calls.some(args => args[0] === 'gh')).toBe(false); expect(calls).toContainEqual(expect.arrayContaining([`${base}...${head}`]));
     await expect(publisher.files('main', head)).rejects.toThrow('Invalid diff SHA');
@@ -327,7 +328,7 @@ describe('publisher request boundaries', () => {
     rmSync(join(repository, CODEX));
     write(MARKET, { name: 'open-pstack', plugins: [{ name: 'pstack', version: '1.1.0', source: './plugins/pstack' }] }); chmodSync(join(repository, MARKET), 0o755);
     const moved = commit('rename, deletion, mode change');
-    const publisher = new Publisher(async (args, options) => command(args[0] === 'git' && args[1] === 'fetch' ? args.map(arg => arg === `https://github.com/${REPO}.git` ? repository : arg) : args, options));
+    const publisher = new Publisher(REPO, async (args, options) => command(args[0] === 'git' && args[1] === 'fetch' ? args.map(arg => arg === `https://github.com/${REPO}.git` ? repository : arg) : args, options));
     const flagged = async (head: string) => (await publisher.files(base, head)).filter(f => f.versionOnly).map(f => f.filename).sort();
     expect(await flagged(release)).toEqual([MARKET, CLAUDE, CODEX].sort());
     expect((await publisher.files(base, edited)).map(f => f.filename).sort()).toEqual([MARKET, CLAUDE, CODEX].sort());
@@ -343,7 +344,7 @@ describe('publisher request boundaries', () => {
         import { Publisher } from ${JSON.stringify(new globalThis.URL('./github.ts', import.meta.url).pathname)};
         await interruptCommands(${JSON.stringify(signal)});
         const executed = [];
-        const publisher = new Publisher(async (args, options) => { const output = await command([process.execPath, '-e', 'console.log("{}")'], options); executed.push(args); return output; });
+        const publisher = new Publisher(${JSON.stringify(REPO)}, async (args, options) => { const output = await command([process.execPath, '-e', 'console.log("{}")'], options); executed.push(args); return output; });
         try { await publisher.status(${JSON.stringify(SHA)}, 'success', ${JSON.stringify(URL)}, 'passed'); throw new Error('ordinary write escaped interruption'); }
         catch (error) { if (!String(error).includes('Interrupted by')) throw error; }
         await publisher.status(${JSON.stringify(SHA)}, 'failure', ${JSON.stringify(URL)}, 'failed');
@@ -355,7 +356,7 @@ describe('publisher request boundaries', () => {
   });
 
   test('status targets the supplied exact SHA and evidence URL, never a branch', async () => {
-    const calls: string[][] = [], publisher = new Publisher(async args => { calls.push(args); return '{}'; });
+    const calls: string[][] = [], publisher = new Publisher(REPO, async args => { calls.push(args); return '{}'; });
     await publisher.status(SHA, 'success', URL, 'passed');
     expect(calls[0]).toContain(`repos/${REPO}/statuses/${SHA}`); expect(calls[0]).toContain('context=live-gate'); expect(calls[0]).toContain(`target_url=${URL}`);
     await expect(publisher.status('main', 'success', URL, 'passed')).rejects.toThrow('Invalid status SHA');

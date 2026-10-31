@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { VERSION_MANIFESTS } from './core.ts';
 import { command, type Command } from './io.ts';
-import { REPO, type ChangedFile, type GitHub, type Pull } from './types.ts';
+import { repositoryName } from './core.ts';
+import { type ChangedFile, type GitHub, type Pull } from './types.ts';
 
 export function parseChangedFiles(output: string): ChangedFile[] {
   if (output === '') return [];
@@ -39,9 +40,9 @@ export function versionOnly(path: string, before: string, after: string): boolea
 }
 
 export class Publisher implements GitHub {
-  constructor(private run: Command = command) {}
+  constructor(private repo: string, private run: Command = command) { repositoryName(repo); }
   private async api(path: string, args: string[] = [], allowInterrupted = false): Promise<unknown> {
-    return JSON.parse(await this.run(['gh', 'api', `repos/${REPO}/${path}`, ...args], { allowInterrupted }));
+    return JSON.parse(await this.run(['gh', 'api', `repos/${this.repo}/${path}`, ...args], { allowInterrupted }));
   }
   async pull(pr: number): Promise<Pull> {
     const data = await this.api(`pulls/${pr}`) as { number: number; head: { sha: string; repo?: { full_name: string } }; base: { sha: string }; state: string };
@@ -54,7 +55,7 @@ export class Publisher implements GitHub {
     const env = { PATH: process.env.PATH ?? '', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_COUNT: '0', GIT_TERMINAL_PROMPT: '0' };
     try {
       await this.run(['git', 'init', '--bare', '--template=', repository], { env });
-      await this.run(['git', 'fetch', '--no-tags', '--', `https://github.com/${REPO}.git`, base, head], { cwd: repository, env });
+      await this.run(['git', 'fetch', '--no-tags', '--', `https://github.com/${this.repo}.git`, base, head], { cwd: repository, env });
       for (const sha of [base, head]) {
         if ((await this.run(['git', 'rev-parse', '--verify', `${sha}^{commit}`], { cwd: repository, env })).trim() !== sha) throw new Error('Pinned diff commit unavailable');
       }
@@ -77,7 +78,7 @@ export class Publisher implements GitHub {
   async comment(pr: number, body: string): Promise<string> {
     if (body.length > 60000) throw new Error('Evidence exceeds comment budget');
     const result = await this.api(`issues/${pr}/comments`, ['--method', 'POST', '-f', `body=${body}`]) as { html_url: string };
-    if (typeof result.html_url !== 'string' || !result.html_url.startsWith(`https://github.com/${REPO}/issues/`) && !result.html_url.startsWith(`https://github.com/${REPO}/pull/`)) throw new Error('Missing same-repository evidence comment URL');
+    if (typeof result.html_url !== 'string' || !result.html_url.startsWith(`https://github.com/${this.repo}/issues/`) && !result.html_url.startsWith(`https://github.com/${this.repo}/pull/`)) throw new Error('Missing same-repository evidence comment URL');
     return result.html_url;
   }
   async status(sha: string, state: 'success' | 'failure', target: string, description: string): Promise<void> {
