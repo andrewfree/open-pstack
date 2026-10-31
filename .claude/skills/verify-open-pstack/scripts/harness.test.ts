@@ -93,6 +93,25 @@ describe('isolated harness boundaries', () => {
     expect(JSON.parse(await readFile(join(root, 'doctor.json'), 'utf8')).result).toBe('pass');
     expect(calls.every(c => c.includes('--help') || c.includes('--version'))).toBe(true);
   });
+  test('doctor disables Codex analytics in its run-owned home before any Codex command', async () => {
+    const root = await fixture(), daily = await loginFixture(root), dailyConfig = join(daily, '..', 'config.toml');
+    await writeFile(dailyConfig, '[analytics]\nenabled = true\n');
+    const calls: string[][] = [];
+    const run: Command = async (args, options) => {
+      if (args[0] === 'codex') {
+        calls.push(args);
+        const config = join(options!.env!.CODEX_HOME!, 'config.toml');
+        expect(Bun.TOML.parse(await readFile(config, 'utf8'))).toEqual({ analytics: { enabled: false } });
+        expect((await stat(config)).mode & 0o777).toBe(0o600);
+        expect(options!.env!.DO_NOT_TRACK).toBe('1');
+      }
+      return args.includes('--version') ? 'version' : '--plugin-dir --settings --json local path';
+    };
+    await doctor(root, run, 'darwin', true);
+    await doctor(root, run, 'darwin', true);
+    expect(calls).toHaveLength(6);
+    expect(await readFile(dailyConfig, 'utf8')).toBe('[analytics]\nenabled = true\n');
+  });
   test('project self-test accepts real candidate doctor output through canonical workspace paths', async () => {
     const root = await fixture(), workspace = join(root, 'workspace');
     const skill = await realpath(join(import.meta.dir, '..'));
