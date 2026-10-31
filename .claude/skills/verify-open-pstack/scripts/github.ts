@@ -40,7 +40,7 @@ export function versionOnly(path: string, before: string, after: string): boolea
 }
 
 export class Publisher implements GitHub {
-  constructor(private repo: string, private run: Command = command) { repositoryName(repo); }
+  constructor(private repo: string, private run: Command = command) { this.repo = repositoryName(repo); }
   private async api(path: string, args: string[] = [], allowInterrupted = false): Promise<unknown> {
     return JSON.parse(await this.run(['gh', 'api', `repos/${this.repo}/${path}`, ...args], { allowInterrupted }));
   }
@@ -78,7 +78,8 @@ export class Publisher implements GitHub {
   async comment(pr: number, body: string): Promise<string> {
     if (body.length > 60000) throw new Error('Evidence exceeds comment budget');
     const result = await this.api(`issues/${pr}/comments`, ['--method', 'POST', '-f', `body=${body}`]) as { html_url: string };
-    if (typeof result.html_url !== 'string' || !result.html_url.startsWith(`https://github.com/${this.repo}/issues/`) && !result.html_url.startsWith(`https://github.com/${this.repo}/pull/`)) throw new Error('Missing same-repository evidence comment URL');
+    const url = typeof result.html_url === 'string' ? result.html_url.toLowerCase() : '';
+    if (!url.startsWith(`https://github.com/${this.repo}/issues/`) && !url.startsWith(`https://github.com/${this.repo}/pull/`)) throw new Error('Missing same-repository evidence comment URL');
     return result.html_url;
   }
   async status(sha: string, state: 'success' | 'failure', target: string, description: string): Promise<void> {
