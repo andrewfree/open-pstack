@@ -1054,6 +1054,74 @@ console.log(JSON.stringify({ type: "result", result: "MALFORMED_TERMINAL_EVENT" 
     expect(existsSync(input.outputPath)).toBe(false);
   });
 
+  it("keeps both ends of a long failed preflight", async () => {
+    writeFileSync(join(bin, "grok"), `#!/usr/bin/env bun
+if (process.argv[2] === "models") {
+  console.log("PREFLIGHT_HEAD" + "x".repeat(9000) + "PREFLIGHT_TAIL");
+  process.exit(1);
+}
+process.exit(0);
+`);
+    const input = options("grok", "grok-long-preflight");
+    const result = await runLane(laneOf(input));
+    expect(result.exitCode).toBe(69);
+    const recorded = receipt(input.receiptPath);
+    expect(recorded.status).toBe("unavailable-model");
+    expect(recorded.preflight.evidence).toStartWith("PREFLIGHT_HEAD");
+    expect(recorded.preflight.evidence).toEndWith("PREFLIGHT_TAIL");
+    expect(recorded.preflight.evidence).toContain("\n[truncated ");
+    expect(recorded.preflight.evidence.length).toBeLessThanOrEqual(4_000);
+    expect(recorded.error?.evidence).toBe(recorded.preflight.evidence);
+  });
+
+  it("keeps both ends of each long attempt in retried preflight evidence", async () => {
+    writeFileSync(join(bin, "grok"), `#!/usr/bin/env bun
+import { appendFileSync, readFileSync } from "node:fs";
+if (process.argv[2] === "models") {
+  const log = ${JSON.stringify(join(scratch, "grok-long-retry.log"))};
+  appendFileSync(log, "attempt\\n");
+  const n = readFileSync(log, "utf8").split("\\n").length - 1;
+  console.log("Available models:\\n  * grok-4.6\\nYou are not authenticated.\\nATTEMPT_" + n + "_HEAD" + "x".repeat(9000) + "ATTEMPT_" + n + "_TAIL");
+  process.exit(1);
+}
+process.exit(0);
+`);
+    const input = options("grok", "grok-long-retry");
+    const result = await runLane(laneOf(input));
+    expect(result.exitCode).toBe(77);
+    const evidence = receipt(input.receiptPath).preflight.evidence;
+    expect(evidence).toStartWith("attempt 1 failed:\nAvailable models:");
+    expect(evidence).toContain("ATTEMPT_1_TAIL\n\nattempt 2 failed:\nAvailable models:");
+    expect(evidence).toEndWith("ATTEMPT_2_TAIL");
+    expect(evidence.match(/\n\[truncated \d+ characters\]\n/g)).toHaveLength(2);
+    expect(evidence.length).toBeLessThanOrEqual(4_000);
+  }, 10_000);
+
+  it("keeps both ends of a long launcher failure after reserving output paths", async () => {
+    const input = options("claude", "long-launcher-failure");
+    const lane = laneOf(input);
+    const failing: Lane = {
+      ...lane,
+      adapter: {
+        ...lane.adapter,
+        launch: {
+          ...lane.adapter.launch,
+          argv: () => {
+            throw new Error(`LAUNCHER_HEAD${"x".repeat(9000)}LAUNCHER_TAIL`);
+          },
+        },
+      },
+    };
+    const result = await runLane(failing);
+    expect(result.exitCode).toBe(70);
+    const recorded = receipt(input.receiptPath);
+    expect(recorded.error?.message).toBe("launcher failed after reserving output paths");
+    expect(recorded.error?.evidence).toStartWith("LAUNCHER_HEAD");
+    expect(recorded.error?.evidence).toEndWith("LAUNCHER_TAIL");
+    expect(recorded.error?.evidence).toContain("\n[truncated ");
+    expect(recorded.error?.evidence.length).toBeLessThanOrEqual(4_000);
+  });
+
   it("classifies an unavailable model without falling back", async () => {
     process.env.GROK_FAKE_INVALID_MODEL = "1";
     const input = options("codex");
@@ -2321,6 +2389,29 @@ describe("discoverSharedGitDir", () => {
 
       writeFileSync(join(linked, ".git"), `gitdir: ${join(root, "missing")}\n`);
       expect(await discover(linked)).toMatchObject({ kind: "refused", status: "child-failed" });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps both ends of a long git refusal", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "pstack-shared-git-")));
+    const fakeBin = join(root, "bin");
+    mkdirSync(fakeBin);
+    writeFileSync(join(fakeBin, "git"), `#!/bin/sh
+printf 'GIT_HEAD%09000dGIT_TAIL\\n' 0 >&2
+exit 2
+`);
+    chmodSync(join(fakeBin, "git"), 0o755);
+    const env = { ...gitEnv(root), PATH: `${fakeBin}:${process.env.PATH}` };
+    try {
+      const refused = await discoverSharedGitDir(root, env, null, cancellation);
+      expect(refused).toMatchObject({ kind: "refused", status: "child-failed", exitCode: 2 });
+      if (refused.kind !== "refused") throw new Error("expected a refusal");
+      expect(refused.evidence).toStartWith("GIT_HEAD");
+      expect(refused.evidence).toEndWith("GIT_TAIL");
+      expect(refused.evidence).toContain("\n[truncated ");
+      expect(refused.evidence.length).toBeLessThanOrEqual(4_000);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
