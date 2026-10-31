@@ -5,8 +5,11 @@ import { isAbsolute, join, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import { interruption, save } from './io.ts';
 import { parseClaudeEvidence } from './claude-evidence.ts';
+import { parseCodexAppEvidence } from './codex-app-evidence.ts';
+import { parseSession } from './harness.ts';
 import { removeCodexHome } from './isolation.ts';
 import type { NativeWritePolicy } from './command-policy.ts';
+import type { SessionRecord } from './types.ts';
 
 export interface T3Config {
   parentThreadId: string;
@@ -32,8 +35,10 @@ export interface AppCase {
   stdout: string;
   stderr: string;
   started: number;
-  writePolicy?: NativeWritePolicy;
+  cliVersion: string;
+  writePolicy: NativeWritePolicy;
 }
+export interface AppRecord { evidence: string[]; record: SessionRecord; rolloutPath?: string }
 interface AppRequest {
   id: string;
   parentThreadId: string;
@@ -372,7 +377,27 @@ export class T3App {
     if (failures.length) throw new Error(failures.join('; '));
   }
 
-  async record(c: AppCase): Promise<{ evidence: string[]; prompt: string; model: string; routes: AppRouteEvidence[] }> {
+  private async claudeChild(native: string, routes: AppRouteEvidence[], c: AppCase): Promise<string[]> {
+    const calls = native.trim().split('\n').map(line => JSON.parse(line))
+      .filter(e => e.method === 'item/completed' && e.params?.item?.type === 'mcpToolCall' && e.params.item.server === 't3-code' && e.params.item.tool === 'delegate_task')
+      .map(e => e.params.item);
+    const call = calls[0], child = call?.result?.structuredContent;
+    if (calls.length !== 1 || !child?.childThreadId || child.providerInstanceId !== this.config.verifyClaudeProviderId || child.model !== call.arguments?.target?.model) throw new Error('Codex native evidence lacks one matching Claude child');
+    const childPath = c.stdout + '.claude-child.jsonl', childRaw = childPath + '.t3-native.log';
+    const childLog = await nativeMessages(this.config.logsDirectory, { threadId: child.childThreadId, providerId: this.config.verifyClaudeProviderId }, c.started, 'claude', { native: childPath, raw: childRaw });
+    const options = call.arguments?.target?.options;
+    const effort = Array.isArray(options) ? options.find(o => o?.id === 'effort')?.value : options?.effort;
+    if (typeof effort !== 'string') throw new Error('Claude child request lacks effort');
+    if (!routes.some(route => route.providerInstanceId === this.config.verifyClaudeProviderId && route.model === child.model && route.efforts.includes(effort))) throw new Error('Claude child model/effort was absent from the fresh app catalog');
+    validateClaudeLaunch(childLog.native, childLog.launches, child.model, this.launcher('claude'), effort);
+    validateClaudePrompt(childLog.prompts, call.arguments?.task);
+    await parseClaudeEvidence(childLog.native, { pluginRoot: c.pluginRoot, workspace: c.workspace, started: c.started, model: child.model, writePolicy: c.writePolicy });
+    const terminal = childLog.native.trim().split('\n').map(line => JSON.parse(line)).find(e => e.type === 'result');
+    if (terminal?.result?.trim() !== 'PONG') throw new Error('Claude native child did not return PONG');
+    return [childPath, childRaw];
+  }
+
+  async record(c: AppCase): Promise<AppRecord> {
     interruption.signal.throwIfAborted();
     if (!this.passThrough || !this.locked) throw new Error('Prepare the T3 verification launchers before recording a case');
     if (this.pending || this.armed) throw new Error('Previous T3 case still has pending work or armed launchers');
@@ -425,30 +450,22 @@ export class T3App {
     if (!launches.some(line => line.startsWith(`${id} claude `))) throw new Error("No Claude CLI started through this case's launcher");
     if (c.harness === 'codex' && !launches.some(line => / codex \d+$/.test(line))) throw new Error("No Codex app-server started through this run's launcher; an app-server from before this run may still serve the verification instance");
     const routes = capabilityRoutes(request, reply, c.started);
+    const evidence = [raw, binding, caseLaunches];
     if (c.harness === 'claude') {
       validateClaudeLaunch(collected.native, collected.launches, request.target.model, this.launcher('claude'));
       validateClaudePrompt(collected.prompts, request.task);
+      const native = await parseClaudeEvidence(collected.native, { pluginRoot: c.pluginRoot, workspace: c.workspace, started: c.started, model: request.target.model, writePolicy: c.writePolicy });
+      if (native.cliVersion !== c.cliVersion.split(/\s/)[0]) throw new Error('Claude native CLI version changed since candidate preparation');
+      return { evidence, record: { ...parseSession('claude', collected.native, 0, c.started), skills: native.session.skills, commands: native.session.commands } };
     }
-    const evidence = [raw, binding, caseLaunches];
-    if (c.harness === 'codex') {
-      const calls = collected.native.trim().split('\n').map(line => JSON.parse(line))
-        .filter(e => e.method === 'item/completed' && e.params?.item?.type === 'mcpToolCall' && e.params.item.server === 't3-code' && e.params.item.tool === 'delegate_task')
-        .map(e => e.params.item);
-      const call = calls[0], child = call?.result?.structuredContent;
-      if (calls.length !== 1 || !child?.childThreadId || child.providerInstanceId !== this.config.verifyClaudeProviderId || child.model !== call.arguments?.target?.model) throw new Error('Codex native evidence lacks one matching Claude child');
-      const childPath = c.stdout + '.claude-child.jsonl', childRaw = childPath + '.t3-native.log';
-      const childLog = await nativeMessages(this.config.logsDirectory, { threadId: child.childThreadId, providerId: this.config.verifyClaudeProviderId }, c.started, 'claude', { native: childPath, raw: childRaw });
-      const options = call.arguments?.target?.options;
-      const effort = Array.isArray(options) ? options.find(o => o?.id === 'effort')?.value : options?.effort;
-      if (typeof effort !== 'string') throw new Error('Claude child request lacks effort');
-      if (!routes.some(route => route.providerInstanceId === this.config.verifyClaudeProviderId && route.model === child.model && route.efforts.includes(effort))) throw new Error('Claude child model/effort was absent from the fresh app catalog');
-      validateClaudeLaunch(childLog.native, childLog.launches, child.model, this.launcher('claude'), effort);
-      validateClaudePrompt(childLog.prompts, call.arguments?.task);
-      await parseClaudeEvidence(childLog.native, { pluginRoot: c.pluginRoot, workspace: c.workspace, started: c.started, model: child.model, writePolicy: c.writePolicy });
-      const terminal = childLog.native.trim().split('\n').map(line => JSON.parse(line)).find(e => e.type === 'result');
-      if (terminal?.result?.trim() !== 'PONG') throw new Error('Claude native child did not return PONG');
-      evidence.push(childPath, childRaw);
-    }
-    return { evidence, prompt: request.task, model: request.target.model, routes };
+    evidence.push(...await this.claudeChild(collected.native, routes, c));
+    const native = await parseCodexAppEvidence(collected.native, { pluginRoot: c.pluginRoot, workspace: c.workspace, codexHome: c.env.CODEX_HOME!, started: c.started,
+      prompt: request.task, model: request.target.model, writePolicy: c.writePolicy }).catch((error: Error) => {
+      if (!error.message.includes('escaped isolated candidate')) throw error;
+      throw new Error(`${error.message}; T3 may still be serving the Codex verification instance from an app-server started outside this run, so wait for its idle release or restart T3`);
+    });
+    return { evidence, rolloutPath: native.rolloutPath, record: { ...native.session, appTools: native.toolCalls, appRoutes: routes } };
   }
 }
+
+export type AppTransport = Pick<T3App, 'prepare' | 'record' | 'cleanup' | 'runnerRoute' | 'settingsPath' | 'claudeBinaryPath' | 'liveCodexServers' | 'keepCodexHomes'>;

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { doctor } from './doctor.ts';
 import { linkCodexAuth } from './isolation.ts';
 import { codexInstallation, launch, MacDriver, parseSession, verifyCodexEnabled } from './harness.ts';
+import type { AppCase, AppRecord, AppTransport } from './t3-app.ts';
 import { verifyProjectDoctor } from '../features/recipes.ts';
 import { newReceipt } from './core.ts';
 import { sourceDigest } from './provenance.ts';
@@ -51,13 +52,9 @@ describe('isolated harness boundaries', () => {
         expect(env.GH_CONFIG_DIR).toBe('/run/state/.config/gh');
         expect(JSON.stringify(env)).not.toContain('/daily/codex');
       }
-      const claude = launch('claude', '/candidate', { cwd: '/run/state/fixture', addDirs: [] });
-      expect(claude.slice(0, 2)).toEqual(['claude', '-p']);
-      expect(claude.join(' ')).toContain('--plugin-dir /candidate/plugins/pstack --settings {"enabledPlugins":{"pstack@open-pstack":false}} --permission-mode dontAsk');
-      expect(claude.join(' ')).not.toContain('/run/state');
       delete process.env.CLAUDE_CONFIG_DIR;
       expect(isolatedEnv('/run/state', 'claude').CLAUDE_CONFIG_DIR).toBeUndefined();
-      expect(launch('codex', '/candidate', { cwd: '/candidate', addDirs: ['/run/state/fixture'] })).toEqual(['codex', 'exec', '--json', '--skip-git-repo-check',
+      expect(launch({ cwd: '/candidate', addDirs: ['/run/state/fixture'] })).toEqual(['codex', 'exec', '--json', '--skip-git-repo-check',
         '--dangerously-bypass-hook-trust', '-c', 'approval_policy="never"', '--sandbox', 'workspace-write', '--cd', '/candidate', '--add-dir', '/run/state/fixture', '-']);
     } finally {
       for (const [name, value] of Object.entries(previous)) {
@@ -89,7 +86,7 @@ describe('isolated harness boundaries', () => {
   });
   test('doctor probes without installing or reading daily authentication', async () => {
     const calls: string[][] = [], root = await fixture();
-    const run: Command = async args => { calls.push(args); return args.includes('--version') ? 'version' : '--plugin-dir --settings --setting-sources --json local path'; };
+    const run: Command = async args => { calls.push(args); return args.includes('--version') ? 'version' : '--plugin-dir --settings --setting-sources --strict-mcp-config --add-dir --json local path'; };
     await doctor(root, run, 'darwin', true);
     expect(JSON.parse(await readFile(join(root, 'doctor.json'), 'utf8')).result).toBe('pass');
     expect(calls.every(c => c.includes('--help') || c.includes('--version'))).toBe(true);
@@ -106,7 +103,7 @@ describe('isolated harness boundaries', () => {
         expect((await stat(config)).mode & 0o777).toBe(0o600);
         expect(options!.env!.DO_NOT_TRACK).toBe('1');
       }
-      return args.includes('--version') ? 'version' : '--plugin-dir --settings --json local path';
+      return args.includes('--version') ? 'version' : '--plugin-dir --settings --setting-sources --strict-mcp-config --add-dir --json local path';
     };
     await doctor(root, run, 'darwin', true);
     await doctor(root, run, 'darwin', true);
@@ -119,7 +116,7 @@ describe('isolated harness boundaries', () => {
     await mkdir(join(workspace, '.claude/skills'), { recursive: true });
     await symlink(skill, join(workspace, '.claude/skills/verify-open-pstack'));
     const alias = join(root, 'workspace-alias'); await symlink(workspace, alias);
-    const run: Command = async args => args.includes('--version') ? 'version' : '--plugin-dir --settings --setting-sources --json local path';
+    const run: Command = async args => args.includes('--version') ? 'version' : '--plugin-dir --settings --setting-sources --strict-mcp-config --add-dir --json local path';
     await doctor(root, run, 'darwin', false, []);
     const parentText = await readFile(join(root, 'doctor.json'), 'utf8');
     await expect(verifyProjectDoctor([parentText], workspace)).rejects.toThrow('passing child doctor');
@@ -174,7 +171,7 @@ describe('isolated harness boundaries', () => {
         return actualGit(local, options);
       }
       if (args.includes('--version')) return 'version';
-      if (args.includes('--help')) return '--plugin-dir --settings --setting-sources --json local path';
+      if (args.includes('--help')) return '--plugin-dir --settings --setting-sources --strict-mcp-config --add-dir --json local path';
       if (args[0] === 'codex' && args[1] === 'plugin') {
         const linked = join(env!.CODEX_HOME!, 'auth.json');
         expect((await lstat(linked)).isSymbolicLink()).toBe(true);
@@ -200,7 +197,8 @@ describe('isolated harness boundaries', () => {
       await writeFile(options.stdout, 'retained raw native evidence');
       throw new Error('fixture native surface reached');
     };
-    const driver = new MacDriver(run, record);
+    const app = appStub('', undefined, async c => { sessions.push(['app:claude']); await writeFile(c.stdout, 'retained raw native evidence'); throw new Error('fixture native surface reached'); });
+    const driver = new MacDriver(run, record, [], app.app);
     try {
       Object.defineProperty(process, 'platform', { ...platform, value: 'darwin' });
       process.env.HOME = operatorHome; process.env.USER = 'operator-user'; process.env.LOGNAME = 'operator-login';
@@ -218,7 +216,7 @@ describe('isolated harness boundaries', () => {
           const one = newReceipt(REPO, 111, sha, sha, true, root); one.installations = [installation];
           await expect(driver.exercise(one)).rejects.toThrow('fixture native surface reached');
         }
-        expect(sessions.map(args => args[0])).toEqual(['claude', 'codex']);
+        expect(sessions.map(args => args[0])).toEqual(['app:claude', 'codex']);
       }
     } finally {
       await mkdir(join(root, 'artifacts'), { mode: 0o700 });
@@ -260,14 +258,14 @@ describe('isolated harness boundaries', () => {
     const receipt = newReceipt(REPO, 111, 'a'.repeat(40), 'b'.repeat(40), false, root);
     receipt.runFeatures = [`${harness}:setup`];
     receipt.installations = [{ harness, home, location: join(workspace, 'plugins/pstack'), sha: receipt.sha, cliVersion: 'test', pluginVersion: 'test', treeHash: await treeHash(join(workspace, 'plugins/pstack')), sourceHash: await sourceDigest(workspace) }];
-    const driver = new MacDriver(command, async args => {
-      expect(args[0]).toBe(harness);
+    const interrupt = async (): Promise<never> => {
       await writeFile(join(config, instructions), 'changed by setup');
       await writeFile(join(config, 'pstack-models.md'), 'created by setup');
       if (harness === 'codex') await writeFile(join(config, 'CLAUDE.md'), 'created by setup');
       if (failRestore) { await rm(join(config, instructions)); await mkdir(join(config, instructions)); }
       throw new Error('interrupted setup');
-    });
+    };
+    const driver = new MacDriver(command, async args => { expect(args[0]).toBe('codex'); return interrupt(); }, [], appStub('', undefined, interrupt).app);
     await expect(driver.exercise(receipt)).rejects.toThrow(failRestore ? 'Setup restoration requires a regular file' : 'interrupted setup');
     if (failRestore) {
       await expect(driver.cleanup()).rejects.toThrow('Setup restoration requires a regular file');
@@ -346,6 +344,22 @@ function stub(stream: string, effect?: (cwd: string) => Promise<void>, exitCode 
   } };
 }
 const writeResult = async (cwd: string) => { await writeFile(join(cwd, 'result.md'), 'the skill result'); };
+const noSession: Session = async () => { throw new Error('no headless session'); };
+function appStub(stream: string, effect?: (dir: string) => Promise<void>, reached?: (c: AppCase) => Promise<void>): { app: AppTransport; cases: AppCase[] } {
+  const cases: AppCase[] = [];
+  return { cases, app: {
+    runnerRoute: { providerInstanceId: 'verify_claude', model: 'claude-opus-5-5' }, settingsPath: '/operator/t3/settings.json',
+    async prepare() {}, async cleanup() {}, async claudeBinaryPath() { return 'claude'; }, async liveCodexServers() { return []; }, async keepCodexHomes() {},
+    async record(c: AppCase): Promise<AppRecord> {
+      cases.push(c);
+      await reached?.(c);
+      await writeFile(c.stdout, stream); await writeFile(c.stderr, '');
+      await Bun.sleep(20);
+      await effect?.(c.fixture);
+      return { evidence: [], record: parseSession('claude', stream, 0, c.started) };
+    },
+  } };
+}
 
 describe('headless recipes', () => {
   test('Codex completed commands keep their captured output and failure state', () => {
@@ -385,13 +399,14 @@ describe('headless recipes', () => {
 
   test('default skill recipe records machine-checked assertions from a candidate load and a fixture file', async () => {
     const { root, installation } = await candidate('claude');
-    const { record, calls } = stub(claudeStream({ command: 'pstack:architect' }), writeResult);
+    const { app, cases } = appStub(claudeStream({ command: 'pstack:architect' }), writeResult);
     const receipt = selected(root, installation, ['skill-invocation:architect']);
-    receipt.observations = await new MacDriver(command, record).exercise(receipt);
-    expect(calls[0]!.slice(0, 2)).toEqual(['claude', '-p']);
+    receipt.observations = await new MacDriver(command, noSession, [], app).exercise(receipt);
+    expect(cases[0]!.prompt).toContain('/pstack:architect'); expect(cases[0]!.cliVersion).toBe('test');
     const [observation] = receipt.observations;
     expect(observation!.reviewer).toBe('recipe');
-    expect(observation!.assertions).toEqual(['invoke:exit-0', 'invoke:skill-loaded', 'invoke:file:result.md']);
+    expect(observation!.surface).toBe('T3 Claude app child with the exact candidate plugin and native session evidence');
+    expect(observation!.assertions).toEqual(['invoke:terminal-success', 'invoke:skill-loaded', 'invoke:file:result.md']);
     expect(observation!.transcript).toBe('sessions/claude/skill-invocation-architect/invoke.jsonl');
     expect(observation!.artifacts.map(a => a.path)).toEqual(['sessions/claude/skill-invocation-architect/invoke.result.md']);
     const comment = evidence(receipt);
@@ -401,9 +416,9 @@ describe('headless recipes', () => {
 
   test('principle leaves load through the Skill tool', async () => {
     const { root, installation } = await candidate('claude');
-    const { record } = stub(claudeStream({ skill: 'pstack:principle-prove-it-works' }), writeResult);
+    const { app } = appStub(claudeStream({ skill: 'pstack:principle-prove-it-works' }), writeResult);
     const receipt = selected(root, installation, ['skill-invocation:principle-prove-it-works']);
-    expect((await new MacDriver(command, record).exercise(receipt))[0]!.assertions).toContain('invoke:skill-loaded');
+    expect((await new MacDriver(command, noSession, [], app).exercise(receipt))[0]!.assertions).toContain('invoke:skill-loaded');
   });
 
   test('poteto-agent preload reads the child reply and rejects child tool calls, errors and a missing principle', async () => {
@@ -414,9 +429,9 @@ describe('headless recipes', () => {
       { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_agent', is_error: !!options.error, content: [{ type: 'text', text: reply }] }] } },
       { type: 'result', subtype: 'success', is_error: false, result: 'The first is Laziness Protocol.' },
     ]);
-    const run = (s: string) => new MacDriver(command, stub(s).record).exercise(selected(root, installation, ['agent-preload:poteto-agent']));
+    const run = (s: string) => new MacDriver(command, noSession, [], appStub(s).app).exercise(selected(root, installation, ['agent-preload:poteto-agent']));
     const [observation] = await run(stream('The first is **Laziness Protocol**.'));
-    expect(observation!.assertions).toEqual(['dispatch:exit-0', 'dispatch:agent-dispatched', 'dispatch:child-no-tools', 'dispatch:principle-named']);
+    expect(observation!.assertions).toEqual(['dispatch:terminal-success', 'dispatch:agent-dispatched', 'dispatch:child-no-tools', 'dispatch:principle-named']);
     expect(observation!.artifacts.map(a => a.path)).toEqual(['sessions/claude/agent-preload-poteto-agent/dispatch.child-reply.txt']);
     await expect(run(stream('The first is **Laziness Protocol**.', { childTool: 'Bash' }))).rejects.toThrow('child-used-tools');
     await expect(run(stream('poteto-mode was not preloaded.'))).rejects.toThrow('principle-missing:Laziness Protocol');
@@ -433,11 +448,11 @@ describe('headless recipes', () => {
     };
     const reply = { type: 'assistant', message: { content: [{ type: 'text', text: context }] } };
     const claude = await hooked('claude');
-    const runClaude = (hook: Record<string, unknown>) => new MacDriver(command, stub(lines([
+    const runClaude = (hook: Record<string, unknown>) => new MacDriver(command, noSession, [], appStub(lines([
       { type: 'system', subtype: 'hook_response', hook_event: 'SessionStart', exit_code: 0, outcome: 'success', stdout: context, ...hook }, reply,
-    ])).record).exercise(selected(claude.root, claude.installation, ['hook:startup']));
+    ])).app).exercise(selected(claude.root, claude.installation, ['hook:startup']));
     const [observation] = await runClaude({});
-    expect(observation!.assertions).toEqual(['startup:exit-0', 'startup:hook-context-injected']);
+    expect(observation!.assertions).toEqual(['startup:terminal-success', 'startup:hook-context-injected']);
     expect(observation!.artifacts.map(a => a.path)).toEqual(['sessions/claude/hook-startup/startup.session-context.md']);
     for (const hook of [{ exit_code: 1, outcome: 'error' }, { stdout: '' }, { hook_event: 'UserPromptSubmit' }]) {
       await expect(runClaude(hook)).rejects.toThrow('hook-context-missing');
@@ -460,13 +475,13 @@ describe('headless recipes', () => {
 
   test('a success claim with no fixture file fails', async () => {
     const { root, installation } = await candidate('claude');
-    const claim = stub(claudeStream({ command: 'pstack:architect' }));
-    await expect(new MacDriver(command, claim.record).exercise(selected(root, installation, ['skill-invocation:architect']))).rejects.toThrow('fixture-file-missing:result.md');
+    const claim = appStub(claudeStream({ command: 'pstack:architect' }));
+    await expect(new MacDriver(command, noSession, [], claim.app).exercise(selected(root, installation, ['skill-invocation:architect']))).rejects.toThrow('fixture-file-missing:result.md');
   });
 
   test('an assertion failure fails the run and publishes no observation or success', async () => {
     const { root, installation } = await candidate('claude');
-    const mac = new MacDriver(command, stub(claudeStream({ command: 'pstack:architect' })).record);
+    const mac = new MacDriver(command, noSession, [], appStub(claudeStream({ command: 'pstack:architect' })).app);
     const comments: string[] = [], statuses: string[] = [], sha = 'a'.repeat(40), base = 'b'.repeat(40);
     await expect(verify({ repo: REPO, pr: 111, selfTest: false, features: ['claude:skill-invocation:architect'], root, publisherRevision: 'c'.repeat(40), persist: async () => {},
       registry: { skills: ['architect'], shared: [], catalog: [], assets: [], setup: [], runner: [], tools: [], project: [], nonRuntime: [] },

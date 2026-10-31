@@ -214,6 +214,14 @@ test('a launcher records itself, exports the case environment and appends case a
   expect(() => launcherScript({ real, env: { 'BAD NAME': 'x' } })).toThrow('environment name');
 });
 
+const HOOK_CONTEXT = '<EXTREMELY_IMPORTANT>\nYou have pstack.\n</EXTREMELY_IMPORTANT>\n';
+const candidateSession = (pluginRoot: string, model: string) => [
+  { type: 'system', subtype: 'hook_started', hook_id: 'startup', hook_name: 'SessionStart:startup', hook_event: 'SessionStart' },
+  { type: 'system', subtype: 'hook_response', hook_id: 'startup', hook_name: 'SessionStart:startup', hook_event: 'SessionStart', output: HOOK_CONTEXT, stdout: HOOK_CONTEXT, stderr: '', exit_code: 0, outcome: 'success' },
+  { ...JSON.parse(init), model, claude_code_version: '2.1.310', analytics_disabled: true, agents: [], mcp_servers: [{ name: 't3-code', source: 'dynamic', status: 'connected' }],
+    plugins: [{ name: 'pstack', path: pluginRoot, source: 'pstack@inline' }] },
+  { type: 'result', subtype: 'success', is_error: false, terminal_reason: 'completed', result: 'done' },
+].map(event => ({ session_id: 'sdk-session', ...event }));
 async function fakeApp() {
   const root = await mkdtemp(join(tmpdir(), 't3-launchers-')); roots.push(root);
   const settingsPath = join(root, 'settings.json'), logsDirectory = join(root, 'logs'), launcherDirectory = join(root, 'launchers');
@@ -227,10 +235,13 @@ async function fakeApp() {
   await writeFile(settingsPath, JSON.stringify(settings));
   const config = { parentThreadId: 'parent', baseProviderId: 'claude', model: 'haiku', codexProviderId: 'codex', codexModel: 'luna', runnerClaudeModel: 'opus',
     verifyClaudeProviderId: 'verify_claude', verifyCodexProviderId: 'verify_codex', launcherDirectory, settingsPath, logsDirectory };
-  const app = new T3App(config, root);
-  const c: AppCase = { harness: 'claude', pluginRoot: join(root, 'plugin'), workspace: join(root, 'candidate'), fixture: join(root, 'fixture'), prompt: 'Test a pinned candidate skill.',
+  const app = new T3App(config, root), pluginRoot = join(root, 'plugin');
+  await mkdir(join(pluginRoot, 'hooks'), { recursive: true }); await mkdir(join(root, 'candidate'));
+  await writeFile(join(pluginRoot, 'hooks/hooks.json'), JSON.stringify({ hooks: { SessionStart: [{ matcher: 'startup|clear|compact', hooks: [{ type: 'command', command: '"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd" session-start', async: false }] }] } }));
+  await writeFile(join(pluginRoot, 'hooks/session-start-context.md'), HOOK_CONTEXT);
+  const c: AppCase = { harness: 'claude', pluginRoot, workspace: join(root, 'candidate'), fixture: join(root, 'fixture'), prompt: 'Test a pinned candidate skill.',
     env: { HOME: root, USER: 'operator', LOGNAME: 'operator', CODEX_HOME: join(root, 'codex'), GIT_CONFIG_KEY_0: 'credential.helper', GIT_CONFIG_VALUE_0: '' },
-    stdout: join(root, 'stdout.jsonl'), stderr: join(root, 'stderr'), started };
+    stdout: join(root, 'stdout.jsonl'), stderr: join(root, 'stderr'), started, cliVersion: '2.1.310 (Claude Code)', writePolicy: { home: root, files: [], directories: [] } };
   return { root, settingsPath, logsDirectory, launcherDirectory, app, c, config };
 }
 async function preparedApp() {
@@ -262,7 +273,7 @@ async function answerCase(a: Awaited<ReturnType<typeof fakeApp>>, { terminal = '
     providerSessionId: `provider-session:provider-instance:${request.target.providerInstanceId}:thread:child:sdk`, event: { direction: 'outgoing', stage: 'decoded', payload } })}\n`;
   const claudeLog = outgoing({ type: 'query.open', options: { ...launch()[0]!.options, pathToClaudeCodeExecutable: join(a.launcherDirectory, 'claude'), model: validLaunch ? request.target.model : 'wrong-model' } })
     + outgoing({ type: 'prompt.offer', message: { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: request.task } } })
-    + native(request.target.providerInstanceId, 'child', '2026-10-14T00:00:02Z', JSON.parse(init));
+    + candidateSession(a.c.pluginRoot, request.target.model).map(event => native(request.target.providerInstanceId, 'child', '2026-10-14T00:00:02Z', event)).join('');
   await writeFile(join(a.logsDirectory, 'events.case.log'), a.c.harness === 'claude' ? claudeLog : native(request.target.providerInstanceId, 'child', '2026-10-14T00:00:02Z', codexEvent, 'codex'));
   await save(request.responsePath, { ...r, capabilities: { capturedAt: '2026-10-14T00:00:00.500Z', result: { parentThreadId: 'parent', providers: [
     { providerInstanceId: request.target.providerInstanceId, canRunChildTask: true, models: [{ id: request.target.model, options: [] }] },
@@ -291,7 +302,7 @@ test('sequential cases arm candidate launchers and restore pass-through without 
     expect(await json(join(a.root, 't3-app', 'state.json'))).toEqual({ pendingCase: request.id, armedLaunchers: true });
     await answerCase(a, { previousId: previous });
     const result = await work;
-    expect(result.model).toBe('haiku');
+    expect(result.record).toMatchObject({ harness: 'claude', skills: [], commands: [], tools: [], context: [HOOK_CONTEXT] });
     expect(result.evidence.some(path => path.endsWith('launches.log') && !path.endsWith('.jsonl.launches.log'))).toBe(false);
     for (const path of result.evidence) evidence[path] = await readFile(path, 'utf8');
     expect(await idle(a)).toEqual(passThrough);
