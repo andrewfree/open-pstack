@@ -18,6 +18,12 @@ import {
 
 const ENVIRONMENT_PREFIXES = [...BASE_PREFIXES, "GROK_", "XAI_"];
 
+const NO_IMPORTED_MCPS = {
+  GROK_CLAUDE_MCPS_ENABLED: "false",
+  GROK_CURSOR_MCPS_ENABLED: "false",
+  GROK_CODEX_MCPS_ENABLED: "false",
+} as const;
+
 const LOGIN = /\blogged in\b|\bYou are using XAI_API_KEY\.|\bYou are authenticated via deployment key\./i;
 
 // grok names its configured default above the list even when the account cannot use it,
@@ -123,6 +129,8 @@ export const grok = adapter({
       tools(lane.access.mode),
       "--disallowed-tools",
       "Agent,search_tool,use_tool",
+      "--deny",
+      "MCPTool(*)",
       "--output-format",
       "streaming-messages-json",
       "--cwd",
@@ -134,7 +142,12 @@ export const grok = adapter({
   },
   parse: (run, lane) => parse(run.stdout, lane),
   proof: { report: "required", matches: exactOrSuffixed },
-  environment: () => ({ kind: "allowlist", names: BASE_ALLOWLIST, prefixes: ENVIRONMENT_PREFIXES }),
+  environment: () => ({
+    kind: "allowlist",
+    names: BASE_ALLOWLIST,
+    prefixes: ENVIRONMENT_PREFIXES,
+    set: NO_IMPORTED_MCPS,
+  }),
   docs: {
     name: "Grok Build CLI",
     hostPrerequisites: ["Linux: Landlock and `bwrap`"],
@@ -143,6 +156,8 @@ export const grok = adapter({
       "`fast` is part of Cursor's Grok selector, not a Grok Build CLI model or effort flag.",
       "The preflight passes when `grok models` reports a login (`logged in`, `You are using XAI_API_KEY.`, or `You are authenticated via deployment key.`) and lists the lane's model on a line under `Available models:`. A model named only above that header, such as on the `Default model:` line, or output without the header, is `unavailable-model`/69.",
       "The authentication preflight has one bounded retry. If the first `grok models` result would be classified as unauthenticated, the runner waits five seconds and tries the same preflight once more. A second failure is terminal. The delay and second attempt share the runner's absolute deadline and cancellation latch, and the receipt keeps evidence from both attempts. Model execution is never retried.",
+      "Grok's `--tools` allowlist names the shell `run_terminal_cmd`. Grok's stream and error text call the same tool `run_terminal_command`, but Grok 1.0.46 drops the whole allowlist when `--tools` carries a name it does not recognize, such as `run_terminal_command`. After a Grok CLI upgrade, check the tool list in the init event.",
+      "Grok imports MCP servers from Claude, Cursor, and Codex config, and `--tools` does not filter their tools. A Grok lane sets `GROK_CLAUDE_MCPS_ENABLED`, `GROK_CURSOR_MCPS_ENABLED`, and `GROK_CODEX_MCPS_ENABLED` to `false` so that none of the imported servers start, and passes `--deny 'MCPTool(*)'` so that it cannot call a tool from a server that Grok's own config or a trusted project's `.grok/config.toml` still starts. The init event's `mcp_servers` list shows what loaded.",
     ],
   },
 });

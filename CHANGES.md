@@ -10,6 +10,7 @@ This port applies the Cursor → Claude Code substitutions in skill bodies. Earl
 - Kept local: the seven-day `/loop` re-arm rule in autopilot-full and the multi-phase plan, `benchmark-checklist` in the routed-skill invariant, and an ignore rule that also matches a symlinked `scripts/node_modules`.
 - The local Cursor lane is retired in favor of upstream's read-only Cursor CLI provider. Upstream refuses Cursor writer lanes because no Cursor mode bounds writes to the lane directory.
 - Failure and `malformed-output` receipts keep the start and the end of the captured output within the 4000-character evidence limit, joined by a `[truncated N characters]` marker that counts against the limit, so a long Grok init line no longer pushes the terminal event out of `error.evidence`.
+- Grok lanes set `GROK_CLAUDE_MCPS_ENABLED`, `GROK_CURSOR_MCPS_ENABLED` and `GROK_CODEX_MCPS_ENABLED` to `false` and pass `--deny 'MCPTool(*)'` in both access modes, so a lane starts none of the MCP servers Grok imports from Claude, Cursor or Codex config and cannot call a tool from a server that Grok's own config still starts. The Grok catalog notes now say why `--tools` names the shell `run_terminal_cmd`.
 
 ## 1.16.0 syncs to Cursor pstack 0.15.29
 
