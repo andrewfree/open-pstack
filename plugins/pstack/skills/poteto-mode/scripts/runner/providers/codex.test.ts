@@ -38,7 +38,8 @@ adapterSuite(codex);
 
 const lane = (request: Partial<LaneRequest> = {}) =>
   testLane({ provider: "codex", model: "gpt-5.6-sol", ...request });
-const argv = (request: Partial<LaneRequest> = {}) => codex.launch.argv(lane(request), { sharedGitDir: null, providerSidecar: null });
+const argv = (request: Partial<LaneRequest> = {}, gitProjectRoot: string | null = null) =>
+  codex.launch.argv(lane(request), { sharedGitDir: null, gitProjectRoot, providerSidecar: null });
 const parse = (stdout: string) => codex.parse({ exitCode: 0, stdout, stderr: "", sidecar: null }, lane());
 
 describe("codex launch", () => {
@@ -112,7 +113,8 @@ describe("codex launch", () => {
 
       writeFileSync(join(home, "config.toml"), '[mcp_servers."a.b"]\ncommand = "x"\n');
       expect(() => withCodexHome(home, () => argv())).toThrow(
-        'Codex MCP server "a.b" cannot be switched off with --config'
+        `Codex MCP server "a.b" in ${join(home, "config.toml")} cannot be switched off with --config: ` +
+          "a --config key path addresses only bare TOML keys (letters, digits, '_' and '-')"
       );
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -151,25 +153,24 @@ describe("codex launch", () => {
     }
   });
 
-  it("finds a project MCP server in a linked worktree's main checkout", () => {
+  it("switches off a project MCP server in the git project root the runner discovered", () => {
     const root = scratchDir("codex-worktree-");
     try {
-      const repo = join(root, "repo");
-      const git = (...args: string[]) => {
-        const run = Bun.spawnSync(["git", "-c", "core.hooksPath=/dev/null", ...args], { stdout: "ignore", stderr: "pipe" });
-        if (run.exitCode !== 0) throw new Error(run.stderr.toString());
-      };
-      git("init", "-q", "-b", "main", repo);
-      writeFileSync(join(repo, "README.md"), "x\n");
-      git("-C", repo, "add", ".");
-      git("-C", repo, "-c", "user.email=t@example.invalid", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-qm", "init");
-      git("-C", repo, "worktree", "add", "-q", "--detach", join(root, "wt"));
-      mkdirSync(join(repo, ".codex"));
-      writeFileSync(join(repo, ".codex", "config.toml"), '[mcp_servers.main_only]\ncommand = "x"\n');
-      expect(argv({ mode: "isolated-write", cwd: join(root, "wt") }))
-        .toEqual(expect.arrayContaining(["mcp_servers.main_only.enabled=false", 'mcp_servers.main_only.command="/usr/bin/false"']));
+      mkdirSync(join(root, "main", ".codex"), { recursive: true });
+      mkdirSync(join(root, "wt"));
+      writeFileSync(join(root, "main", ".codex", "config.toml"), '[mcp_servers.main_only]\ncommand = "x"\n');
+      const overrides = ["mcp_servers.main_only.enabled=false", 'mcp_servers.main_only.command="/usr/bin/false"'];
+      expect(argv({ mode: "isolated-write", cwd: join(root, "wt") }, join(root, "main")))
+        .toEqual(expect.arrayContaining(overrides));
+      expect(argv({ mode: "isolated-write", cwd: join(root, "wt") })).not.toContain(overrides[0]);
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("asks the runner for the git project root in every access mode", () => {
+    for (const kind of codex.launch.supports) {
+      expect(codex.launch.needsGitProjectRoot?.(lane(accessRequest(kind)).access)).toBe(true);
     }
   });
 

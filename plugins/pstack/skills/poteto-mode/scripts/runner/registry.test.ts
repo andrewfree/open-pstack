@@ -395,7 +395,7 @@ describe("resolveLane", () => {
     const lane = resolveLane(request({ parent: "claude", provider: "grok", model: "grok-4.5", effort: "high" }));
     expect(lane.family).toBeNull();
     expect(lane.model).toBe("grok-4.5");
-    expect(lane.adapter.launch.argv(lane, { sharedGitDir: null, providerSidecar: null }))
+    expect(lane.adapter.launch.argv(lane, { sharedGitDir: null, gitProjectRoot: null, providerSidecar: null }))
       .toEqual(expect.arrayContaining(["--model", "grok-4.5", "--reasoning-effort", "high"]));
     expect(resolveLane(request({ parent: "claude", provider: "grok", model: "grok-4.5", effort: "default" })).effort)
       .toBe("default");
@@ -440,7 +440,7 @@ describe("resolveLane", () => {
     }
     const lane = resolveLane(request({ model: "claude-opus-5-5" }));
     expect([lane.family?.name, lane.family?.rolling, lane.model]).toEqual(["opus-5-5", null, "claude-opus-5-5"]);
-    expect(lane.adapter.launch.argv(lane, { sharedGitDir: null, providerSidecar: null })).toEqual(expect.arrayContaining(["claude-opus-5-5"]));
+    expect(lane.adapter.launch.argv(lane, { sharedGitDir: null, gitProjectRoot: null, providerSidecar: null })).toEqual(expect.arrayContaining(["claude-opus-5-5"]));
   });
 
   it("resolves the registered Haiku 5.5 model for external Claude lanes", () => {
@@ -450,7 +450,7 @@ describe("resolveLane", () => {
     const lane = resolveLane(request({ model: "claude-haiku-5-5" }));
     expect([lane.family?.name, lane.model, lane.cliModel, lane.effort])
       .toEqual(["haiku-5-5", "claude-haiku-5-5", "claude-haiku-5-5", "max"]);
-    expect(lane.adapter.launch.argv(lane, { sharedGitDir: null, providerSidecar: null }))
+    expect(lane.adapter.launch.argv(lane, { sharedGitDir: null, gitProjectRoot: null, providerSidecar: null }))
       .toEqual(expect.arrayContaining(["--model", "claude-haiku-5-5", "--effort", "max"]));
   });
 
@@ -547,6 +547,13 @@ describe("module boundaries", () => {
           && resolve(dirname(path), specifier!).startsWith(`${providers}/`)))
       .map((path) => relative(RUNNER, path));
     expect(importers).toEqual(["registry/providers.ts"]);
+  });
+
+  it("leaves every process spawn to run.ts, where the lane deadline and cancellation bound it", () => {
+    const spawners = sources(join(RUNNER, "providers"))
+      .filter((path) => /\bBun\s*\.\s*(?:spawn|spawnSync|\$)|child_process/.test(readFileSync(path, "utf8")))
+      .map((path) => relative(RUNNER, path));
+    expect(spawners).toEqual([]);
   });
 
   it("keeps child-provider names out of run.ts except the parent sandbox diagnostic", () => {

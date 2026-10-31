@@ -927,10 +927,84 @@ printf '%s\\n' '{"type":"thread.started","thread_id":"isolated"}' '{"type":"item
     expect((await runLane(laneOf(input))).exitCode).toBe(70);
     expect(existsSync(started)).toBe(false);
     expect(existsSync(input.outputPath)).toBe(false);
+    const refusal = `Codex MCP server "a.b" in ${join(scratch, "codex-home", "config.toml")} cannot be switched off ` +
+      "with --config: a --config key path addresses only bare TOML keys (letters, digits, '_' and '-')";
     expect(receipt(input.receiptPath)).toMatchObject({
       status: "child-failed",
       preflight: { status: "not-run" },
-      error: { evidence: 'Codex MCP server "a.b" cannot be switched off with --config' },
+      error: { message: refusal, evidence: refusal },
+    });
+  });
+
+  describe("Codex git project discovery", () => {
+    function slowGit(started: string): void {
+      writeFileSync(join(bin, "git"), `#!/bin/sh\necho $$ > ${JSON.stringify(started)}\nexec sleep 3\n`);
+      chmodSync(join(bin, "git"), 0o755);
+    }
+
+    it("switches off a project MCP server in a linked worktree's main checkout", async () => {
+      const main = join(scratch, "main-checkout");
+      const worktree = join(scratch, "linked-worktree");
+      gitRepository(gitEnv(), main);
+      git(gitEnv(), "-C", main, "worktree", "add", "-q", "--detach", worktree);
+      mkdirSync(join(main, ".codex"));
+      writeFileSync(join(main, ".codex", "config.toml"), '[mcp_servers.main_only]\ncommand = "x"\n');
+      const input = { ...options("codex", "codex-main-checkout"), mode: "isolated-write" as const, cwd: worktree };
+      expect((await runLane(laneOf(input))).exitCode).toBe(0);
+      expect(receipt(input.receiptPath).argv).toEqual(expect.arrayContaining([
+        "mcp_servers.main_only.enabled=false",
+        'mcp_servers.main_only.command="/usr/bin/false"',
+      ]));
+    });
+
+    it("stops git discovery at the lane deadline and starts no provider", async () => {
+      const gitStarted = join(scratch, "slow-git.started");
+      const providerStarted = join(scratch, "slow-git-provider.started");
+      slowGit(gitStarted);
+      process.env.GROK_FAKE_PREFLIGHT_STARTED_PATH = providerStarted;
+      process.env.GROK_FAKE_MODEL_STARTED_PATH = providerStarted;
+      const input = { ...options("codex", "codex-git-deadline"), timeoutMs: 300 };
+      const begun = Date.now();
+      expect((await runLane(laneOf(input))).exitCode).toBe(124);
+      expect(Date.now() - begun).toBeLessThan(2_000);
+      expect(existsSync(gitStarted)).toBe(true);
+      expect(existsSync(providerStarted)).toBe(false);
+      expect(existsSync(input.outputPath)).toBe(false);
+      expect(receipt(input.receiptPath)).toMatchObject({
+        status: "timed-out",
+        preflight: { status: "timed-out" },
+        error: { message: "explicit deadline elapsed during git project discovery" },
+      });
+    });
+
+    it("cancels git discovery with SIGINT and starts no provider", async () => {
+      const gitStarted = join(scratch, "cancelled-git.started");
+      const providerStarted = join(scratch, "cancelled-git-provider.started");
+      slowGit(gitStarted);
+      const input = options("codex", "codex-git-cancelled");
+      const runner = Bun.spawn(runnerArgs(input), {
+        cwd: scratch,
+        env: {
+          ...process.env,
+          GROK_FAKE_PREFLIGHT_STARTED_PATH: providerStarted,
+          GROK_FAKE_MODEL_STARTED_PATH: providerStarted,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const stdout = new Response(runner.stdout).text();
+      const stderr = new Response(runner.stderr).text();
+      await waitFor(gitStarted);
+      runner.kill("SIGINT");
+
+      expect(await exitWithin(runner, 2_000)).toBe(130);
+      await Promise.all([stdout, stderr]);
+      expect(existsSync(providerStarted)).toBe(false);
+      expect(receipt(input.receiptPath)).toMatchObject({
+        status: "cancelled",
+        preflight: { status: "cancelled" },
+        error: { message: "launcher received SIGINT during git project discovery" },
+      });
     });
   });
 

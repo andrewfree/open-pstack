@@ -8,7 +8,7 @@ adapterSuite(grok);
 
 const lane = (request: Partial<LaneRequest> = {}) =>
   testLane({ provider: "grok", model: "grok-4.6", ...request });
-const argv = (request: Partial<LaneRequest> = {}) => grok.launch.argv(lane(request), { sharedGitDir: null, providerSidecar: null });
+const argv = (request: Partial<LaneRequest> = {}) => grok.launch.argv(lane(request), { sharedGitDir: null, gitProjectRoot: null, providerSidecar: null });
 const parse = (stdout: string) => grok.parse({ exitCode: 0, stdout, stderr: "", sidecar: null }, lane());
 
 describe("grok launch", () => {

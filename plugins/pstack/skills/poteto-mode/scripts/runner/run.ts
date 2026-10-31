@@ -11,8 +11,8 @@ import {
   writeFileSync,
   writeSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import type { Lane, LaunchFacts, ParseResult } from "./registry/index.ts";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { type Lane, type LaunchFacts, LaunchRefusal, type ParseResult } from "./registry/index.ts";
 import {
   ERROR_EVIDENCE_LIMIT,
   evidence,
@@ -541,6 +541,28 @@ export async function discoverSharedGitDir(
   return { kind: "found", sharedGitDir: shared };
 }
 
+type GitProjectDiscovery =
+  | { readonly kind: "found"; readonly gitProjectRoot: string | null }
+  | { readonly kind: "stopped"; readonly status: "cancelled" | "timed-out" };
+
+async function discoverGitProjectRoot(
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  deadlineAt: number | null,
+  cancellation: RunCancellation
+): Promise<GitProjectDiscovery> {
+  const git = Bun.which("git", { PATH: env.PATH ?? "" });
+  if (git === null) return { kind: "found", gitProjectRoot: null };
+  const result = await runProcess(git, GIT_COMMON_DIR, cwd, { ...env, LC_ALL: "C" }, null, deadlineAt, cancellation);
+  if (result.cancelledBy !== null) return { kind: "stopped", status: "cancelled" };
+  if (result.timedOut) return { kind: "stopped", status: "timed-out" };
+  if (result.exitCode !== 0) return { kind: "found", gitProjectRoot: null };
+  const commonDir = resolve(cwd, result.stdout.trim());
+  if (basename(commonDir) !== ".git") return { kind: "found", gitProjectRoot: null };
+  const root = dirname(commonDir);
+  return { kind: "found", gitProjectRoot: existsSync(root) ? realpathSync(root) : root };
+}
+
 function retriedPreflightEvidence(
   first: string,
   second: string,
@@ -755,7 +777,14 @@ async function executeLane(
     return { exitCode: statusExitCode(receipt.status), receipt };
   }
 
-  if (adapter.launch.needsSharedGitDir(lane.access)) {
+  const needsSharedGitDir = adapter.launch.needsSharedGitDir(lane.access);
+  const needsGitProjectRoot = adapter.launch.needsGitProjectRoot?.(lane.access) ?? false;
+  let facts: LaunchFacts = {
+    sharedGitDir: null,
+    gitProjectRoot: null,
+    providerSidecar: providerSidecar(lane)?.facts ?? null,
+  };
+  if (needsSharedGitDir) {
     const discovery = await discoverSharedGitDir(lane.cwd, env, deadlineAt, cancellation);
     if (discovery.kind === "refused") {
       const completed = Date.now();
@@ -783,7 +812,14 @@ async function executeLane(
       writeReceipt(lane.receiptPath, receipt);
       return { exitCode: statusExitCode(discovery.status), receipt };
     }
-    const facts: LaunchFacts = { sharedGitDir: discovery.sharedGitDir, providerSidecar: providerSidecar(lane)?.facts ?? null };
+    facts = { ...facts, sharedGitDir: discovery.sharedGitDir };
+  }
+  if (needsGitProjectRoot) {
+    const discovery = await discoverGitProjectRoot(lane.cwd, env, deadlineAt, cancellation);
+    if (discovery.kind === "stopped") return finishWithoutChild(discovery.status, "during git project discovery");
+    facts = { ...facts, gitProjectRoot: discovery.gitProjectRoot };
+  }
+  if (needsSharedGitDir || needsGitProjectRoot) {
     launchArgs = adapter.launch.argv(lane, facts);
     progress.argv = receiptArgv();
   }
@@ -932,7 +968,7 @@ async function executeLane(
     return finishWithoutChild("timed-out", "before model execution");
   }
 
-  const restoreHostState = adapter.launch.guardHostState?.(lane, env) ?? (() => {});
+  const restoreHostState = adapter.launch.guardHostState?.(lane, env, facts) ?? (() => {});
   let result: ProcessResult;
   try {
     const [command, ...args] = modelCommand(lane, executable, wrapperExecutable, env, launchArgs, prompt);
@@ -1071,7 +1107,11 @@ export async function runLane(
   try {
     streamFiles = reserveOutputs(lane);
     try {
-      const launchArgs = lane.adapter.launch.argv(lane, { sharedGitDir: null, providerSidecar: providerSidecar(lane)?.facts ?? null });
+      const launchArgs = lane.adapter.launch.argv(lane, {
+        sharedGitDir: null,
+        gitProjectRoot: null,
+        providerSidecar: providerSidecar(lane)?.facts ?? null,
+      });
       progress.argv = modelCommand(lane, lane.adapter.executable, null, childEnvironment(lane), launchArgs, promptPlaceholder(lane));
       return await executeLane(
         lane,
@@ -1115,7 +1155,9 @@ export async function runLane(
             ? `launcher received ${signal} after reserving output paths`
             : status === "timed-out"
               ? "explicit deadline elapsed after reserving output paths"
-              : "launcher failed after reserving output paths",
+              : error instanceof LaunchRefusal
+                ? error.message
+                : "launcher failed after reserving output paths",
           evidence: boundedEvidence(message),
         },
       });

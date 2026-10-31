@@ -10,7 +10,7 @@ adapterSuite(claude);
 const lane = (request: Partial<LaneRequest> = {}) =>
   testLane({ provider: "claude", model: "fable", ...request });
 const argv = (request: Partial<LaneRequest> = {}, sharedGitDir: string | null = null) =>
-  claude.launch.argv(lane(request), { sharedGitDir, providerSidecar: null });
+  claude.launch.argv(lane(request), { sharedGitDir, gitProjectRoot: null, providerSidecar: null });
 const parse = (stdout: string) => claude.parse({ exitCode: 0, stdout, stderr: "", sidecar: null }, lane());
 
 describe("claude launch", () => {

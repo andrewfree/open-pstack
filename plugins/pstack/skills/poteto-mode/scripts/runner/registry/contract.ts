@@ -102,12 +102,15 @@ export type EnvPolicy =
 
 export interface LaunchFacts {
   readonly sharedGitDir: string | null;
+  readonly gitProjectRoot: string | null;
   readonly providerSidecar: {
     readonly directory: string;
     readonly output: string | null;
     readonly config: string | null;
   } | null;
 }
+
+export class LaunchRefusal extends Error {}
 
 export interface ProviderSidecar {
   readonly output: string | null;
@@ -139,8 +142,9 @@ export interface ProviderAdapter {
     stdinEnvelope?(prompt: string): string;
     promptArgv?(prompt: string): readonly string[];
     needsSharedGitDir(access: Access): boolean;
+    needsGitProjectRoot?(access: Access): boolean;
     argv(lane: Lane, facts: LaunchFacts): readonly string[];
-    guardHostState?(lane: Lane, env: NodeJS.ProcessEnv): () => void;
+    guardHostState?(lane: Lane, env: NodeJS.ProcessEnv, facts: LaunchFacts): () => void;
   };
   parse(run: ModelRun, lane: Lane): ParseResult;
   readonly proof: {

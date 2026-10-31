@@ -38,6 +38,7 @@ export function testFacts(adapter: ProviderAdapter, sharedGitDir: string | null 
   const directory = "/tmp/receipt.json.provider";
   return {
     sharedGitDir,
+    gitProjectRoot: null,
     providerSidecar: sidecar === null ? null : {
       directory,
       output: sidecar.output === null ? null : `${directory}/${sidecar.output}`,
