@@ -49,7 +49,7 @@ test('candidate doctor probes only help and versions with private roots already 
       expect(info.isDirectory()).toBe(true);
       expect(info.mode & 0o777).toBe(0o700);
     }
-    return args.includes('--version') ? 'version' : '--plugin-dir --settings --setting-sources --json local path';
+    return args.includes('--version') ? 'version' : '--plugin-dir --settings --setting-sources --strict-mcp-config --add-dir --json local path';
   };
   try {
     await doctor(root, run, 'darwin', true);
@@ -103,4 +103,11 @@ test('--wide takes one publishable, nonblank reason and only for run', () => {
   expect(() => parse([...run, '--wide', 'one', '--wide', 'two'])).toThrow('Duplicate option: --wide');
   expect(() => parse([...run, '--wide'])).toThrow('Missing value: --wide');
   expect(() => parse(['doctor', '--output', '/fresh/probe', '--wide', 'reason'])).toThrow('Unknown option: --wide');
+});
+test('--t3-app names the app transport for a run or a parent doctor, never a candidate doctor', () => {
+  expect(parse(['run', '--repo', REPO, '--pr', '1', '--t3-app', '/private/t3.json', '--output', '/fresh/run'])).toMatchObject({ t3App: '/private/t3.json' });
+  expect(parse(['run', '--repo', REPO, '--pr', '1', '--output', '/fresh/run'])).not.toHaveProperty('t3App');
+  expect(parse(['doctor', '--t3-app', '/private/t3.json', '--output', '/fresh/probe'])).toEqual({ mode: 'doctor', output: '/fresh/probe', pr: 0, selfTest: false, candidate: false, t3App: '/private/t3.json' });
+  expect(() => parse(['doctor', '--candidate', '--t3-app', '/private/t3.json', '--output', '/fresh/probe'])).toThrow('takes no --t3-app');
+  expect(() => parse(['run', '--repo', REPO, '--pr', '1', '--t3-app', '--output', '/fresh/run'])).toThrow('Missing value: --t3-app');
 });

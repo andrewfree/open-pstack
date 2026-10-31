@@ -58,6 +58,7 @@ Files authored for this port (not derived from upstream):
 - `plugins/pstack/skills/poteto-mode/scripts/check-plan.test.ts`
 - `plugins/pstack/skills/poteto-mode/scripts/resolve-codex-transcript`, `resolve-codex-transcript.ts`, and `resolve-codex-transcript.test.ts` (Reflect's known-chat Codex transcript lookup, #140; behavior and test cases from Donncha O'Toole's contribution)
 - `.claude/skills/verify-open-pstack/scripts/reflect.test.ts` (#140)
+- `.claude/skills/verify-open-pstack/scripts/{t3-app,claude-evidence,codex-app-evidence,command-policy,daily-state,native-consumer}.ts`, their tests, `app-runner.test.ts`, `collision-script.test.ts` and `features/t3-app.md` (the verifier's T3 app transport, from andrewfree/open-pstack PR #1)
 - `plugins/pstack/skills/babysit/SKILL.md` (independently authored; workflow informed by Cursor's public `/babysit` behavior)
 - `plugins/pstack/agents/pstack-<family>-<effort>.md` for the Fable, Opus, Sonnet, Opus 5.5 and Haiku 5.5 families (Claude-native lanes at each selectable effort)
 - `plugins/pstack/hooks/hooks.json`, `plugins/pstack/hooks/session-start`, `plugins/pstack/hooks/session-start-context.md`, and `plugins/pstack/hooks/.gitattributes` (the auto-fire hook, its mandate, and LF checkout on Windows)

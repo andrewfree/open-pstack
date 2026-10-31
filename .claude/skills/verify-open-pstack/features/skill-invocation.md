@@ -10,7 +10,7 @@ In a fresh Claude session invoke `/pstack:<name>`. In Codex use the installed sk
 
 ## Driving it with verify-open-pstack
 
-Launch with real `HOME`, `USER`, and `LOGNAME`, run-owned temporary/GitHub state, and no publisher credentials. Claude uses normal operator login/config with `claude --plugin-dir <exact-head checkout>/plugins/pstack --settings '{"enabledPlugins":{"pstack@open-pstack":false}}'`. Codex installs the exact-head candidate in a run-owned `CODEX_HOME` with `auth.json` symlinked to the daily `${CODEX_HOME:-$HOME/.codex}/auth.json`. Missing file-based auth fails closed. No source flags, credential reading/copying, or extra login; see `isolation.md`.
+Launch with real `HOME`, `USER`, and `LOGNAME`, run-owned temporary/GitHub state, and no publisher credentials. Claude runs as a T3 Claude Agent child whose armed verification launcher loads only the exact candidate plugin; see `t3-app.md`. Only a native Skill call whose injected body matches the candidate `SKILL.md` counts as a load. Codex installs the exact-head candidate in a run-owned `CODEX_HOME` with `auth.json` symlinked to the daily `${CODEX_HOME:-$HOME/.codex}/auth.json`. Missing file-based auth fails closed. No source flags, credential reading/copying, or extra login; see `isolation.md`.
 
 For each selected name, use a disposable fixture appropriate to its documented input, invoke the installed surface, and exercise every changed sub-feature. Observe native tool/skill loading and a concrete fixture effect, not the assistant saying it passed. Save the raw transcript and an artifact showing the actual result (diff, generated file, tool receipt, or UI capture) under the private mode-0700 evidence root.
 

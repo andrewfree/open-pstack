@@ -20,14 +20,13 @@ export interface Case {
   cwd?: 'workspace';
   /** Codex parents that launch external provider CLIs need network and their CLI state outside the fixture. */
   codexSandbox?: 'danger-full-access';
-  /** Claude refuses Write into its own config folder in dontAsk mode even with --add-dir; setup must write there. */
-  claudePermission?: 'bypassPermissions';
   prepare?(fixture: Fixture): Promise<void>;
+  cleanup?(fixture: Fixture): Promise<void>;
   prompt(fixture: Fixture): string;
   assert(record: SessionRecord, fixture: Fixture): Promise<Evidence>;
 }
 
-export const CLAUDE_TOOLS = 'Skill,Read,Glob,Grep,Write,Edit,Bash,Agent,Task,TodoWrite';
+export interface AppRoute { providerInstanceId: string; model: string }
 export const DEFAULT_ROLES: Record<Harness, string> = { claude: 'bug-fix', codex: 'feature, refactoring' };
 export const ROUTE = /^([a-z][a-z0-9-]*):([A-Za-z0-9._/-]+)@([a-z]+)$/;
 const SETUP_DESCRIPTOR = 'claude:opus@high';
@@ -345,8 +344,89 @@ function codexWriter(optIn: boolean): Case {
   };
 }
 
-function runner(harness: Harness, routes: string[]): Case[] {
-  const chosen = routes.filter(route => !route.startsWith(`${harness}:`));
+const T3_ROLE = 'judgment and prose';
+function object(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid-app-route-evidence');
+  return value as Record<string, unknown>;
+}
+function newestRevision(models: string[], alias: string): string {
+  const pattern = new RegExp(`^claude-${alias}-([0-9]+(?:-[0-9]+)*)$`);
+  const candidates = models.flatMap(model => {
+    const match = pattern.exec(model);
+    if (!match) return [];
+    const parts = match[1]!.split('-');
+    const date = parts.length > 1 && parts.at(-1)!.length === 8 ? Number(parts.pop()) : 0;
+    return [{ model, version: parts.map(Number), date }];
+  });
+  candidates.sort((a, b) => {
+    for (let i = 0; i < Math.max(a.version.length, b.version.length); i++) {
+      const difference = (b.version[i] ?? 0) - (a.version[i] ?? 0);
+      if (difference) return difference;
+    }
+    return b.date - a.date;
+  });
+  if (!candidates.length) throw new Error('app-route-live-capability-route-missing');
+  return candidates[0]!.model;
+}
+export function t3Model(models: string[], model: string): string {
+  if (/^[a-z]+$/.test(model)) return newestRevision(models, model);
+  if (!models.includes(model)) throw new Error('app-route-live-capability-route-missing');
+  return model;
+}
+function appRunner(appRoute: AppRoute | undefined, fixed: string): Case {
+  let route = fixed, model = '', effort = '';
+  const lane = (f: Fixture) => join(f.dir, 'app-lane.json'), output = (f: Fixture) => join(f.dir, 'app-output.md');
+  return {
+    id: 'app-route-1',
+    async prepare(f) {
+      if (!appRoute) throw new Error('unsupported-native-consumer:claude-app: the Codex runner case verifies the T3 Claude Agent route and needs --t3-app');
+      const installed = await readCatalog(f.location);
+      route ||= installed.defaults.get(T3_ROLE)?.find(descriptor => descriptor.includes(':') && installed.route('codex', descriptor) === 't3') ?? '';
+      const parts = ROUTE.exec(route);
+      if (!parts || installed.route('codex', route) !== 't3') throw new Error(`app-route-not-t3:${route || T3_ROLE}`);
+      [, , model = '', effort = ''] = parts;
+    },
+    prompt: f => `${invoke(f.harness, 'poteto-mode', `Dispatch exactly one read-only lane for descriptor ${route}, using only the operator-selected Claude provider instance ${appRoute!.providerInstanceId}. Resolve the descriptor yourself using the installed provider-dispatch.md and your native T3 catalog; call orchestrator_capabilities with search set to ${appRoute!.providerInstanceId}. Child task: Reply with exactly PONG as the final answer. Do no engineering work, spawn no agents, ask no questions, and request no plan approval. Grounding directory: ${f.dir}. Reserve the private lane record at ${lane(f)} and final output at ${output(f)} before dispatch. Complete the installed route, retain its task and thread identities, and drain the original task before finishing. Do not launch shell Claude or substitute another provider or model.`)} ${rules(f.dir)}`,
+    async assert(record, f) {
+      const calls = record.appTools ?? [], launches = calls.filter(call => call.tool === 'delegate_task');
+      if (launches.length !== 1) throw new Error('app-route-requires-one-native-dispatch');
+      const launch = launches[0]!, catalog = calls.slice(0, calls.indexOf(launch)).filter(call => call.tool === 'orchestrator_capabilities' && Array.isArray(call.result.providers)).at(-1);
+      if (!catalog) throw new Error('app-route-requires-native-catalog-before-dispatch');
+      const provider = (catalog.result.providers as unknown[]).map(object).find(p => p.providerInstanceId === appRoute!.providerInstanceId);
+      if (!provider || provider.driverKind !== 'claudeAgent' || provider.canRunChildTask !== true || provider.canRunCrossProviderChildTask !== true
+        || !Array.isArray(provider.constraints) || provider.constraints.length || !Array.isArray(provider.models)) throw new Error('app-route-ineligible-provider');
+      const models = provider.models.map(object), chosen = t3Model(models.map(m => typeof m.id === 'string' ? m.id : ''), model);
+      const coordinator = record.appRoutes?.filter(r => r.providerInstanceId === appRoute!.providerInstanceId) ?? [];
+      if (!coordinator.length || t3Model(coordinator.map(r => r.model), model) !== chosen) throw new Error('app-route-coordinator-catalog-mismatch');
+      const options = models.find(m => m.id === chosen)!.options;
+      const values = Array.isArray(options) ? options.map(object).find(option => option.id === 'effort')?.values : undefined;
+      if (!coordinator.find(r => r.model === chosen)!.efforts.includes(effort) || !Array.isArray(values) || !values.includes(effort)) throw new Error('app-route-live-capability-effort-unsupported');
+      const requested = object(launch.arguments.target);
+      if (requested.providerInstanceId !== appRoute!.providerInstanceId || requested.model !== chosen) throw new Error('app-route-target-mismatch');
+      const requestedOptions = requested.options;
+      const actualEffort = Array.isArray(requestedOptions) ? requestedOptions.map(object).find(option => option.id === 'effort')?.value
+        : requestedOptions && typeof requestedOptions === 'object' ? object(requestedOptions).effort : undefined;
+      if (actualEffort !== effort) throw new Error('app-route-effort-mismatch');
+      if (launch.arguments.mode !== 'async' || launch.arguments.interactionMode !== 'plan' || typeof launch.arguments.clientRequestId !== 'string' || !launch.arguments.clientRequestId.trim()) throw new Error('app-route-dispatch-contract-mismatch');
+      if (typeof launch.result.taskId !== 'string' || !launch.result.taskId.trim()) throw new Error('app-route-missing-task-id');
+      const result = calls.filter(call => call.tool === 'task_status' && call.arguments.taskId === launch.result.taskId).map(call => call.result)
+        .find(status => status.status === 'completed' && status.workState === 'result_available' && status.hasPendingChildRuns === false);
+      if (!result || result.taskId !== launch.result.taskId || !result.childThreadId || !result.childRunId || result.latestTerminalRunId !== result.childRunId
+        || result.latestTerminalStatus !== 'completed' || result.providerInstanceId !== appRoute!.providerInstanceId || result.model !== chosen
+        || typeof result.summary !== 'string' || result.summary.trim() !== 'PONG') throw new Error('app-route-no-completed-PONG');
+      const receipt = object(JSON.parse(await readFile(lane(f), 'utf8')));
+      const expected = { route: 't3-claude-agent', descriptor: route, providerInstanceId: appRoute!.providerInstanceId, model: chosen, effort,
+        clientRequestId: launch.arguments.clientRequestId, taskId: result.taskId, childThreadId: result.childThreadId, status: 'completed', dropoutReason: null };
+      if (Object.entries(expected).some(([key, value]) => receipt[key] !== value)) throw new Error('app-route-lane-record-mismatch');
+      if ((await readFile(output(f), 'utf8')).trim() !== 'PONG') throw new Error('app-route-output-not-PONG');
+      return { assertions: [loaded(record, 'pstack:poteto-mode'), 'native-catalog-before-dispatch', 'concrete-family-revision', 'coordinator-catalog-match', 'live-capability-route',
+        'native-t3-dispatch', 'async-plan-request', 'matching-child-run', 'lane-record', 'completed-PONG', await written(record, lane(f)), await written(record, output(f))], files: [lane(f), output(f)] };
+    },
+  };
+}
+
+function runner(harness: Harness, routes: string[], appRoute?: AppRoute): Case[] {
+  const chosen = routes.filter(route => !route.startsWith(`${harness}:`) && !(harness === 'codex' && route.startsWith('claude:')));
   const cases = (chosen.length ? chosen : ['']).map((fixed, index): Case => {
     let route = fixed, provider = '', model = '', effort = '';
     const lane = (f: Fixture, name: string) => join(f.dir, `lane-${index + 1}.${name}`);
@@ -372,13 +452,12 @@ function runner(harness: Harness, routes: string[]): Case[] {
       },
     };
   });
-  return harness === 'codex' ? [...cases, claudeRefusal] : [...cases, codexWriter(true), codexWriter(false)];
+  return harness === 'codex' ? [...cases, appRunner(appRoute, routes.find(route => route.startsWith('claude:')) ?? ''), claudeRefusal] : [...cases, codexWriter(true), codexWriter(false)];
 }
 
 const setup: Case[] = [{
   id: 'configure',
   codexSandbox: 'danger-full-access',
-  claudePermission: 'bypassPermissions',
   async prepare(f) {
     const sheet = join(f.configHome, 'pstack-models.md'), text = await readFile(sheet, 'utf8').catch(() => undefined);
     if (text !== undefined) await writeFile(sheet, text.split('\n').filter(line => !line.startsWith(SETTING)).join('\n'));
@@ -402,7 +481,6 @@ const setup: Case[] = [{
 }, keptPredecessor(), newFamilies(), readOnlyProvider(), writerRefusal(), keepSetting(), {
   id: 'first-run',
   codexSandbox: 'danger-full-access',
-  claudePermission: 'bypassPermissions',
   async prepare(f) {
     await rm(join(f.configHome, 'pstack-models.md'), { force: true });
     if (f.harness === 'codex') await rm(join(f.configHome, 'AGENTS.md'), { force: true });
@@ -440,7 +518,6 @@ function keptPredecessor(): Case {
   return {
     id: 'keep-predecessor',
     codexSandbox: 'danger-full-access',
-    claudePermission: 'bypassPermissions',
     async prepare(f) {
       const installed = await readCatalog(f.location), current = installed.kept.get(KEPT);
       if (!current) throw new Error(`catalog-kept-missing:${KEPT}`);
@@ -474,7 +551,6 @@ function newFamilies(): Case {
   return {
     id: 'new-families',
     codexSandbox: 'danger-full-access',
-    claudePermission: 'bypassPermissions',
     async prepare(f) {
       const roles = [...(await readCatalog(f.location)).defaults];
       const lane = (role: string, index: 0 | 1, lanes: string[]) => role in NEW_FAMILY_LANES ? [NEW_FAMILY_LANES[role]![index]] : lanes;
@@ -503,7 +579,6 @@ function readOnlyProvider(): Case {
   return {
     id: 'read-only-provider',
     codexSandbox: 'danger-full-access',
-    claudePermission: 'bypassPermissions',
     async prepare(f) {
       const installed = await readCatalog(f.location), roles = [...installed.defaults];
       if (!roles.some(([role]) => role === READ_ONLY_ROLE)) throw new Error(`catalog-role-missing:${READ_ONLY_ROLE}`);
@@ -531,7 +606,6 @@ function writerRefusal(): Case {
   return {
     id: 'writer-refusal',
     codexSandbox: 'danger-full-access',
-    claudePermission: 'bypassPermissions',
     async prepare(f) {
       const roles = [...(await readCatalog(f.location)).defaults];
       if (!roles.some(([role]) => role === REFUSED_ROLE)) throw new Error(`catalog-role-missing:${REFUSED_ROLE}`);
@@ -557,7 +631,6 @@ function keepSetting(): Case {
   return {
     id: 'keep-setting',
     codexSandbox: 'danger-full-access',
-    claudePermission: 'bypassPermissions',
     async prepare(f) {
       const roles = [...(await readCatalog(f.location)).defaults];
       const omitted = roles.find(([, lanes]) => lanes.every(lane => !lane.includes(':')))?.[0];
@@ -681,11 +754,11 @@ const startupHook: Case = {
   },
 };
 
-export function recipe(feature: string, harness: Harness, routes: string[] = []): Case[] {
+export function recipe(feature: string, harness: Harness, routes: string[] = [], appRoute?: AppRoute): Case[] {
   if (feature === 'assets:codex') throw new Error('unsupported-native-consumer:assets:codex');
   if (feature === 'project-skill') return [projectSkill];
   if (feature === 'hook:startup') return [startupHook];
-  if (feature === 'runner') return runner(harness, routes);
+  if (feature === 'runner') return runner(harness, routes, appRoute);
   if (feature === 'setup' || feature === 'skill-invocation:setup-pstack') return setup;
   if (feature === 'catalog') return catalog(harness);
   if (feature === 'shipped-tools') return [shippedTools];
