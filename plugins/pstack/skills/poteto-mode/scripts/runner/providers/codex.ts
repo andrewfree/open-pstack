@@ -1,5 +1,6 @@
 import { type Access, adapter, type ParseResult } from "../registry/contract.ts";
 import type { NormalizedUsage } from "../types.ts";
+import { CODEX_NO_SUBAGENTS, codexMcpServerOverrides, guardCodexProjectTrust } from "./codex-config.ts";
 import {
   effortArgs,
   exactOrSuffixed,
@@ -92,9 +93,15 @@ export const codex = adapter({
       "hooks",
       "--disable",
       "memories",
+      "--disable",
+      "apps",
+      "--config",
+      CODEX_NO_SUBAGENTS,
+      ...codexMcpServerOverrides(lane.cwd, process.env),
       "--json",
       "-",
     ],
+    guardHostState: (lane, env) => guardCodexProjectTrust(lane.cwd, env),
   },
   parse: (run) => parse(run.stdout),
   proof: { report: "absent", matches: exactOrSuffixed },
@@ -102,7 +109,16 @@ export const codex = adapter({
   docs: {
     name: "Codex CLI",
     hostPrerequisites: [],
-    statePaths: ["the Codex home (`CODEX_HOME`, else `~/.codex`)"],
-    notes: [],
+    statePaths: [
+      "the Codex home (`CODEX_HOME`, else `~/.codex`; an empty value counts as unset), whose `config.toml` the runner reads for MCP servers and may rewrite after a lane to remove a project trust entry the lane added",
+    ],
+    notes: [
+      "Codex starts every `[mcp_servers]` entry it loads, read-only lanes included, and `--config mcp_servers={}` merges into the table instead of clearing it. Each Codex lane therefore passes `--config mcp_servers.<name>.enabled=false` for every server in the user's `config.toml`. A server name that `--config` cannot address, such as a quoted key with a dot, stops the lane before launch with a `child-failed` receipt that names the server.",
+      "A trusted project's `.codex/config.toml` also loads, and a writer lane trusts its project. The runner switches off each server declared in a `.codex/config.toml` from the lane directory up to `/`, and in a linked worktree's main checkout. Codex rejects an override for a server that no loaded layer defines, so each project override also sets a dead transport of the same kind (`command=\"/usr/bin/false\"` or `url=\"http://127.0.0.1:9/\"`). The override is then valid whether or not Codex loads that file. A project file that does not parse is skipped.",
+      "Each Codex lane passes `--disable apps`, which removes the ChatGPT apps connector tools.",
+      "Models with `multi_agent_version` v2 keep their collaboration spawn tools under `--disable multi_agent`. Each Codex lane also passes `--config features.multi_agent_v2={enabled=false, max_concurrent_threads_per_session=1}`, so Codex refuses every spawn with `agent thread limit reached`.",
+      "A workspace-write `codex exec` records its git project (the main checkout for a linked worktree) as trusted in the user's `config.toml`, and no flag stops it. As a workaround, the runner records the project's trust entries before the model run and afterwards removes an exact `trust_level = \"trusted\"` table for that project that first appeared during the lane. It keeps entries that existed before, leaves an entry whose text differs, and rereads the file if another writer changed it meanwhile. Whether a full-access lane records trust is unmeasured; the cleanup runs for every Codex lane.",
+      "These overrides and the trust cleanup were measured against the Codex CLI in October 2026. After a Codex upgrade, check that a lane on a repository with a `.codex/config.toml` server starts no server, refuses a spawn, and leaves `config.toml` byte-identical.",
+    ],
   },
 });

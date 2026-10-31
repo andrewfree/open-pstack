@@ -134,6 +134,7 @@ export interface ProviderAdapter {
     stdinEnvelope?(prompt: string): string;
     needsSharedGitDir(access: Access): boolean;
     argv(lane: Lane, facts: LaunchFacts): readonly string[];
+    guardHostState?(lane: Lane, env: NodeJS.ProcessEnv): () => void;
   };
   parse(run: ModelRun, lane: Lane): ParseResult;
   readonly proof: {

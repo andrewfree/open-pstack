@@ -899,16 +899,22 @@ async function executeLane(
     return finishWithoutChild("timed-out", "before model execution");
   }
 
-  const result = await runProcess(
-    executable,
-    launchArgs,
-    lane.cwd,
-    env,
-    adapter.launch.prompt === "stdin" ? adapter.launch.stdinEnvelope?.(prompt) ?? prompt : null,
-    deadlineAt,
-    cancellation,
-    streamFiles
-  );
+  const restoreHostState = adapter.launch.guardHostState?.(lane, env) ?? (() => {});
+  let result: ProcessResult;
+  try {
+    result = await runProcess(
+      executable,
+      launchArgs,
+      lane.cwd,
+      env,
+      adapter.launch.prompt === "stdin" ? adapter.launch.stdinEnvelope?.(prompt) ?? prompt : null,
+      deadlineAt,
+      cancellation,
+      streamFiles
+    );
+  } finally {
+    restoreHostState();
+  }
   const completed = Date.now();
   const base = {
     startedAt,
@@ -1017,7 +1023,6 @@ export async function runLane(
 ): Promise<RunResult> {
   validateLane(lane);
   const deadlineAt = lane.timeoutMs === null ? null : started + lane.timeoutMs;
-  const launchArgs = lane.adapter.launch.argv(lane, { sharedGitDir: null, providerSidecar: providerSidecar(lane)?.facts ?? null });
   const progress: LaneProgress = {
     executable: null,
     preflight: {
@@ -1025,13 +1030,15 @@ export async function runLane(
       status: "not-run",
       evidence: "",
     },
-    argv: [lane.adapter.executable, ...launchArgs],
+    argv: [lane.adapter.executable],
   };
   const cancellation = installRunCancellation();
   let streamFiles: ModelStreams | null = null;
   try {
     streamFiles = reserveOutputs(lane);
     try {
+      const launchArgs = lane.adapter.launch.argv(lane, { sharedGitDir: null, providerSidecar: providerSidecar(lane)?.facts ?? null });
+      progress.argv = [lane.adapter.executable, ...launchArgs];
       return await executeLane(
         lane,
         cancellation,

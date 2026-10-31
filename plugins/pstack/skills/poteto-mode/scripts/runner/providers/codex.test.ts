@@ -1,7 +1,38 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import type { LaneRequest } from "../registry/index.ts";
-import { adapterSuite, testLane } from "./adapter-suite.ts";
+import { accessRequest, adapterSuite, testLane } from "./adapter-suite.ts";
 import { codex } from "./codex.ts";
+import { codexConfigPath } from "./codex-config.ts";
+
+const NO_CODEX_HOME = "/nonexistent-codex-home";
+const CAP = "features.multi_agent_v2={enabled=false, max_concurrent_threads_per_session=1}";
+let previousCodexHome: string | undefined;
+
+beforeAll(() => {
+  previousCodexHome = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = NO_CODEX_HOME;
+});
+
+afterAll(() => {
+  if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+  else process.env.CODEX_HOME = previousCodexHome;
+});
+
+function withCodexHome<T>(home: string, run: () => T): T {
+  process.env.CODEX_HOME = home;
+  try {
+    return run();
+  } finally {
+    process.env.CODEX_HOME = NO_CODEX_HOME;
+  }
+}
+
+function scratchDir(prefix: string): string {
+  return realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+}
 
 adapterSuite(codex);
 
@@ -35,10 +66,117 @@ describe("codex launch", () => {
       "hooks",
       "--disable",
       "memories",
+      "--disable",
+      "apps",
+      "--config",
+      CAP,
       "--json",
       "-",
     ]);
     expect(args).not.toContain("danger-full-access");
+  });
+
+  it("caps every Codex lane at one thread so collaboration spawns are refused", () => {
+    for (const kind of codex.launch.supports) {
+      const args = argv(accessRequest(kind));
+      expect(args[args.indexOf(CAP) - 1]).toBe("--config");
+      expect(args).toEqual(expect.arrayContaining(["--disable", "multi_agent", "--disable", "apps"]));
+    }
+  });
+
+  it("switches off each MCP server in the user's Codex config", () => {
+    const home = scratchDir("codex-home-");
+    try {
+      writeFileSync(join(home, "config.toml"), [
+        'model = "any"',
+        "[mcp_servers.forgejo]",
+        'command = "/usr/local/bin/forgejo-mcp"',
+        "[mcp_servers.computer-use]",
+        'command = "computer-use"',
+        "enabled = false",
+        "[mcp_servers.docs]",
+        'url = "https://example.invalid/mcp"',
+      ].join("\n"));
+      for (const kind of codex.launch.supports) {
+        const args = withCodexHome(home, () => argv(accessRequest(kind)));
+        const overrides = args.filter((arg) => arg.startsWith("mcp_servers."));
+        expect(overrides).toEqual([
+          "mcp_servers.forgejo.enabled=false",
+          "mcp_servers.computer-use.enabled=false",
+          "mcp_servers.docs.enabled=false",
+        ]);
+        for (const override of overrides) expect(args[args.indexOf(override) - 1]).toBe("--config");
+        expect(args.slice(-2)).toEqual(["--json", "-"]);
+      }
+      expect(argv().filter((arg) => arg.startsWith("mcp_servers."))).toEqual([]);
+
+      writeFileSync(join(home, "config.toml"), '[mcp_servers."a.b"]\ncommand = "x"\n');
+      expect(() => withCodexHome(home, () => argv())).toThrow(
+        'Codex MCP server "a.b" cannot be switched off with --config'
+      );
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("gives each project MCP server a self-contained switch-off", () => {
+    const root = scratchDir("codex-project-");
+    try {
+      const home = join(root, "home");
+      mkdirSync(home);
+      writeFileSync(join(home, "config.toml"), '[mcp_servers.forgejo]\ncommand = "forgejo-mcp"\n');
+      mkdirSync(join(root, "proj", ".codex"), { recursive: true });
+      mkdirSync(join(root, "proj", "sub", ".codex"), { recursive: true });
+      writeFileSync(join(root, "proj", ".codex", "config.toml"), [
+        "[mcp_servers.repo_tool]",
+        'command = "./start-me.sh"',
+        "[mcp_servers.repo_http]",
+        'url = "https://example.invalid/mcp"',
+        "[mcp_servers.forgejo]",
+        'command = "other"',
+      ].join("\n"));
+      writeFileSync(join(root, "proj", "sub", ".codex", "config.toml"), "[[[ not toml");
+      for (const kind of codex.launch.supports) {
+        const args = withCodexHome(home, () => argv({ ...accessRequest(kind), cwd: join(root, "proj", "sub") }));
+        expect(args.filter((arg) => arg.startsWith("mcp_servers."))).toEqual([
+          "mcp_servers.forgejo.enabled=false",
+          "mcp_servers.repo_tool.enabled=false",
+          'mcp_servers.repo_tool.command="/usr/bin/false"',
+          "mcp_servers.repo_http.enabled=false",
+          'mcp_servers.repo_http.url="http://127.0.0.1:9/"',
+        ]);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("finds a project MCP server in a linked worktree's main checkout", () => {
+    const root = scratchDir("codex-worktree-");
+    try {
+      const repo = join(root, "repo");
+      const git = (...args: string[]) => {
+        const run = Bun.spawnSync(["git", "-c", "core.hooksPath=/dev/null", ...args], { stdout: "ignore", stderr: "pipe" });
+        if (run.exitCode !== 0) throw new Error(run.stderr.toString());
+      };
+      git("init", "-q", "-b", "main", repo);
+      writeFileSync(join(repo, "README.md"), "x\n");
+      git("-C", repo, "add", ".");
+      git("-C", repo, "-c", "user.email=t@example.invalid", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-qm", "init");
+      git("-C", repo, "worktree", "add", "-q", "--detach", join(root, "wt"));
+      mkdirSync(join(repo, ".codex"));
+      writeFileSync(join(repo, ".codex", "config.toml"), '[mcp_servers.main_only]\ncommand = "x"\n');
+      expect(argv({ mode: "isolated-write", cwd: join(root, "wt") }))
+        .toEqual(expect.arrayContaining(["mcp_servers.main_only.enabled=false", 'mcp_servers.main_only.command="/usr/bin/false"']));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reads the default Codex config when CODEX_HOME is empty, like Codex", () => {
+    expect(codexConfigPath({ CODEX_HOME: "" })).toBe(join(homedir(), ".codex", "config.toml"));
+    expect(codexConfigPath({})).toBe(join(homedir(), ".codex", "config.toml"));
+    expect(codexConfigPath({ CODEX_HOME: "/codex home #1" })).toBe("/codex home #1/config.toml");
   });
 
   it("passes the ultra effort to Codex unchanged", () => {
