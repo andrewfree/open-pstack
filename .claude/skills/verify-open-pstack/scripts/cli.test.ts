@@ -77,6 +77,8 @@ test('runner routes are explicit, repeatable, and distinct', () => {
     .toMatchObject({ routes: ['devin:swe-2@max', 'devin:swe-1.6@default'] });
   expect(parse(['run', '--pr', '1', '--runner-route', 'opencode:opencode/deepseek-v4.1-flash-free@max', '--output', '/fresh/run']))
     .toMatchObject({ routes: ['opencode:opencode/deepseek-v4.1-flash-free@max'] });
+  expect(parse(['run', '--pr', '1', '--runner-route', 'kimi:kimi-code/k3@max', '--output', '/fresh/run']))
+    .toMatchObject({ routes: ['kimi:kimi-code/k3@max'] });
   for (const args of [['--runner-route', 'gpt-6.1-sol'], ['--runner-route', 'codex:a@max', '--runner-route', 'codex:a@max'], ['--runner-route', 'Devin:swe-2@max']]) {
     expect(() => parse(['run', '--pr', '1', '--output', '/fresh/run', ...args])).toThrow();
   }

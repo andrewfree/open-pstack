@@ -46,6 +46,7 @@ test('reads role defaults, kept predecessors and routes from the generated catal
     expect(installed.route(harness, `${harness}:any@max`)).toBe('native');
     expect(installed.route(harness, 'grok:any@max')).toBe('external');
     expect(installed.route(harness, 'devin:any@max')).toBe('external');
+    expect(installed.route(harness, 'kimi:any@max')).toBe('external');
     expect(installed.route(harness, 'inherit-parent')).toBe('native');
   }
   expect(() => installed.route('claude', 'kiro:any@max')).toThrow('catalog-route-missing');
@@ -63,10 +64,10 @@ for (const harness of ['claude', 'codex'] as const) {
     expect(report.roles[0]!.descriptors).not.toEqual(installed.defaults.get(report.roles[0]!.role));
     expect(roles.slice(1, 3)).toEqual(['arena runners', 'bug-fix']);
     for (const role of roles.slice(1, 3)) expect(lines.has(role)).toBe(false);
-    expect(roles.slice(3)).toEqual(['swarm workers', 'hardest tasks', 'how explainer', 'how explorer', 'interrogate reviewers', 'feature, refactoring']);
+    expect(roles.slice(3)).toEqual(['swarm workers', 'hardest tasks', 'how explainer', 'how explorer', 'interrogate reviewers', 'perf-issue', 'feature, refactoring']);
     expect(roles.slice(3).map(role => lines.get(role))).toEqual([
       ['codex:gpt-6-luna@max'], ['claude:claude-opus-5-5@max'], ['claude:claude-sonnet-5-5@high'], ['devin:swe-2@max'],
-      ['opencode:opencode/deepseek-v4.1-flash-free@max'], ['codex:gpt-6.1-sol@max'],
+      ['opencode:opencode/deepseek-v4.1-flash-free@max'], ['kimi:kimi-code/k3@max'], ['codex:gpt-6.1-sol@max'],
     ]);
     expect(report.roles.slice(3).map(r => [r.descriptors, r.routes])).toEqual([
       [['codex:gpt-6-luna@max'], [harness === 'codex' ? 'native' : 'external']],
@@ -74,12 +75,13 @@ for (const harness of ['claude', 'codex'] as const) {
       [['claude:sonnet@high'], [harness === 'claude' ? 'native' : 'external']],
       [['devin:swe-2@max'], ['external']],
       [['opencode:opencode/deepseek-v4.1-flash-free@max'], ['external']],
+      [['kimi:kimi-code/k3@max'], ['external']],
       [['codex:gpt-6.1-sol@max'], [harness === 'codex' ? 'native' : 'external']],
     ]);
     await writeFile(join(f.dir, 'routes.json'), JSON.stringify(report));
     expect((await c!.assert(record(harness, 'pstack:poteto-mode'), f)).assertions.slice(0, 2)).toEqual(['skill-loaded', 'file:routes.json']);
 
-    for (const [role, wrong] of [['how explainer', 'claude:claude-sonnet-5-5@high'], ['hardest tasks', 'claude:opus@max'], ['how explorer', installed.defaults.get('how explorer')![0]]]) {
+    for (const [role, wrong] of [['how explainer', 'claude:claude-sonnet-5-5@high'], ['hardest tasks', 'claude:opus@max'], ['how explorer', installed.defaults.get('how explorer')![0]], ['perf-issue', installed.defaults.get('perf-issue')![0]]]) {
       const changed = { roles: report.roles.map(r => r.role === role ? { ...r, descriptors: [wrong!] } : r) };
       await writeFile(join(f.dir, 'routes.json'), JSON.stringify(changed));
       await expect(c!.assert(record(harness, 'pstack:poteto-mode'), f)).rejects.toThrow('catalog-route-mismatch');
@@ -88,9 +90,11 @@ for (const harness of ['claude', 'codex'] as const) {
     await writeFile(join(f.dir, 'routes.json'), JSON.stringify({ ...report, writerSandbox: harness === 'claude' ? null : 'full-access' }));
     await expect(c!.assert(record(harness, 'pstack:poteto-mode'), f)).rejects.toThrow('catalog-route-mismatch');
 
-    const nativeDevin = { roles: report.roles.map(r => r.role === 'how explorer' ? { ...r, routes: ['native'] } : r) };
-    await writeFile(join(f.dir, 'routes.json'), JSON.stringify(nativeDevin));
-    await expect(c!.assert(record(harness, 'pstack:poteto-mode'), f)).rejects.toThrow('catalog-route-mismatch');
+    for (const role of ['how explorer', 'perf-issue']) {
+      const native = { roles: report.roles.map(r => r.role === role ? { ...r, routes: ['native'] } : r) };
+      await writeFile(join(f.dir, 'routes.json'), JSON.stringify(native));
+      await expect(c!.assert(record(harness, 'pstack:poteto-mode'), f)).rejects.toThrow('catalog-route-mismatch');
+    }
 
     report.roles[0]!.routes = report.roles[0]!.routes.map(r => r === 'native' ? 'external' : 'native');
     await writeFile(join(f.dir, 'routes.json'), JSON.stringify(report));
@@ -221,6 +225,10 @@ for (const harness of ['claude', 'codex'] as const) {
     await swe16!.prepare!(f);
     expect(devin!.prompt(f)).toContain(`--parent ${harness} --provider devin --model swe-2 --effort max --mode read-only`);
     expect(swe16!.prompt(f)).toContain(`--parent ${harness} --provider devin --model swe-1.6 --effort default --mode read-only`);
+    const [kimi] = recipe('runner', harness, ['kimi:kimi-code/k3@max']);
+    await kimi!.prepare!(f);
+    expect(kimi!.prompt(f)).toContain(`--parent ${harness} --provider kimi --model kimi-code/k3 --effort max --mode read-only`);
+    expect(kimi!.codexSandbox).toBe('danger-full-access');
     const [unknown] = recipe('runner', harness, ['kiro:auto@default']);
     await expect(unknown!.prepare!(f)).rejects.toThrow('catalog-route-missing:kiro:auto@default');
   });
