@@ -3418,7 +3418,9 @@ console.log(JSON.stringify({ role: "meta", type: "session.resume_hint", session_
         "--output-format", "stream-json", "--model", "kimi-code/k3", "--agent-file", agentFile, "--prompt=Return the marker.",
       ]);
       expect(ran.effort).toBe("high");
-      expect(ran.agent).toContain(mode === "isolated-write" ? "tools: Read, Write, Edit, Grep, Glob, Bash" : "tools: Read, Grep, Glob, Bash");
+      expect(ran.agent).toContain(mode === "isolated-write"
+        ? "tools: Read, ReadMediaFile, Write, Edit, Grep, Glob, Bash"
+        : "tools: Read, ReadMediaFile, Grep, Glob, Bash");
       const wrapper = JSON.parse(readFileSync(sandboxRecord, "utf8")) as string[];
       expect(wrapper.slice(0, -1)).toEqual([
         "-D", `KIMI_HOME=${realpathSync(kimiHome)}`,
@@ -3474,6 +3476,86 @@ console.log(JSON.stringify({ role: "meta", type: "session.resume_hint", session_
       expect(result.receipt).toMatchObject({ status: "unavailable-model", preflight: { status: "failed" } });
       expect(result.receipt.preflight.evidence).toContain("kimi-code/k3");
       expect(existsSync(modelRecord)).toBe(false);
+      expect(existsSync(sandboxRecord)).toBe(false);
+    });
+  }
+
+  for (const scenario of [
+    {
+      name: "connection error while stdout carries reviewed authentication code",
+      diagnostic: "error: failed to run prompt: provider.connection_error: Connection error.",
+      status: "child-failed", exitCode: 70,
+    },
+    {
+      name: "missing CLI diagnostic while stdout carries reviewed authentication code",
+      diagnostic: "Warning: authentication module was reviewed.",
+      status: "child-failed", exitCode: 70,
+    },
+    {
+      name: "five-hour quota refusal labelled provider.auth_error",
+      diagnostic: "error: failed to run prompt: provider.auth_error: 403 You've reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends.",
+      status: "child-failed", exitCode: 70,
+    },
+    {
+      name: "colored logout diagnostic",
+      diagnostic: "\u001b[31merror: failed to run prompt: auth.login_required: Sign in again.\u001b[0m\nSee log: /run-owned/kimi-code/logs/kimi.log",
+      status: "unauthenticated", exitCode: 77,
+    },
+    {
+      name: "HTTP 401 authentication failure",
+      diagnostic: "error: failed to run prompt: provider.auth_error: 401 Unauthorized",
+      status: "unauthenticated", exitCode: 77,
+    },
+    {
+      name: "missing served model",
+      diagnostic: "error: failed to run prompt: model.not_found: Model k3 does not exist.",
+      status: "unavailable-model", exitCode: 69,
+    },
+  ] as const) {
+    it(`classifies a failed Kimi call with a ${scenario.name} from stderr only`, async () => {
+      const source = 'if (/not logged in|authentication|sign in|invalid model|model not found/i.test(value)) return "unauthenticated";';
+      const tool = JSON.stringify({ role: "tool", tool_call_id: "read1", content: source });
+      const assistant = JSON.stringify({ role: "assistant", content: "The source contains authentication and model not found classifications." });
+      writeFileSync(join(bin, "kimi"), `#!/usr/bin/env bun
+if (process.argv[2] === "provider") {
+  console.log(${JSON.stringify(LISTING)});
+  process.exit(0);
+}
+console.log(${JSON.stringify(tool)});
+console.log(${JSON.stringify(assistant)});
+console.error(${JSON.stringify(scenario.diagnostic)});
+process.exit(1);
+`);
+      const input = kimiOptions(`kimi-diagnostic-${scenario.exitCode}-${scenario.name.length}`);
+      const result = await runLane(laneOf(input));
+      expect(result.exitCode).toBe(scenario.exitCode);
+      expect(receipt(input.receiptPath)).toMatchObject({
+        status: scenario.status,
+        preflight: { status: "passed" },
+        exitCode: 1,
+        error: { message: "child exited with status 1", evidence: expect.stringContaining(scenario.diagnostic) },
+      });
+      expect(existsSync(input.outputPath)).toBe(false);
+      expect(readFileSync(streamPath(result.receipt.stdoutPath), "utf8")).toContain(source.replaceAll('"', '\\"'));
+      expect(readFileSync(streamPath(result.receipt.stderrPath), "utf8")).toContain(scenario.diagnostic);
+    });
+  }
+
+  for (const [index, entry] of [
+    { exit: 0, stderr: "", status: "unavailable-model", exitCode: 69 },
+    { exit: 1, stderr: "boom", status: "child-failed", exitCode: 70 },
+    { exit: 1, stderr: "error: failed to run prompt: auth.token_missing: No token.", status: "unauthenticated", exitCode: 77 },
+  ].entries()) {
+    it(`reads a Kimi preflight exiting ${entry.exit} with login wording on stdout and ${entry.stderr || "no"} stderr as ${entry.status}`, async () => {
+      writeFileSync(join(bin, "kimi"), `#!/usr/bin/env bun
+console.log("Authentication required: not logged in");
+console.error(${JSON.stringify(entry.stderr)});
+process.exit(${entry.exit});
+`);
+      const input = kimiOptions(`kimi-preflight-diagnostic-${index}`);
+      const result = await runLane(laneOf(input));
+      expect(result.exitCode).toBe(entry.exitCode);
+      expect(result.receipt).toMatchObject({ status: entry.status, preflight: { status: "failed" } });
       expect(existsSync(sandboxRecord)).toBe(false);
     });
   }

@@ -42,7 +42,7 @@ describe("kimi launch", () => {
       "---",
       "name: pstack-read-only",
       "description: pstack external lane that reads the repository and runs commands without writing outside Kimi's own state.",
-      "tools: Read, Grep, Glob, Bash",
+      "tools: Read, ReadMediaFile, Grep, Glob, Bash",
       "subagents: []",
       "---",
       "${base_prompt}",
@@ -50,7 +50,7 @@ describe("kimi launch", () => {
     ].join("\n"));
     const writer = config.content(lane({ mode: "isolated-write" }));
     expect(writer).toContain("name: pstack-isolated-write\n");
-    expect(writer).toContain("\ntools: Read, Write, Edit, Grep, Glob, Bash\n");
+    expect(writer).toContain("\ntools: Read, ReadMediaFile, Write, Edit, Grep, Glob, Bash\n");
     expect(writer).toContain("\nsubagents: []\n");
     expect(writer).toEndWith("---\n${base_prompt}\n");
   });
@@ -121,11 +121,19 @@ describe("kimi preflight", () => {
       .toEqual({ kind: "unavailable-model" });
   });
 
-  it("reads an exit-0 listing without models as an unavailable model and other failures by name", () => {
+  it("reads an exit-0 listing without models as an unavailable model unless stderr names a login failure", () => {
     expect(preflight(0, "Default model: k3")).toEqual({ kind: "unavailable-model" });
     expect(preflight(0, "{}")).toEqual({ kind: "unavailable-model" });
-    expect(preflight(0, "Error: not logged in")).toEqual({ kind: "unauthenticated" });
-    expect(preflight(1, "", "Error: not logged in")).toEqual({ kind: "unauthenticated" });
+    expect(preflight(0, "Error: not logged in")).toEqual({ kind: "unavailable-model" });
+    expect(preflight(0, "", "error: auth.login_required: Sign in again.")).toEqual({ kind: "unauthenticated" });
+    expect(preflight(0, fixture("provider-list.json"), "error: auth.login_required: Sign in again.")).toMatchObject({ kind: "passed" });
+  });
+
+  it("names a non-zero exit from its stderr diagnostic only", () => {
+    expect(preflight(1, "", "error: failed to run prompt: provider.auth_error: 401 Unauthorized")).toEqual({ kind: "unauthenticated" });
+    expect(preflight(1, "", "error: failed to run prompt: model.not_found: Model k3 does not exist.")).toEqual({ kind: "unavailable-model" });
+    expect(preflight(1, "authentication failed: not logged in; invalid model", "boom")).toEqual({ kind: "inconclusive" });
+    expect(preflight(1, "", "Error: not logged in")).toEqual({ kind: "inconclusive" });
     expect(preflight(2, "", "boom")).toEqual({ kind: "inconclusive" });
   });
 });
@@ -156,5 +164,61 @@ describe("kimi parse", () => {
     expect(result.message).toContain("sandbox-exec profiles do not nest");
     expect(result.message).toContain("provider-dispatch.md#host-and-parent-prerequisites");
     expect(kimi.parse(run({ exitCode: 1, stderr: fixture("nested-seatbelt.stderr.txt") }), lane()).kind).toBe("malformed");
+  });
+});
+
+const KIMI_DIAGNOSTICS: readonly { readonly name: string; readonly diagnostic: string; readonly status: "unauthenticated" | "unavailable-model" | "child-failed" }[] = [
+  { name: "connection error after reading authentication code", diagnostic: "error: failed to run prompt: provider.connection_error: Connection error.", status: "child-failed" },
+  { name: "OAuth refresh connection error", diagnostic: "error: failed to run prompt: provider.connection_error: OAuth authentication refresh connection failed.", status: "child-failed" },
+  { name: "connection diagnostic quoting a credential error", diagnostic: "error: failed to run prompt: provider.connection_error: Upstream returned text:\nerror: Provider credential missing", status: "child-failed" },
+  { name: "unknown failure mentioning authentication", diagnostic: "error: failed to run prompt: Unknown authentication middleware failure.", status: "child-failed" },
+  { name: "absent CLI diagnostic after reviewing error strings", diagnostic: "Warning: authentication module was reviewed.", status: "child-failed" },
+  { name: "missing credential", diagnostic: "error: Provider credential missing\n\nmessage:\nprovider managed:kimi-code has no credential configured", status: "unauthenticated" },
+  { name: "colored logout diagnostic", diagnostic: "\u001b[31merror: failed to run prompt: auth.login_required: Sign in again.\u001b[0m\nSee log: /run-owned/kimi-code/logs/kimi.log", status: "unauthenticated" },
+  { name: "terminal clear-line logout diagnostic", diagnostic: "\u001b[2K\u001b[31merror: failed to run prompt: auth.login_required: Sign in again.\u001b[0m", status: "unauthenticated" },
+  { name: "provider authentication error", diagnostic: "error: failed to run prompt: provider.auth_error: The token is expired.", status: "unauthenticated" },
+  { name: "HTTP 401 authentication failure", diagnostic: "error: failed to run prompt: provider.auth_error: 401 Unauthorized", status: "unauthenticated" },
+  { name: "typed HTTP 401 authentication failure", diagnostic: "error: Provider authentication failed\n\nmessage:\n401 Unauthorized", status: "unauthenticated" },
+  { name: "HTTP 401 that later quotes HTTP 403 text", diagnostic: "error: failed to run prompt: provider.auth_error: 401 Unauthorized\nDetails mention 403 Forbidden", status: "unauthenticated" },
+  {
+    name: "five-hour quota refusal observed on Kimi 2.1.1",
+    diagnostic: "error: failed to run prompt: provider.auth_error: 403 You've reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends. To continue now, purchase extra usage or upgrade your plan: https://www.kimi.com/membership/subscription?tab=quota\nSee log: /Users/rever/.kimi-code/logs/kimi-code.log",
+    status: "child-failed",
+  },
+  ...[
+    "403 You've reached your weekly usage limit.",
+    "403 You\u2019ve reached your 5-hour usage limit.",
+    "403 This model is not included in your plan.",
+    "403 Forbidden",
+  ].map((message) => ({
+    name: `provider refusal ${message}`,
+    diagnostic: `error: failed to run prompt: provider.auth_error: ${message}`,
+    status: "child-failed" as const,
+  })),
+  { name: "typed HTTP 403 refusal", diagnostic: "error: Provider authentication error\n\nmessage:\n403 Forbidden", status: "child-failed" },
+  { name: "missing served model", diagnostic: "error: failed to run prompt: model.not_found: Model k3 does not exist.", status: "unavailable-model" },
+  { name: "unresolved model", diagnostic: "error: failed to run prompt: auth.model_not_resolved: No model for kimi-code/k3.", status: "unavailable-model" },
+  { name: "model configuration failure", diagnostic: "error: Model not found\n\nmessage:\nModel k3 does not exist.", status: "unavailable-model" },
+];
+
+const REVIEWED_SOURCE = 'if (/not logged in|authentication|sign in|invalid model|model not found/i.test(value)) return "unauthenticated";';
+
+describe("kimi failure status", () => {
+  const reviewed = [
+    JSON.stringify({ role: "tool", tool_call_id: "read1", content: REVIEWED_SOURCE }),
+    JSON.stringify({ role: "assistant", content: "Error: not logged in. The source has authentication and model not found classifications." }),
+  ].join("\n");
+
+  for (const scenario of KIMI_DIAGNOSTICS) {
+    it(`reads ${scenario.name} as ${scenario.status} from stderr alone`, () => {
+      expect(kimi.failureStatus!(run({ exitCode: 1, stdout: reviewed, stderr: scenario.diagnostic }))).toBe(scenario.status);
+      expect(preflight(1, reviewed, scenario.diagnostic))
+        .toEqual({ kind: scenario.status === "child-failed" ? "inconclusive" : scenario.status });
+    });
+  }
+
+  it("ignores authentication and model wording on stdout when stderr names no recognized failure", () => {
+    expect(kimi.failureStatus!(run({ exitCode: 1, stdout: reviewed, stderr: "" }))).toBe("child-failed");
+    expect(kimi.failureStatus!(run({ exitCode: 1, stdout: "error: auth.login_required: Sign in again.", stderr: "boom" }))).toBe("child-failed");
   });
 });
