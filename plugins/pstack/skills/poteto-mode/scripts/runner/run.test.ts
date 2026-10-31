@@ -2238,6 +2238,7 @@ describe("childEnvironment", () => {
       amp: { "read-only": ["AMP_API_KEY"] },
       agy: { "read-only": [] },
       cursor: { "read-only": ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"] },
+      kimi: { "read-only": [], "isolated-write": [] },
     };
     const allowlisted = REGISTRY.adapters
       .filter((adapter) => adapter.environment(access("read-only"), "/sidecar").kind === "allowlist");
@@ -3158,5 +3159,222 @@ process.exit(130);`);
     const input = cursorOptions("cursor-writer", { mode: "isolated-write" });
     expect(() => laneOf(input)).toThrow("provider cursor does not support isolated-write");
     expect(existsSync(input.receiptPath)).toBe(false);
+  });
+});
+
+describe("kimi lanes", () => {
+  const LISTING = JSON.stringify({
+    providers: { "managed:kimi-code": { type: "kimi" } },
+    models: {
+      "kimi-code/k3": { model: "k3", displayName: "K3", supportEfforts: ["low", "high", "max"] },
+      "kimi-code/kimi-for-coding-highspeed": { model: "kimi-for-coding-highspeed" },
+    },
+  });
+  const SAVED = ["KIMI_CODE_HOME", "KIMI_MODEL_THINKING_EFFORT", "CODEX_SANDBOX_NETWORK_DISABLED"] as const;
+  let saved: Partial<Record<(typeof SAVED)[number], string>> = {};
+  let kimiHome = "";
+  let sandboxRecord = "";
+  let modelRecord = "";
+  let preflightStarted = "";
+
+  function fakeSandbox(nested = false): void {
+    writeFileSync(join(bin, "sandbox-exec"), `#!/usr/bin/env bun
+import { writeFileSync } from "node:fs";
+const args = process.argv.slice(2);
+if (${nested}) {
+  console.error("sandbox-exec: sandbox_apply: Operation not permitted");
+  process.exit(71);
+}
+const at = args.indexOf("-p");
+writeFileSync(${JSON.stringify(sandboxRecord)}, JSON.stringify(args.slice(0, at + 2)));
+const child = Bun.spawn(args.slice(at + 2), { stdio: ["inherit", "inherit", "inherit"] });
+process.exit(await child.exited);
+`);
+    chmodSync(join(bin, "sandbox-exec"), 0o755);
+  }
+
+  function fakeKimi(listing = LISTING): void {
+    writeFileSync(join(bin, "kimi"), `#!/usr/bin/env bun
+import { readFileSync, writeFileSync } from "node:fs";
+const args = process.argv.slice(2);
+if (args[0] === "provider") {
+  writeFileSync(${JSON.stringify(preflightStarted)}, "started");
+  console.log(${JSON.stringify(listing)});
+  process.exit(0);
+}
+writeFileSync(${JSON.stringify(modelRecord)}, JSON.stringify({
+  args,
+  effort: process.env.KIMI_MODEL_THINKING_EFFORT ?? null,
+  agent: readFileSync(args[args.indexOf("--agent-file") + 1], "utf8"),
+}));
+console.log(JSON.stringify({ role: "assistant", content: "Checking.", tool_calls: [{ id: "t1" }] }));
+console.log(JSON.stringify({ role: "assistant", content: "KIMI_OK" }));
+console.log(JSON.stringify({ role: "meta", type: "session.resume_hint", session_id: "session_k1" }));
+`);
+    chmodSync(join(bin, "kimi"), 0o755);
+  }
+
+  function kimiOptions(suffix: string, overrides: Partial<LaneRequest> = {}): LaneRequest {
+    return { ...options("grok", suffix), provider: "kimi", model: "kimi-code/k3", effort: "high", ...overrides };
+  }
+
+  beforeEach(() => {
+    saved = {};
+    for (const name of SAVED) {
+      saved[name] = process.env[name];
+      delete process.env[name];
+    }
+    kimiHome = join(scratch, "kimi-home");
+    mkdirSync(kimiHome);
+    process.env.KIMI_CODE_HOME = kimiHome;
+    sandboxRecord = join(scratch, "sandbox-args.json");
+    modelRecord = join(scratch, "kimi-model.json");
+    preflightStarted = join(scratch, "kimi-preflight.started");
+    fakeSandbox();
+    fakeKimi();
+  });
+  afterEach(() => {
+    for (const name of SAVED) {
+      const value = saved[name];
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+
+  for (const mode of ["read-only", "isolated-write"] as const) {
+    it(`runs a ${mode} Kimi lane inside the sandbox wrapper with its effort, agent file and prompt`, async () => {
+      const input = kimiOptions(`kimi-${mode}`, { mode });
+      const result = await runLane(laneOf(input));
+      expect(result.exitCode).toBe(0);
+      expect(readFileSync(input.outputPath, "utf8")).toBe("KIMI_OK");
+      const agentFile = `${input.receiptPath}.provider/agent.md`;
+      const ran = JSON.parse(readFileSync(modelRecord, "utf8")) as { args: string[]; effort: string | null; agent: string };
+      expect(ran.args).toEqual([
+        "--output-format", "stream-json", "--model", "kimi-code/k3", "--agent-file", agentFile, "--prompt=Return the marker.",
+      ]);
+      expect(ran.effort).toBe("high");
+      expect(ran.agent).toContain(mode === "isolated-write" ? "tools: Read, Write, Edit, Grep, Glob, Bash" : "tools: Read, Grep, Glob, Bash");
+      const wrapper = JSON.parse(readFileSync(sandboxRecord, "utf8")) as string[];
+      expect(wrapper.slice(0, -1)).toEqual([
+        "-D", `KIMI_HOME=${realpathSync(kimiHome)}`,
+        ...(mode === "isolated-write" ? ["-D", `WRITE_ROOT=${realpathSync(scratch)}`] : []),
+        "-p",
+      ]);
+      const recorded = receipt(input.receiptPath);
+      expect(recorded).toMatchObject({
+        status: "complete",
+        provider: "kimi",
+        model: "kimi-code/k3",
+        effort: "high",
+        mode,
+        executable: join(bin, "kimi"),
+        reportedModel: null,
+        modelVerified: false,
+        modelEvidence: "pinned-argv",
+        sessionId: "session_k1",
+        usage: null,
+        costUsd: null,
+        preflight: {
+          argv: [join(bin, "kimi"), "provider", "list", "--json"],
+          status: "passed",
+          evidence: "model kimi-code/k3 configured with effort high; local config, credentials are checked by the model call",
+        },
+      });
+      expect(recorded.argv[0]).toBe(join(bin, "sandbox-exec"));
+      expect(recorded.argv.slice(wrapper.length + 1)).toEqual([
+        join(bin, "kimi"), "--output-format", "stream-json", "--model", "kimi-code/k3", "--agent-file", agentFile,
+        `--prompt=<contents of ${input.promptPath}>`,
+      ]);
+      expect(JSON.stringify(recorded)).not.toContain("Return the marker.");
+    });
+  }
+
+  it("sets no effort variable for effort default, even when the parent has one", async () => {
+    process.env.KIMI_MODEL_THINKING_EFFORT = "max";
+    const input = kimiOptions("kimi-default", { model: "kimi-code/kimi-for-coding-highspeed", effort: "default" });
+    const result = await runLane(laneOf(input));
+    expect(result.exitCode).toBe(0);
+    expect(result.receipt.preflight.evidence).toContain("configured with effort default");
+    expect((JSON.parse(readFileSync(modelRecord, "utf8")) as { effort: string | null }).effort).toBeNull();
+  });
+
+  for (const [name, model] of [
+    ["an effort the alias does not list", "kimi-code/kimi-for-coding-highspeed"],
+    ["an alias missing from the listing", "kimi-code/k9"],
+  ] as const) {
+    it(`refuses ${name} at preflight before any model call`, async () => {
+      const input = kimiOptions(`kimi-refused-${model.length}`, { model });
+      const result = await runLane(laneOf(input));
+      expect(result.exitCode).toBe(69);
+      expect(result.receipt).toMatchObject({ status: "unavailable-model", preflight: { status: "failed" } });
+      expect(result.receipt.preflight.evidence).toContain("kimi-code/k3");
+      expect(existsSync(modelRecord)).toBe(false);
+      expect(existsSync(sandboxRecord)).toBe(false);
+    });
+  }
+
+  it("refuses a Kimi lane when sandbox-exec is missing instead of running it unconfined", async () => {
+    rmSync(join(bin, "sandbox-exec"));
+    process.env.PATH = `${bin}:${dirname(process.execPath)}`;
+    expect(Bun.which("sandbox-exec", { PATH: process.env.PATH })).toBeNull();
+    const input = kimiOptions("kimi-no-sandbox");
+    const result = await runLane(laneOf(input));
+    expect(result.exitCode).toBe(69);
+    expect(existsSync(preflightStarted)).toBe(false);
+    expect(existsSync(modelRecord)).toBe(false);
+    expect(receipt(input.receiptPath)).toMatchObject({
+      status: "unavailable-cli",
+      executable: join(bin, "kimi"),
+      preflight: { status: "not-run" },
+      error: { message: "sandbox-exec executable not found; kimi lanes need it to confine writes" },
+    });
+    expect(receipt(input.receiptPath).argv[0]).toBe("sandbox-exec");
+  });
+
+  for (const parent of ["codex", "claude"] as const) {
+    it(`names nested Seatbelt when a Kimi lane's sandbox cannot start under a ${parent} parent`, async () => {
+      fakeSandbox(true);
+      process.env.CODEX_SANDBOX_NETWORK_DISABLED = "1";
+      const input = kimiOptions(`kimi-nested-${parent}`, { parent });
+      const result = await runLane(laneOf(input));
+      expect(result.exitCode).toBe(70);
+      const recorded = receipt(input.receiptPath);
+      expect(recorded).toMatchObject({ status: "child-failed", exitCode: 71 });
+      expect(recorded.error?.message).toContain("sandbox-exec profiles do not nest");
+      expect(recorded.error?.message).not.toContain("network disabled");
+      expect(recorded.error?.evidence).toContain("sandbox_apply: Operation not permitted");
+      expect(existsSync(modelRecord)).toBe(false);
+      expect(existsSync(input.outputPath)).toBe(false);
+    });
+  }
+
+  it.skipIf(process.platform !== "darwin")("confines a Kimi writer to its directory with the real Seatbelt profile", async () => {
+    const root = mkdtempSync(join(import.meta.dir, ".seatbelt-test-"));
+    try {
+      const worktree = join(root, "worktree");
+      mkdirSync(worktree);
+      process.env.KIMI_CODE_HOME = join(root, "kimi-home");
+      mkdirSync(process.env.KIMI_CODE_HOME);
+      rmSync(join(bin, "sandbox-exec"));
+      writeFileSync(join(bin, "kimi"), `#!/bin/sh
+if [ "$1" = provider ]; then
+  echo '{"models":{"kimi-code/k3":{"supportEfforts":["high"]}}}'
+  exit 0
+fi
+echo inside > inside.txt
+echo outside > ../outside.txt 2>/dev/null || echo '{"role":"tool","content":"outside denied"}'
+echo '{"role":"assistant","content":"KIMI_OK"}'
+`);
+      chmodSync(join(bin, "kimi"), 0o755);
+      process.env.PATH = `${bin}:/usr/bin:/bin`;
+      const input = kimiOptions("kimi-seatbelt", { mode: "isolated-write", cwd: worktree });
+      const result = await runLane(laneOf(input));
+      expect(result.exitCode).toBe(0);
+      expect(receipt(input.receiptPath).argv[0]).toBe("/usr/bin/sandbox-exec");
+      expect(readFileSync(join(worktree, "inside.txt"), "utf8")).toBe("inside\n");
+      expect(existsSync(join(root, "outside.txt"))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
