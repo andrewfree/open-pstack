@@ -53,13 +53,16 @@ function truncationMarker(omitted: number): string {
   return `\n[truncated ${omitted} characters]\n`;
 }
 
-function boundedEvidence(value: string): string {
-  const trimmed = value.trim();
-  if (trimmed.length <= ERROR_EVIDENCE_LIMIT) return trimmed;
-  const kept = Math.max(0, ERROR_EVIDENCE_LIMIT - truncationMarker(trimmed.length).length);
+function headAndTail(value: string, limit: number): string {
+  if (value.length <= limit) return value;
+  const kept = Math.max(0, limit - truncationMarker(value.length).length);
   const head = Math.ceil(kept / 2);
   const tail = kept - head;
-  return `${trimmed.slice(0, head)}${truncationMarker(trimmed.length - kept)}${trimmed.slice(trimmed.length - tail)}`;
+  return `${value.slice(0, head)}${truncationMarker(value.length - kept)}${value.slice(value.length - tail)}`;
+}
+
+function boundedEvidence(value: string): string {
+  return headAndTail(value.trim(), ERROR_EVIDENCE_LIMIT);
 }
 
 function removeIfExists(path: string): void {
@@ -463,7 +466,7 @@ export async function discoverSharedGitDir(
     kind: "refused",
     status,
     message,
-    evidence: result === null ? "" : evidence(`${result.stdout}\n${result.stderr}`),
+    evidence: result === null ? "" : boundedEvidence(`${result.stdout}\n${result.stderr}`),
     exitCode: result?.exitCode ?? null,
     signal: result?.signal ?? null,
   });
@@ -548,7 +551,7 @@ function retriedPreflightEvidence(
   const payloadLimit = ERROR_EVIDENCE_LIMIT - firstLabel.length - secondLabel.length;
   const firstLimit = Math.floor(payloadLimit / 2);
   const secondLimit = payloadLimit - firstLimit;
-  return `${firstLabel}${first.slice(0, firstLimit)}${secondLabel}${second.slice(0, secondLimit)}`;
+  return `${firstLabel}${headAndTail(first, firstLimit)}${secondLabel}${headAndTail(second, secondLimit)}`;
 }
 
 function statusExitCode(status: ReceiptStatus): number {
@@ -824,7 +827,7 @@ async function executeLane(
     const run = await runProcess(executable, preflightArgs, lane.cwd, env, null, deadlineAt, cancellation);
     const verdict = preflight.classify(run, lane);
     const passed = !run.timedOut && verdict.kind === "passed";
-    const raw = evidence(`${run.stdout}\n${run.stderr}`);
+    const raw = boundedEvidence(`${run.stdout}\n${run.stderr}`);
     return { run, verdict, passed, raw, shown: verdict.kind === "passed" && passed ? verdict.evidence : raw };
   };
   let attempt = await runPreflight();
@@ -1113,7 +1116,7 @@ export async function runLane(
             : status === "timed-out"
               ? "explicit deadline elapsed after reserving output paths"
               : "launcher failed after reserving output paths",
-          evidence: evidence(message),
+          evidence: boundedEvidence(message),
         },
       });
       removeIfExists(lane.outputPath);
