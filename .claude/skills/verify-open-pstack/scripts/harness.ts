@@ -10,12 +10,12 @@ import { publishable } from './verify.ts';
 import { REPO, type Driver, type Harness, type Installation, type Observation, type Receipt, type SessionRecord } from './types.ts';
 
 const setupFeature = (feature: string): boolean => feature === 'setup' || feature === 'skill-invocation:setup-pstack';
-export function launch(harness: Harness, workspace: string, options: { cwd: string; addDirs: string[]; codexSandbox?: 'danger-full-access' }): string[] {
+export function launch(harness: Harness, workspace: string, options: { cwd: string; addDirs: string[]; codexSandbox?: 'danger-full-access'; claudePermission?: 'bypassPermissions' }): string[] {
   const addDirs = options.addDirs.flatMap(dir => ['--add-dir', dir]);
   return harness === 'claude'
     ? ['claude', '-p', '--input-format', 'stream-json', '--replay-user-messages', '--output-format', 'stream-json', '--verbose', '--no-session-persistence',
       '--plugin-dir', join(workspace, 'plugins/pstack'), '--settings', '{"enabledPlugins":{"pstack@open-pstack":false}}',
-      '--permission-mode', 'dontAsk', ...addDirs, '--allowedTools', CLAUDE_TOOLS]
+      '--permission-mode', options.claudePermission ?? 'dontAsk', ...options.claudePermission ? ['--strict-mcp-config'] : [], ...addDirs, '--allowedTools', CLAUDE_TOOLS]
     : ['codex', 'exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-hook-trust', '-c', 'approval_policy="never"',
       '--sandbox', options.codexSandbox ?? 'workspace-write', '--cd', options.cwd, ...addDirs, '-'];
 }
@@ -24,7 +24,10 @@ export function sessionInput(harness: Harness, prompt: string): string {
   return harness === 'claude' ? JSON.stringify({ type: 'user', message: { role: 'user', content: prompt } }) + '\n' : prompt;
 }
 type Event = Record<string, any>;
-/** Normalize a recorded native stream into the skills it loaded and the commands it completed. */
+function resultText(blocks: Event[], id: string): string | undefined {
+  const content = blocks.find(b => b.type === 'tool_result' && b.tool_use_id === id)?.content;
+  return typeof content === 'string' ? content : Array.isArray(content) ? content.map((c: Event) => String(c.text ?? '')).join('') : undefined;
+}
 export function parseSession(harness: Harness, text: string, exitCode: number, started: number, rollout = ''): SessionRecord {
   if (exitCode !== 0) throw new Error(`exit:${exitCode}`);
   const stream: Event[] = text.split('\n').filter(line => line.trim()).map(line => JSON.parse(line));
@@ -34,18 +37,28 @@ export function parseSession(harness: Harness, text: string, exitCode: number, s
     const uses = blocks.filter(b => b.type === 'tool_use' && !failed.has(b.id));
     const commands = stream.filter(e => e.type === 'user' && e.isReplay && typeof e.message?.content === 'string')
       .flatMap(e => [...(e.message.content as string).matchAll(/<command-name>\/([^<\s]+)<\/command-name>/g)].map(m => m[1]!));
-    return { harness, exitCode, started,
+    const context = stream.filter(e => e.type === 'system' && e.subtype === 'hook_response' && e.hook_event === 'SessionStart' &&
+      e.exit_code === 0 && e.outcome === 'success' && typeof e.stdout === 'string').map(e => e.stdout as string);
+    return { harness, exitCode, started, context,
       skills: [...commands, ...uses.filter(u => u.name === 'Skill' && typeof u.input?.skill === 'string').map(u => u.input.skill as string)],
-      commands: uses.filter(u => u.name === 'Bash' && typeof u.input?.command === 'string').map(u => u.input.command as string) };
+      commands: uses.filter(u => u.name === 'Bash' && typeof u.input?.command === 'string').map(u => u.input.command as string),
+      tools: stream.filter(e => e.type === 'assistant' && Array.isArray(e.message?.content)).flatMap(e => (e.message.content as Event[]).filter(b => b.type === 'tool_use')
+        .map(b => ({ name: String(b.name), id: String(b.id), input: b.input ?? {}, parent: e.parent_tool_use_id ?? null, failed: failed.has(b.id), result: resultText(blocks, b.id) }))) };
   }
   const items = stream.filter(e => e.type === 'item.completed' && e.item && typeof e.item === 'object').map(e => e.item as Event);
   const commands = items.filter(i => i.type === 'command_execution' && i.exit_code === 0 && typeof i.command === 'string').map(i => i.command as string);
   // Codex's JSON stream omits skill resolution; its rollout records each injected skill's name and SKILL.md path.
-  const texts = rollout.split('\n').filter(line => line.trim()).map(line => JSON.parse(line) as Event)
-    .flatMap(e => e.type === 'response_item' && Array.isArray(e.payload?.content) ? (e.payload.content as Event[]).map(c => String(c.text ?? '')) : []);
+  const messages = rollout.split('\n').filter(line => line.trim()).map(line => JSON.parse(line) as Event)
+    .filter(e => e.type === 'response_item' && Array.isArray(e.payload?.content));
+  const contents = (e: Event) => (e.payload.content as Event[]).map(c => String(c.text ?? ''));
+  const texts = messages.flatMap(contents);
+  // Codex adds SessionStart hook output to the model input as a developer message.
+  const context = messages.filter(e => e.payload.role === 'developer').flatMap(contents);
   const skills = texts.flatMap(text => [...text.matchAll(/<skill>\n<name>([^<]+)<\/name>\n<path>([^<]+)<\/path>/g)])
     .map(([, name, path]) => path!.includes('/plugins/cache/open-pstack/pstack/') ? name! : path!);
-  return { harness, exitCode, started, skills, commands };
+  const tools = items.filter(i => i.type === 'command_execution' && typeof i.command === 'string').map(i => ({ name: 'command', id: String(i.id),
+    input: { command: i.command as string }, result: typeof i.aggregated_output === 'string' ? i.aggregated_output : undefined, parent: null, failed: i.exit_code !== 0 }));
+  return { harness, exitCode, started, skills, commands, tools, context };
 }
 export async function codexInstallation(output: string, home: string, expected: string): Promise<string> {
   const result = JSON.parse(output);
@@ -76,10 +89,11 @@ export class MacDriver implements Driver {
   private candidate(home: string): Command {
     return (args, options = {}) => this.run(args, { ...options, env: isolatedEnv(home) });
   }
+  async preflight(receipt: Receipt): Promise<void> {
+    await doctor(receipt.artifactRoot, this.run, process.platform, false, requiredHarnesses(receipt));
+  }
   async prepare(receipt: Receipt): Promise<Installation[]> {
     const root = receipt.artifactRoot;
-    await doctor(root, this.run);
-    // Fetch a separate immutable reference for pinned-source comparisons.
     const referenceHome = join(root, 'source-home'), reference = join(referenceHome, 'workspace');
     await mkdir(join(referenceHome, 'tmp'), { recursive: true, mode: 0o700 });
     const trustedRun: Command = (args, options = {}) => this.run(args, { ...options, env: isolatedEnv(referenceHome) });
@@ -121,7 +135,6 @@ export class MacDriver implements Driver {
     }
     return installs;
   }
-  /** Copy this session's Codex rollout into the evidence root before the run-owned home is removed. */
   private async rollout(codexHome: string, stream: string, copy: string): Promise<string> {
     const thread = JSON.parse(stream.split('\n')[0] || '{}').thread_id;
     if (typeof thread !== 'string') return '';
@@ -132,9 +145,7 @@ export class MacDriver implements Driver {
     return readFile(copy, 'utf8');
   }
   async exercise(receipt: Receipt): Promise<Observation[]> {
-    // Every selected feature needs a recipe in every harness before the first session starts.
     const plans = receipt.installations.map(installation => ({ installation,
-      // Setup rewrites the harness's model sheet, so it runs last and later checks see the default configuration.
       features: requiredFeatures(receipt, installation.harness).sort((a, b) => Number(setupFeature(a)) - Number(setupFeature(b)))
         .map(feature => ({ feature, cases: recipe(feature, installation.harness, this.routes) })) }));
     const observations: Observation[] = [];
@@ -154,7 +165,7 @@ export class MacDriver implements Driver {
             await c.prepare?.(fixture);
             const stdout = join(records, `${c.id}.jsonl`), stderr = join(records, `${c.id}.stderr`), cwd = c.cwd === 'workspace' ? workspace : dir;
             const started = Date.now();
-            const exitCode = await this.record(launch(harness, workspace, { cwd, addDirs: cwd === dir ? [] : [dir], codexSandbox: c.codexSandbox }),
+            const exitCode = await this.record(launch(harness, workspace, { cwd, addDirs: cwd === dir ? [] : [dir], codexSandbox: c.codexSandbox, claudePermission: c.claudePermission }),
               { cwd, env, input: sessionInput(harness, c.prompt(fixture)), stdout, stderr });
             evidence.push(stdout, ...(await stat(stderr)).size ? [stderr] : []);
             let record: SessionRecord, result;

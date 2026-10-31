@@ -6,10 +6,14 @@ export interface Pull {
   number: number; head: { sha: string }; base: { sha: string };
   state: string; headRepo: string;
 }
-export interface ChangedFile { filename: string; previous_filename?: string }
+export interface ChangedFile {
+  filename: string; previous_filename?: string;
+  versionOnly?: boolean;
+}
 export interface Registry {
   skills: string[];
   shared: string[];
+  catalog: string[];
   assets: string[];
   setup: string[];
   runner: string[];
@@ -29,7 +33,10 @@ export interface Installation {
 }
 export interface Receipt {
   schema: 1; repo: string; pr: number; sha: string; base: string; phase: Phase;
-  selection: Selection; installations: Installation[]; observations: Observation[];
+  selection: Selection;
+  runFeatures: string[];
+  sessions: number; wide?: string;
+  installations: Installation[]; observations: Observation[];
   selfTest: boolean; artifactRoot: string; publisherRevision?: string; failure?: string;
   commentUrl?: string; status?: 'success' | 'failure'; cleanup: string; started: string;
 }
@@ -39,15 +46,15 @@ export interface GitHub {
   comment(pr: number, body: string): Promise<string>;
   status(sha: string, state: 'success' | 'failure', target: string, description: string): Promise<void>;
 }
-/** One headless native session, normalized by the trusted parent from the harness's own stream. */
 export interface SessionRecord {
   harness: Harness; exitCode: number; started: number;
-  /** Claude: `pstack:<name>` or a project command name. Codex: `pstack:<name>` for installed SKILL.md reads, else the path read. */
   skills: string[];
-  /** Shell commands the harness completed successfully. */
   commands: string[];
+  tools: { name: string; id: string; input: Record<string, any>; parent: string | null; result?: string; failed: boolean }[];
+  context: string[];
 }
 export interface Driver {
+  preflight(receipt: Receipt): Promise<void>;
   prepare(receipt: Receipt): Promise<Installation[]>;
   exercise(receipt: Receipt): Promise<Observation[]>;
   cleanup?(receipt: Receipt): Promise<void>;
