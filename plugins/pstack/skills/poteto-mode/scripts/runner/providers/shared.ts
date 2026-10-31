@@ -1,0 +1,102 @@
+import type { ChildRun, Lane, PreflightVerdict } from "../registry/contract.ts";
+import { evidence, modelFailureStatus, type NormalizedUsage } from "../types.ts";
+
+export const BASE_ALLOWLIST = [
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "TMPDIR",
+  "LANG",
+  "TERM",
+  "COLORTERM",
+  "TZ",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "ALL_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  "all_proxy",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "NODE_EXTRA_CA_CERTS",
+];
+export const BASE_PREFIXES = ["LC_", "XDG_"];
+
+export type JsonObject = Record<string, unknown>;
+
+export function object(value: unknown): JsonObject | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as JsonObject)
+    : null;
+}
+
+export function finiteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+export function nullableString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+export function normalizedUsage(value: unknown): NormalizedUsage | null {
+  const usage = object(value);
+  if (usage === null) return null;
+  const result: NormalizedUsage = {
+    inputTokens: finiteNumber(usage.input_tokens),
+    cachedInputTokens: finiteNumber(
+      usage.cached_input_tokens ?? usage.cache_read_input_tokens
+    ),
+    cacheCreationInputTokens: finiteNumber(
+      usage.cache_creation_input_tokens ?? usage.cache_write_input_tokens
+    ),
+    outputTokens: finiteNumber(usage.output_tokens),
+    reasoningTokens: finiteNumber(
+      usage.reasoning_tokens ?? usage.reasoning_output_tokens
+    ),
+    totalTokens: finiteNumber(usage.total_tokens),
+  };
+  return Object.values(result).some((entry) => entry !== undefined)
+    ? result
+    : null;
+}
+
+export function modelFromUsage(
+  value: unknown,
+  lane: Lane,
+  matches: (lane: Lane, reported: string) => boolean
+): string | null {
+  const usage = object(value);
+  if (usage === null) return null;
+  const models = Object.keys(usage);
+  return models.find((model) => matches(lane, model)) ?? models[0] ?? null;
+}
+
+export function exactOrSuffixed(lane: Lane, reported: string): boolean {
+  return reported === lane.model || reported.startsWith(`${lane.model}-`);
+}
+
+export function effortArgs(lane: Lane, args: readonly string[]): readonly string[] {
+  return lane.effort === "default" ? [] : args;
+}
+
+const AUTH_FAILURE = /not logged in|not authenticated|unauthenticated|authentication|sign in|login required/i;
+
+export function namedPreflightFailure(value: string): "unauthenticated" | "unavailable-model" | null {
+  if (AUTH_FAILURE.test(value)) return "unauthenticated";
+  return modelFailureStatus(value) === "unavailable-model" ? "unavailable-model" : null;
+}
+
+export function failedPreflight(
+  run: ChildRun,
+  fallback: "unauthenticated" | "unavailable-model"
+): PreflightVerdict {
+  return { kind: namedPreflightFailure(boundedOutput(run)) ?? fallback };
+}
+
+export function boundedOutput(run: ChildRun): string {
+  return evidence(`${run.stdout}\n${run.stderr}`);
+}
