@@ -49,8 +49,17 @@ export interface RunResult {
   readonly receipt: RunnerReceipt;
 }
 
-function trailingEvidence(value: string): string {
-  return value.trim().slice(-ERROR_EVIDENCE_LIMIT);
+function truncationMarker(omitted: number): string {
+  return `\n[truncated ${omitted} characters]\n`;
+}
+
+function boundedEvidence(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= ERROR_EVIDENCE_LIMIT) return trimmed;
+  const kept = Math.max(0, ERROR_EVIDENCE_LIMIT - truncationMarker(trimmed.length).length);
+  const head = Math.ceil(kept / 2);
+  const tail = kept - head;
+  return `${trimmed.slice(0, head)}${truncationMarker(trimmed.length - kept)}${trimmed.slice(trimmed.length - tail)}`;
 }
 
 function removeIfExists(path: string): void {
@@ -929,7 +938,7 @@ async function executeLane(
     const sandboxHint = status === "child-failed" && providerFailure === null && parentNetworkDisabled
       ? "likely cause: Codex parent sandbox has network disabled; see provider-dispatch.md#host-and-parent-prerequisites"
       : null;
-    const failureEvidence = evidence(providerFailure !== null
+    const failureEvidence = boundedEvidence(providerFailure !== null
       ? `${providerFailure.message}\n${rawFailureEvidence}`
       : sandboxHint !== null
         ? `${sandboxHint}\n${rawFailureEvidence}`
@@ -993,7 +1002,7 @@ async function executeLane(
       costUsd: null,
       error: {
         message,
-        evidence: trailingEvidence(`${result.stderr}\n${result.stdout}`),
+        evidence: boundedEvidence(`${result.stderr}\n${result.stdout}`),
       },
     });
   }
