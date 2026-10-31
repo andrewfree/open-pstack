@@ -189,9 +189,31 @@ export function childEnvironment(
   const result = {
     ...Object.fromEntries(Object.entries(source).filter(([key]) => keep(key))),
     ...(policy.kind === "allowlist" ? policy.set : undefined),
+    ...(lane.adapter.effortEnv !== undefined && lane.effort !== "default"
+      ? { [lane.adapter.effortEnv]: lane.effort }
+      : undefined),
   };
   for (const key of PARENTS[lane.parent].identity) delete result[key];
   return result;
+}
+
+function modelCommand(
+  lane: Lane,
+  executable: string,
+  wrapperExecutable: string | null,
+  env: NodeJS.ProcessEnv,
+  launchArgs: readonly string[],
+  prompt: string
+): readonly [string, ...string[]] {
+  const { wrapper, promptArgv } = lane.adapter.launch;
+  const model = [...launchArgs, ...(promptArgv?.(prompt) ?? [])];
+  return wrapper === undefined
+    ? [executable, ...model]
+    : [wrapperExecutable ?? wrapper.executable, ...wrapper.argv(lane, env), executable, ...model];
+}
+
+function promptPlaceholder(lane: Lane): string {
+  return `<contents of ${lane.promptPath}>`;
 }
 
 async function terminate(
@@ -644,8 +666,14 @@ async function executeLane(
     PATH: env.PATH,
     cwd: lane.cwd,
   });
+  const wrapper = adapter.launch.wrapper;
+  const wrapperExecutable = wrapper === undefined
+    ? null
+    : Bun.which(wrapper.executable, { PATH: env.PATH, cwd: lane.cwd });
+  const receiptArgv = (): readonly string[] =>
+    modelCommand(lane, executable ?? adapter.executable, wrapperExecutable, env, launchArgs, promptPlaceholder(lane));
   progress.executable = executable;
-  progress.argv = [executable ?? adapter.executable, ...launchArgs];
+  progress.argv = receiptArgv();
 
   let preflightState = progress.preflight;
   let receipt: RunnerReceipt;
@@ -666,7 +694,7 @@ async function executeLane(
       elapsedMs: completed - started,
       executable,
       preflight: terminalPreflight,
-      argv: [executable ?? adapter.executable, ...launchArgs],
+      argv: receiptArgv(),
       exitCode: null,
       signal: null,
       reportedModel: null,
@@ -694,16 +722,16 @@ async function executeLane(
     return finishWithoutChild("timed-out", "before authentication preflight");
   }
 
-  if (executable === null) {
+  if (executable === null || (wrapper !== undefined && wrapperExecutable === null)) {
     const completed = Date.now();
     receipt = completeReceipt(lane, {
       status: "unavailable-cli",
       startedAt,
       completedAt: new Date(completed).toISOString(),
       elapsedMs: completed - started,
-      executable: null,
+      executable,
       preflight: preflightState,
-      argv: [adapter.executable, ...launchArgs],
+      argv: receiptArgv(),
       exitCode: null,
       signal: null,
       reportedModel: null,
@@ -713,7 +741,9 @@ async function executeLane(
       usage: null,
       costUsd: null,
       error: {
-        message: `${adapter.executable} executable not found`,
+        message: executable === null || wrapper === undefined
+          ? `${adapter.executable} executable not found`
+          : `${wrapper.executable} executable not found; ${adapter.id} lanes need it to confine writes`,
         evidence: "",
       },
     });
@@ -735,7 +765,7 @@ async function executeLane(
         preflight: discovery.status === "cancelled" || discovery.status === "timed-out"
           ? { ...preflightState, status: discovery.status }
           : preflightState,
-        argv: [executable, ...launchArgs],
+        argv: receiptArgv(),
         exitCode: discovery.exitCode,
         signal: discovery.signal,
         reportedModel: null,
@@ -752,7 +782,7 @@ async function executeLane(
     }
     const facts: LaunchFacts = { sharedGitDir: discovery.sharedGitDir, providerSidecar: providerSidecar(lane)?.facts ?? null };
     launchArgs = adapter.launch.argv(lane, facts);
-    progress.argv = [executable, ...launchArgs];
+    progress.argv = receiptArgv();
   }
 
   const preflight = adapter.preflight;
@@ -770,7 +800,7 @@ async function executeLane(
         elapsedMs: completed - started,
         executable,
         preflight: preflightState,
-        argv: [executable, ...launchArgs],
+        argv: receiptArgv(),
         exitCode: run.exitCode,
         signal: run.signal,
         reportedModel: null,
@@ -867,7 +897,7 @@ async function executeLane(
       elapsedMs: completed - started,
       executable,
       preflight: preflightState,
-      argv: [executable, ...launchArgs],
+      argv: receiptArgv(),
       exitCode: preflightResult.exitCode,
       signal: preflightResult.signal,
       reportedModel: null,
@@ -902,9 +932,10 @@ async function executeLane(
   const restoreHostState = adapter.launch.guardHostState?.(lane, env) ?? (() => {});
   let result: ProcessResult;
   try {
+    const [command, ...args] = modelCommand(lane, executable, wrapperExecutable, env, launchArgs, prompt);
     result = await runProcess(
-      executable,
-      launchArgs,
+      command,
+      args,
       lane.cwd,
       env,
       adapter.launch.prompt === "stdin" ? adapter.launch.stdinEnvelope?.(prompt) ?? prompt : null,
@@ -922,7 +953,7 @@ async function executeLane(
     elapsedMs: completed - started,
     executable,
     preflight: preflightState,
-    argv: [executable, ...launchArgs],
+    argv: receiptArgv(),
     exitCode: result.exitCode,
     signal: result.signal,
   } as const;
@@ -1038,7 +1069,7 @@ export async function runLane(
     streamFiles = reserveOutputs(lane);
     try {
       const launchArgs = lane.adapter.launch.argv(lane, { sharedGitDir: null, providerSidecar: providerSidecar(lane)?.facts ?? null });
-      progress.argv = [lane.adapter.executable, ...launchArgs];
+      progress.argv = modelCommand(lane, lane.adapter.executable, null, childEnvironment(lane), launchArgs, promptPlaceholder(lane));
       return await executeLane(
         lane,
         cancellation,

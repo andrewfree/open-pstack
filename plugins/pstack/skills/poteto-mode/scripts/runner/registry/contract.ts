@@ -117,7 +117,8 @@ export interface ProviderSidecar {
 export interface ProviderAdapter {
   readonly id: string;
   readonly executable: string;
-  readonly effortIn: "flag" | "model-id" | "config";
+  readonly effortIn: "flag" | "model-id" | "config" | "env";
+  readonly effortEnv?: string;
   readonly preflight: {
     argv(lane: Lane, sidecar: LaunchFacts["providerSidecar"]): readonly string[];
     readonly retryAfterUnauthenticatedMs: number | null;
@@ -128,10 +129,15 @@ export interface ProviderAdapter {
     };
   };
   readonly launch: {
-    readonly prompt: "stdin" | "file";
+    readonly prompt: "stdin" | "file" | "argv";
     readonly sidecar: ProviderSidecar | null;
     readonly supports: readonly AccessKind[];
+    readonly wrapper?: {
+      readonly executable: string;
+      argv(lane: Lane, env: NodeJS.ProcessEnv): readonly string[];
+    };
     stdinEnvelope?(prompt: string): string;
+    promptArgv?(prompt: string): readonly string[];
     needsSharedGitDir(access: Access): boolean;
     argv(lane: Lane, facts: LaunchFacts): readonly string[];
     guardHostState?(lane: Lane, env: NodeJS.ProcessEnv): () => void;

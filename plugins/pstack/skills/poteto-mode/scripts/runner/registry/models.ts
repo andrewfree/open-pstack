@@ -165,6 +165,15 @@ export const FAMILIES = [
     defaultEffort: "high",
     upstream: null,
   }),
+  family({
+    name: "kimi-k3",
+    label: "Kimi K3",
+    provider: "kimi",
+    model: "kimi-code/k3",
+    efforts: ["low", "high", "max"],
+    defaultEffort: "max",
+    upstream: null,
+  }),
 ] as const;
 export type FamilyName = (typeof FAMILIES)[number]["name"];
 
@@ -209,4 +218,5 @@ export const RELEASED_PAIRS = [
   { pair: "cursor:composer-2.5", family: "composer-2.5" },
   { pair: "cursor:gemini-3.7-flash", family: "gemini-3.7-flash" },
   { pair: "claude:claude-haiku-5-5", family: "haiku-5-5" },
+  { pair: "kimi:kimi-code/k3", family: "kimi-k3" },
 ] as const satisfies readonly ReleasedPair<FamilyName>[];

@@ -73,6 +73,12 @@ export function adapterSuite(adapter: ProviderAdapter): void {
         expect(at).toBeGreaterThan(0);
         expect(argv({ effort: "default" })).toEqual([...high.slice(0, at - 1), ...high.slice(at + 1)]);
       });
+    } else if (adapter.effortIn === "env") {
+      it("carries the effort in its environment variable only, never in argv or config", () => {
+        expect(adapter.effortEnv).toMatch(/^[A-Z][A-Z0-9_]*$/);
+        expect(argv({ effort: "high" })).toEqual(argv({ effort: "default" }));
+        expect(config({ effort: "high" })).toBe(config({ effort: "default" }));
+      });
     } else {
       it("passes each registered effort's CLI model ID and no other effort token", () => {
         const families = REGISTRY.families.filter((entry) => entry.provider === adapter.id);
@@ -93,6 +99,12 @@ export function adapterSuite(adapter: ProviderAdapter): void {
       for (const kind of adapter.launch.supports) {
         expect(argv(accessRequest(kind)).includes("/tmp/prompt.md")).toBe(adapter.launch.prompt === "file");
       }
+      expect(adapter.launch.promptArgv !== undefined).toBe(adapter.launch.prompt === "argv");
+      expect(adapter.launch.stdinEnvelope === undefined || adapter.launch.prompt === "stdin").toBe(true);
+    });
+
+    it("names an effort variable exactly when the effort travels in the environment", () => {
+      expect(adapter.effortEnv !== undefined).toBe(adapter.effortIn === "env");
     });
 
     it("uses bounded modes without bypass tokens", () => {

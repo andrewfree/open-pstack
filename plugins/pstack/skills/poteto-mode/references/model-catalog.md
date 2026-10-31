@@ -25,6 +25,7 @@ Model and provider facts for [`provider-dispatch.md`](provider-dispatch.md), whi
 | gemini-3.8-flash | Gemini 3.8 Flash (Antigravity) | agy | gemini-3.8-flash | high | low medium high | - | optional | - |
 | composer-2.5 | Composer 2.5 (Cursor) | cursor | composer-2.5 | default | default | - | optional | - |
 | gemini-3.7-flash | Gemini 3.7 Flash (Cursor) | cursor | gemini-3.7-flash | high | low medium high | - | optional | - |
+| kimi-k3 | Kimi K3 | kimi | kimi-code/k3 | max | low high max | - | optional | - |
 
 A family is `default` when a role default names it and `optional` otherwise. A Claude-native agent exists for each selectable effort of a Claude family.
 
@@ -73,6 +74,7 @@ Rolling aliases:
 | amp | external runner | external runner | `read-only` | stdin | pinned argv | allowlist | - |
 | agy | external runner | external runner | `read-only` | stdin | pinned argv | allowlist | - |
 | cursor | external runner | external runner | `read-only` | stdin | pinned argv | allowlist | - |
+| kimi | external runner | external runner | `read-only`, `isolated-write` | argv | pinned argv | allowlist | macOS `sandbox-exec` (Seatbelt); a parent that does not already run in a Seatbelt sandbox |
 
 The runner refuses an access mode outside a provider's Access modes cell before launch. `isolated-write-full-access` is a writer capability, not a `--mode` value: the runner takes it as `--mode isolated-write --writer-sandbox full-access`, which a parent passes only when the model sheet opts in, as [`provider-dispatch.md`](provider-dispatch.md#codex-writer-sandbox) says.
 
@@ -215,6 +217,23 @@ The runner refuses an access mode outside a provider's Access modes cell before 
 - Cursor never reports the served model ID. The init event's `model` is a display label such as `Claude Opus 5.5 300K High`, so the proof is the pinned argv (`pinned-argv`).
 - Every turn starts a `worker-server` process in the workspace with the lane's environment, in an empty repository too and whether or not the model reads a file. The worker runs `npx -y typescript-language-server --stdio`, and npx runs a repository's own copy when it has one. In the batch-158 containment captures (Cursor CLI 2026.10.14-0f9edde, 2026-10-16), each of these ran repository code: a `node_modules/.bin/typescript-language-server`, a root `package.json` named `typescript-language-server` with a `bin`, an `.npmrc` `script-shell`, and an `.npmrc` `node-options`. The language server inherits the lane's environment plus `AGENT_CLI_*` and `npm_*` variables. A `package.json` `bin` run leaves a `file:` link to the repository in `~/.npm/_npx/`.
 - The worker and the language server stay running in the CLI's process group after the turn and exit after about five idle minutes. An unknown model exits before the worker starts.
+
+### kimi: Kimi Code CLI (`kimi`)
+
+- Executable: `kimi`.
+- Host prerequisites: macOS `sandbox-exec` (Seatbelt); a parent that does not already run in a Seatbelt sandbox.
+- State paths: the Kimi home (`KIMI_CODE_HOME` when it is set and not empty, else `~/.kimi-code`), which the lane may write; `<receipt>.provider/agent.md`, the run-owned agent file.
+- Child environment: only `PATH` `HOME` `USER` `LOGNAME` `SHELL` `TMPDIR` `LANG` `TERM` `COLORTERM` `TZ` `HTTP_PROXY` `HTTPS_PROXY` `NO_PROXY` `ALL_PROXY` `http_proxy` `https_proxy` `no_proxy` `all_proxy` `SSL_CERT_FILE` `SSL_CERT_DIR` `NODE_EXTRA_CA_CERTS` `KIMI_CODE_HOME`, and variables starting with `LC_`, `XDG_`.
+- A Kimi lane pins a model alias from the CLI's own config, such as `kimi-code/k3` for Kimi K3. `kimi provider list --json` lists the configured aliases and the efforts each one accepts in `models.<alias>.supportEfforts`. An unregistered alias takes any pstack effort at the runner, and the preflight refuses one the alias does not list.
+- The preflight runs `kimi provider list --json` outside the sandbox. It reads local config only, so it proves that the alias exists and accepts the requested effort, and records the fixed evidence `model <alias> configured with effort <effort>; local config, credentials are checked by the model call`. A lapsed login surfaces as the model call's own error. A listing without the alias, or an alias that does not list the requested effort, is `unavailable-model`/69; the runner never maps an effort to a neighbor. Effort `default` checks only that the alias exists. Output that is not a JSON listing is `child-failed`/70 unless it names a login or model failure.
+- The CLI has no effort flag. The runner sets `KIMI_MODEL_THINKING_EFFORT` to the lane's effort and leaves it unset for effort `default`. The variable is not on the environment allowlist, so a value in the parent's environment never reaches the lane.
+- Kimi has no sandbox of its own, and its prompt mode approves every tool call. It rejects `--auto` next to `--prompt`, because prompt mode already runs that way. The runner therefore launches Kimi under macOS Seatbelt: `sandbox-exec -D KIMI_HOME=<realpath of the Kimi home> [-D WRITE_ROOT=<realpath of the cwd>] -p <profile> kimi ...`. Both modes may write only `/dev/null`, `/dev/zero`, `/dev/dtracehelper`, `/dev/tty*`, `/dev/fd/*`, `/private/tmp`, `/private/var/folders` and the Kimi home; `isolated-write` may also write its assigned directory. Seatbelt rejects an empty path, so an empty `KIMI_CODE_HOME` means `~/.kimi-code`. Point a read-only lane at a checkout outside the temporary directories, which stay writable. Preflight runs outside the sandbox.
+- A host without `sandbox-exec` gets `unavailable-cli`/69 with `sandbox-exec executable not found; kimi lanes need it to confine writes` before the preflight, never an unconfined run.
+- Seatbelt profiles do not nest. Under a parent that already runs in a sandbox, such as a Codex parent in its default `workspace-write` mode, `sandbox-exec` exits 71 with `sandbox_apply: Operation not permitted` before Kimi starts. That receipt is `child-failed`/70 with a message naming the nested sandbox, not the Codex network hint. Kimi lanes under Codex need the parent started deliberately with `danger-full-access`.
+- Each lane passes `--agent-file` with its run-owned `<receipt>.provider/agent.md`. It allowlists `Read`, `Grep`, `Glob` and `Bash`, plus `Write` and `Edit` for a writer, names no subagents, and keeps Kimi's own system prompt through `${base_prompt}`. That removes Kimi's subagent, web, scheduling and MCP tools from the lane.
+- Kimi reads no prompt file or stdin, so the prompt travels as the `--prompt=<prompt>` argument, and macOS's 1 MiB argument limit bounds it. The receipt's argv shows `--prompt=<contents of PATH>` in its place.
+- The stream-json output has no terminal event, served-model report, usage or cost. The lane output is the last assistant message, and the session is the `session.resume_hint` meta event's `session_id`. A stream whose last assistant event carries only tool calls, or that has no assistant event, is `malformed-output`/65. The proof is the pinned argv (`pinned-argv`).
+- Kimi prints no error result: a failed call exits non-zero with its error on stderr.
 
 ## Role defaults
 

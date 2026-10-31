@@ -104,6 +104,7 @@ describe("registry data", () => {
       ["gemini-3.8-flash", "high"],
       ["composer-2.5", "default"],
       ["gemini-3.7-flash", "high"],
+      ["kimi-k3", "max"],
     ]);
     expect(REGISTRY.families.filter((entry) => entry.provider === "claude").map((entry) => [entry.name, entry.model]))
       .toEqual([["fable", "fable"], ["opus", "opus"], ["sonnet", "sonnet"], ["opus-5-5", "claude-opus-5-5"], ["haiku-5-5", "claude-haiku-5-5"]]);
@@ -521,7 +522,7 @@ describe("resolveLane", () => {
   it("rejects same-provider recursion and unknown names", () => {
     expect(() => resolveLane(request({ parent: "claude" })))
       .toThrow("provider claude is native to parent claude; use the parent subagent primitive");
-    expect(() => resolveLane(request({ provider: "kiro" }))).toThrow("provider must be one of: claude, codex, grok, devin, opencode, dsh, amp, agy, cursor");
+    expect(() => resolveLane(request({ provider: "kiro" }))).toThrow("provider must be one of: claude, codex, grok, devin, opencode, dsh, amp, agy, cursor, kimi");
     expect(() => resolveLane(request({ parent: "grok" }))).toThrow("parent must be one of: claude, codex");
     expect(() => resolveLane(request({ mode: "full" }))).toThrow("mode must be one of: read-only, isolated-write");
     expect(() => resolveLane(request({ model: " " }))).toThrow("model is required");

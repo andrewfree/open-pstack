@@ -65,7 +65,7 @@ Before any external CLI availability/authentication check or model probe, resolv
 
 If required access is blocked, explain the affected assigned families and the restriction before invoking their CLIs. If permission information is unavailable or incomplete, call it **unknown**, say which required access cannot be established, and resolve it before external checks or probes. Offer exactly two paths when access is blocked or remains unknown:
 
-1. Restart the parent with suitable permissions, chosen deliberately by the operator; stop this setup without writing. See provider-dispatch's **Host and parent prerequisites**, including Grok's nested-sandbox limitation.
+1. Restart the parent with suitable permissions, chosen deliberately by the operator; stop this setup without writing. See provider-dispatch's **Host and parent prerequisites**, including Grok's and Kimi's nested-sandbox limitation.
 2. Explicitly choose native-only role assignments for this parent. Show each affected role and proposed replacement and obtain the operator's named changes, then return to steps 2–4 to validate the revised map and efforts before native probes. On Codex, families of the `codex` provider are native; `inherit-parent` and `auto` also stay native. Do not change any lane automatically, reduce its effort, or launch an external CLI for a now-unassigned family. State any reduction in provider diversity.
 
 If all chosen families are native, no external CLI permission check or probe is needed; the separate final-write check still applies. When the effective permissions allow the selected external lanes, proceed with the existing routes and requested efforts unchanged. Never change sandbox settings or escalate permissions as part of setup.
