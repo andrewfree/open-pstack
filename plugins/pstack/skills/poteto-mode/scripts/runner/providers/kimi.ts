@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { adapter, type LaunchFacts, type ModelRun, type ParseResult, type PreflightVerdict } from "../registry/contract.ts";
 import type { AccessMode } from "../types.ts";
-import { BASE_ALLOWLIST, BASE_PREFIXES, boundedOutput, namedPreflightFailure, nullableString, object } from "./shared.ts";
+import { BASE_ALLOWLIST, BASE_PREFIXES, boundedOutput, failedPreflight, namedPreflightFailure, nullableString, object } from "./shared.ts";
 
 const READ_ONLY_PROFILE = `(version 1)
 (allow default)
@@ -132,9 +132,8 @@ export const kimi = adapter({
     argv: () => ["provider", "list", "--json"],
     retryAfterUnauthenticatedMs: null,
     classify(run, lane): PreflightVerdict {
-      if (run.exitCode !== 0 || !listed(run.stdout)) {
-        return { kind: namedPreflightFailure(boundedOutput(run)) ?? "inconclusive" };
-      }
+      if (run.exitCode !== 0) return { kind: namedPreflightFailure(boundedOutput(run)) ?? "inconclusive" };
+      if (!listed(run.stdout)) return failedPreflight(run, "unavailable-model");
       const efforts = supportedEfforts(run.stdout, lane.cliModel);
       if (efforts === null) return { kind: "unavailable-model" };
       return lane.effort === "default" || efforts.includes(lane.effort)
@@ -189,7 +188,7 @@ export const kimi = adapter({
     ],
     notes: [
       "A Kimi lane pins a model alias from the CLI's own config, such as `kimi-code/k3` for Kimi K3. `kimi provider list --json` lists the configured aliases and the efforts each one accepts in `models.<alias>.supportEfforts`. An unregistered alias takes any pstack effort at the runner, and the preflight refuses one the alias does not list.",
-      "The preflight runs `kimi provider list --json` outside the sandbox. It reads local config only, so it proves that the alias exists and accepts the requested effort, and records the fixed evidence `model <alias> configured with effort <effort>; local config, credentials are checked by the model call`. A lapsed login surfaces as the model call's own error. A listing without the alias, or an alias that does not list the requested effort, is `unavailable-model`/69; the runner never maps an effort to a neighbor. Effort `default` checks only that the alias exists. Output that is not a JSON listing is `child-failed`/70 unless it names a login or model failure.",
+      "The preflight runs `kimi provider list --json` outside the sandbox. It reads local config only, so it proves that the alias exists and accepts the requested effort, and records the fixed evidence `model <alias> configured with effort <effort>; local config, credentials are checked by the model call`. A lapsed login surfaces as the model call's own error. A listing without the alias, or an alias that does not list the requested effort, is `unavailable-model`/69; the runner never maps an effort to a neighbor. Effort `default` checks only that the alias exists. When the command exits 0 but prints output that is not a JSON listing with a `models` object, the verdict is also `unavailable-model`/69 unless the output names a login failure. A non-zero exit is `child-failed`/70 unless its output names a login or model failure.",
       "The CLI has no effort flag. The runner sets `KIMI_MODEL_THINKING_EFFORT` to the lane's effort and leaves it unset for effort `default`. The variable is not on the environment allowlist, so a value in the parent's environment never reaches the lane.",
       "Kimi has no sandbox of its own, and its prompt mode approves every tool call. It rejects `--auto` next to `--prompt`, because prompt mode already runs that way. The runner therefore launches Kimi under macOS Seatbelt: `sandbox-exec -D KIMI_HOME=<realpath of the Kimi home> [-D WRITE_ROOT=<realpath of the cwd>] -p <profile> kimi ...`. Both modes may write only `/dev/null`, `/dev/zero`, `/dev/dtracehelper`, `/dev/tty*`, `/dev/fd/*`, `/private/tmp`, `/private/var/folders` and the Kimi home; `isolated-write` may also write its assigned directory. Seatbelt rejects an empty path, so an empty `KIMI_CODE_HOME` means `~/.kimi-code`. Point a read-only lane at a checkout outside the temporary directories, which stay writable. Preflight runs outside the sandbox.",
       "A host without `sandbox-exec` gets `unavailable-cli`/69 with `sandbox-exec executable not found; kimi lanes need it to confine writes` before the preflight, never an unconfined run.",
