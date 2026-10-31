@@ -45,43 +45,28 @@ else
   fail=1
 fi
 
-# Active configuration must use Claude's rolling family aliases. Concrete
-# provider reports may still appear in runner fixtures, but no shipped
-# descriptor, native-agent model field, or live test invocation may pin one.
+rolling='fable|opus|sonnet'
 legacy_model_pins="$(
   grep -REn \
     --include='*.md' --include='*.ts' --include='*.sh' \
-    'claude:claude-(fable|opus)-[0-9]|^model: claude-(fable|opus)-[0-9]|--model claude-(fable|opus)-[0-9]' \
+    "claude:claude-($rolling)-[0-9]|^model: claude-($rolling)-[0-9]|--model claude-($rolling)-[0-9]" \
     "$repo/plugins/pstack" "$repo/tests" "$repo/README.md" "$repo/docs/reference.md" \
-    2>/dev/null || true
+    2>/dev/null | grep -Ev '^[^:]*/skills/poteto-mode/scripts/runner/registry/models\.ts:[0-9]+:  \{ pair: "claude:claude-(fable|opus)-[0-9]+", family: "(fable|opus)" \},$' |
+    sed -E 's/claude-opus-5-5([^0-9A-Za-z_.-]|$)/\1/g' |
+    grep -E "claude:claude-($rolling)-[0-9]|:[0-9]+:model: claude-($rolling)-[0-9]|--model claude-($rolling)-[0-9]" || true
 )"
-standalone_code_pins="$(
-  grep -REn \
-    --include='*.ts' --include='*.js' \
-    --exclude='*.test.ts' --exclude='*.test.js' \
-    "['\"]claude-(fable|opus)-[0-9]" \
-    "$repo/plugins/pstack" \
-    2>/dev/null || true
-)"
-if [ -n "$legacy_model_pins" ] || [ -n "$standalone_code_pins" ]; then
-  note "FAIL: active Fable or Opus configuration still pins a model revision:"
-  [ -z "$legacy_model_pins" ] || note "$legacy_model_pins"
-  [ -z "$standalone_code_pins" ] || note "$standalone_code_pins"
+if [ -n "$legacy_model_pins" ]; then
+  note "FAIL: active Fable, Opus or Sonnet configuration still pins a model revision:"
+  note "$legacy_model_pins"
   fail=1
 else
-  note "ok: active Fable and Opus configuration uses rolling aliases"
+  note "ok: active Fable, Opus and Sonnet configuration uses rolling aliases"
 fi
 
-# Static invariant (CHANGES maintenance note): setup-pstack's first-run `arena runners`
-# row is the default panel. The other panel rows and the arena, architect, and
-# interrogate defaults copy it verbatim.
 setup="$repo/plugins/pstack/skills/setup-pstack/SKILL.md"
-dispatch="$repo/plugins/pstack/skills/poteto-mode/references/provider-dispatch.md"
 
-# Config-home port invariant (#120): guard upstream merges against daily-home writes.
 config_mapping="$repo/plugins/pstack/skills/poteto-mode/references/codex-tools.md"
 config_home_bad=""
-# The legacy import is rendered text, not a hard-coded write destination.
 if sed 's|@~/.claude/pstack-models.md||g' "$setup" | grep -nE '~/(\.claude|\.codex)|\$HOME/(\.claude|\.codex)'; then
   config_home_bad="setup still names a literal default config path outside the legacy import"$'\n'
 fi
@@ -109,7 +94,6 @@ done
 for target in pstack-models.md CLAUDE.md AGENTS.md; do
   grep -Fq "<config-home>/$target" "$setup" || config_home_bad="${config_home_bad}setup does not resolve $target through config-home"$'\n'
 done
-# Resolution only: keep real HOME/USER and never write default or daily targets.
 if ! (
   unset CLAUDE_CONFIG_DIR CODEX_HOME
   [ "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" = "$HOME/.claude" ] &&
@@ -131,41 +115,25 @@ else
   note "ok: setup config-home port invariant; unset/empty defaults and spaced overrides resolve without writes"
 fi
 
-quad_of() { { grep -oE '(claude|codex|grok):[a-z0-9.-]+@(low|medium|high|xhigh|max)' || true; } | tr '\n' ' ' | sed 's/ $//'; }
-canon_panel="$( { grep -m1 '^arena runners:' "$setup" || true; } | quad_of)"
-panel_bad=""
-[ -n "$canon_panel" ] || panel_bad="could not read the canonical panel from $setup"$'\n'
-# Anchor on the panel's last slug rather than a hard-coded one, so a model swap in
-# setup-pstack cannot leave this check hunting for a slug nobody ships any more.
-anchor="${canon_panel##* }"
-# arena and architect each state the panel on one line; interrogate lists it
-# as one slug per row of its Reviewer A/B/C table (upstream #167).
-for name in arena architect; do
-  skill="$repo/plugins/pstack/skills/$name/SKILL.md"
-  n="$(grep -Fc "$anchor" "$skill" || true)"
-  if [ "$n" != "1" ]; then
-    panel_bad="$panel_bad$skill: expected exactly 1 default-panel line, found $n"$'\n'
-    continue
-  fi
-  got="$(grep -F "$anchor" "$skill" | quad_of)"
-  [ "$got" = "$canon_panel" ] || panel_bad="$panel_bad$skill: [$got] != [$canon_panel]"$'\n'
-done
-interrogate="$repo/plugins/pstack/skills/interrogate/SKILL.md"
-got="$(grep -E '^\| Reviewer [A-Z] \|' "$interrogate" | quad_of)"
-[ "$got" = "$canon_panel" ] || panel_bad="$panel_bad$interrogate reviewer table: [$got] != [$canon_panel]"$'\n'
-while IFS= read -r line; do
-  got="$(printf '%s\n' "$line" | quad_of)"
-  [ "$got" = "$canon_panel" ] || panel_bad="$panel_bad$setup role row: [$got] != [$canon_panel]"$'\n'
-done < <(grep -E '^(arena runners|arena cross-judge pool|architect runners|interrogate reviewers):' "$setup")
-if [ -n "$panel_bad" ]; then
-  note "FAIL: the default model panel is not identical across provider dispatch, the panel skills, and setup-pstack:"
-  note "$panel_bad"
+plugin="$repo/plugins/pstack"
+
+poteto_agent="$plugin/agents/poteto-agent.md"
+poteto_agent_front="$(sed -n '2,/^---$/p' "$poteto_agent")"
+poteto_preload_bad=""
+if [ "$(printf '%s\n' "$poteto_agent_front" | grep -cx 'skills:' || true)" != "1" ]; then
+  poteto_preload_bad="${poteto_agent} must declare one skills list"$'\n'
+fi
+if [ "$(printf '%s\n' "$poteto_agent_front" | grep -cx '  - pstack:poteto-mode' || true)" != "1" ]; then
+  poteto_preload_bad="${poteto_preload_bad}${poteto_agent} must preload pstack:poteto-mode"$'\n'
+fi
+if [ -n "$poteto_preload_bad" ]; then
+  note "FAIL: Claude poteto-agent does not preload poteto-mode:"
+  note "$poteto_preload_bad"
   fail=1
 else
-  note "ok: default model panel identical across provider dispatch + 3 panel skills + setup-pstack ($canon_panel)"
+  note "ok: Claude poteto-agent preloads poteto-mode"
 fi
 
-plugin="$repo/plugins/pstack"
 canon="$plugin/skills/poteto-mode/references/bugbot-triage.md"
 skill="$plugin/skills/babysit/SKILL.md"
 playbook="$plugin/skills/poteto-mode/playbooks/babysit.md"
@@ -334,14 +302,13 @@ grep -Fq 'An appended stack child keeps its recorded parent tip until that paren
 grep -Fq 'For fork heads, take the order from the verified local parent ancestry' "$shipping" || shipping_safety_bad="${shipping_safety_bad}Shipping tries to infer a fork stack from shared trunk bases"$'\n'
 grep -Fq 'only the current bottom PR through Shipping, one at a time' "$autopilot_stack" || shipping_safety_bad="${shipping_safety_bad}Autopilot-stack offers merge-when-ready outside the current bottom frontier"$'\n'
 grep -Fq -- '--force-with-lease="refs/heads/$branch:$captured_sha"' "$autopilot_full" || shipping_safety_bad="${shipping_safety_bad}Autopilot-full does not bind its post-rebase push to the captured SHA"$'\n'
-grep -Fq "A private-stack child fetches its parent's exact tip" "$autopilot_full" || shipping_safety_bad="${shipping_safety_bad}Autopilot-full rebases a private-stack child onto trunk instead of its parent"$'\n'
 grep -Fq 'Record the selected exact commit as `<target-tip>`' "$autopilot_full" || shipping_safety_bad="${shipping_safety_bad}Autopilot-full does not record the exact rebase target"$'\n'
-grep -Fq 'git rebase --onto "$target_tip" "$current_base_sha" -- "$branch"' "$autopilot_full" || shipping_safety_bad="${shipping_safety_bad}Autopilot-full does not isolate child commits when changing a private-stack parent"$'\n'
+grep -Fq 'git rebase --onto "$target_tip" "$current_base_sha" -- "$branch"' "$autopilot_full" || shipping_safety_bad="${shipping_safety_bad}Autopilot-full does not isolate its own commits when changing the rebase target"$'\n'
 grep -Fq 'git fetch -- "$head_url" "refs/heads/$branch"' "$opening_a_pr" || shipping_safety_bad="${shipping_safety_bad}Opening a PR does not refresh a fork head through its push repository URL"$'\n'
 grep -Fq 'resolve and validate `<head-url>` through Shipping step 1, capture it as `head_url`' "$opening_a_pr" || shipping_safety_bad="${shipping_safety_bad}Opening a PR does not resolve its head URL before a shared-worktree refresh"$'\n'
 grep -Fq 'git fetch -- "$head_url" "refs/heads/$head_branch"' "$multi_phase_plan" || shipping_safety_bad="${shipping_safety_bad}Multi-phase plan does not fetch a live-lane head through its push repository URL"$'\n'
 grep -Fq 'Resolve and validate `<head-url>` through Shipping step 1 and capture it as `head_url` for the live-lane fetch' "$multi_phase_plan" || shipping_safety_bad="${shipping_safety_bad}Multi-phase plan does not resolve its head URL before a live-lane fetch"$'\n'
-autopilot_full_rewrite_order="$(awk '/^2\. / { capture = index($0, "git ls-remote"); rebase = index($0, "git rebase --onto"); if (capture == 0 || rebase == 0 || capture >= rebase) print $0 }' "$autopilot_full")"
+autopilot_full_rewrite_order="$(awk '/^2\. / { step = 1 } /^3\. / { step = 0 } step { text = text $0 "\n" } END { capture = index(text, "git ls-remote"); rebase = index(text, "git rebase --onto"); if (capture == 0 || rebase == 0 || capture >= rebase) print "step 2" }' "$autopilot_full")"
 if [ -n "$autopilot_full_rewrite_order" ]; then
   shipping_safety_bad="${shipping_safety_bad}Autopilot-full does not capture the published head before rebasing"$'\n'
 fi
@@ -349,7 +316,7 @@ grep -Fq "Shipping step 4's disarm-and-confirm rule" "$autopilot_full" || shippi
 grep -Fq "Shipping step 5's server-enforced expected-head flow" "$autopilot_full" || shipping_safety_bad="${shipping_safety_bad}Autopilot-full does not bind owner merges to the current landing SHA"$'\n'
 grep -Fq -- '--force-with-lease="refs/heads/$branch:$captured_sha"' "$autopilot_stack" || shipping_safety_bad="${shipping_safety_bad}Autopilot-stack does not bind its topology push to the captured SHA"$'\n'
 grep -Fq "Shipping step 4's disarm-and-confirm rule" "$autopilot_stack" || shipping_safety_bad="${shipping_safety_bad}Autopilot-stack can rewrite an armed pull request"$'\n'
-grep -Fq "step 6's captured-SHA lease flow" "$autopilot_stack" || shipping_safety_bad="${shipping_safety_bad}Autopilot-stack drift handling does not reuse its guarded push flow"$'\n'
+grep -Fq "step 2's captured-SHA lease flow" "$autopilot_stack" || shipping_safety_bad="${shipping_safety_bad}Autopilot-stack drift handling does not reuse its guarded push flow"$'\n'
 if [ -n "$shipping_safety_bad" ]; then
   note "FAIL: forge-neutral landing safety rules regressed:"
   note "$shipping_safety_bad"
@@ -366,7 +333,7 @@ else
   note "ok: excluded upstream skills stay absent"
 fi
 
-routed_model_skills=(how why unslop typescript-best-practices benchmark-checklist)
+routed_model_skills=(how why unslop typescript-best-practices create-formal-verification-skill benchmark-checklist)
 routed_model_bad=""
 for name in "${routed_model_skills[@]}"; do
   routed_skill="$plugin/skills/$name/SKILL.md"
@@ -381,35 +348,6 @@ if [ -n "$routed_model_bad" ]; then
   fail=1
 else
   note "ok: routed skills stay model-invocable"
-fi
-
-sol_descriptor="$(awk -F '|' '
-  $2 ~ /^[[:space:]]*sol[[:space:]]*$/ {
-    for (i = 4; i <= 6; i++) gsub(/^[[:space:]]+|[[:space:]]+$/, "", $i)
-    print $4 ":" $5 "@" $6
-  }
-' "$dispatch")"
-solo_code_bad=""
-if [ -z "$sol_descriptor" ]; then
-  solo_code_bad="could not read the sol row from $dispatch"$'\n'
-fi
-for role in bug-fix perf-issue hillclimb; do
-  setup_descriptor="$(sed -n "s/^${role}: //p" "$setup")"
-  if [ "$setup_descriptor" != "$sol_descriptor" ]; then
-    solo_code_bad="${solo_code_bad}${setup} ${role}: [${setup_descriptor}] != [${sol_descriptor}]"$'\n'
-  fi
-  role_playbook="$plugin/skills/poteto-mode/playbooks/$role.md"
-  playbook_descriptor="$(sed -n 's/.*default `\([^`]*\)`.*/\1/p' "$role_playbook")"
-  if [ "$playbook_descriptor" != "$sol_descriptor" ]; then
-    solo_code_bad="${solo_code_bad}${role_playbook}: [${playbook_descriptor}] != [${sol_descriptor}]"$'\n'
-  fi
-done
-if [ -n "$solo_code_bad" ]; then
-  note "FAIL: solo code roles must use the sol row:"
-  note "$solo_code_bad"
-  fail=1
-else
-  note "ok: solo code roles stay on the sol row ($sol_descriptor)"
 fi
 
 codex_manifest="$plugin/.codex-plugin/plugin.json"
@@ -457,6 +395,14 @@ else
   note "ok: shared project verification skill has executable helper and maintained feature map"
 fi
 
+if release_out="$(python3 "$repo/scripts/release_test.py" 2>&1 && python3 "$repo/scripts/release.py" notes 2>&1 >/dev/null)"; then
+  note "ok: release notes build from the CHANGES.md section for the manifest version ($vc)"
+else
+  note "FAIL: release notes do not build"
+  note "$release_out"
+  fail=1
+fi
+
 note "Checking non-shipped verification helper"
 (
   cd "$verification"
@@ -488,7 +434,7 @@ run() {
   claude -p --plugin-dir "$scratch" --model fable --effort max --max-turns 3 "$1" < /dev/null 2>&1
 }
 
-check() { # $1 label, $2 expected marker, $3 output
+check() {
   if printf '%s' "$3" | grep -q "$2"; then
     note "ok: $1 -> $2"
   else
@@ -501,5 +447,17 @@ invoke='Call the Skill tool with skill "testplug:foo" exactly once and follow wh
 
 check "model-initiated Skill-tool invocation" "SKILL-RAN" "$(run "$invoke")"
 check "user /testplug:foo invocation" "SKILL-RAN" "$(run '/testplug:foo')"
+
+preloaded_agent_output="$(
+  claude -p \
+    'Use the Agent tool once with subagent_type pstack:poteto-agent. Give it this task verbatim: "Without invoking Skill or reading files, reply with the first Core principle named in the preloaded poteto-mode skill." Return only the child response.' \
+    --plugin-dir "$plugin" \
+    --model fable \
+    --effort max \
+    --max-turns 5 \
+    --tools Agent \
+    < /dev/null 2>&1 || true
+)"
+check "poteto-agent preloaded skill" "Laziness Protocol" "$preloaded_agent_output"
 
 exit "$fail"

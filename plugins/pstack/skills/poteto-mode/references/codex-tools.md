@@ -21,6 +21,22 @@ The Claude integration is the one `@` import line in `<config-home>/CLAUDE.md` w
 
 Only when `CLAUDE_CONFIG_DIR` redirects the home, render exactly `@./pstack-models.md`. This relative import resolves from the importing file's directory, where the sheet also lives, so the import line contains no config-directory characters. On a rerun, replace that one line in place, preserving all unrelated bytes. If zero matching import lines exist, append one. If more than one exists, stop and report inconsistent state before either write; do not append another import or guess which one to replace.
 
+## Active transcripts
+
+Reflect passes reviewers this conversation's transcript only after the parent verifies it. Metadata records can come before the first user message in either harness, so never assume the first JSONL record is the opening message.
+
+**Claude Code.** Look only in the per-project directory that the system prompt names under `<config-home>/projects/<encoded-cwd>/`. Do not glob across `<config-home>/projects/`, because that reads private chats from unrelated workspaces. Three layouts exist in that directory: flat (`<id>.jsonl`), nested (`<id>/<id>.jsonl`), and subagent (`<parent>/subagents/<child>.jsonl`). Inspect at most ten candidates, newest first. Read each with a line limit of at most 500. Stop scanning a candidate at 500 records, 2 MiB in total, or a 256 KiB record. Take the candidate whose first actual user message is this conversation's opening prompt.
+
+**Codex.** Run the read-only resolver with the parent's known chat ID. Substitute the absolute plugin root and the chat UUID:
+
+```bash
+"<plugin-root>/skills/poteto-mode/scripts/resolve-codex-transcript" "<chat-id>"
+```
+
+The resolver reads the [Codex config home](#harness-config-homes) and looks up that exact ID in the `threads` table of its `state_*.sqlite` index. It checks that the rollout is inside `<config-home>/sessions/` and belongs to that chat. It then scans at most 500 records, 2 MiB in total, or a 256 KiB record for the first user message, skipping injected AGENTS.md and environment context. On success it exits 0 and prints the chat ID, the rollout path, and the opening message's line, record type, character count, and SHA-256. It never prints message text. If it cannot verify the transcript, it exits 1 and prints an `unresolved` reason. Before passing the path, compare the character count and SHA-256 with this conversation's opening prompt. Do not search by chat title or by time.
+
+**Fallback.** If the chat ID, index, ownership, path, or opening prompt cannot be verified within these limits, pass a tight session digest instead. Keep it to at most 2,000 words and include only relevant decisions, corrections, evidence paths, and unresolved work. Do not widen transcript discovery to replace missing evidence.
+
 ## Tool actions
 
 | pstack / Claude action | Codex equivalent |
@@ -51,7 +67,7 @@ Without it, the native Codex lane is a named dropout. Independent external lanes
 
 ## Subagent policy
 
-poteto-mode's Subagents section sets Claude-specific defaults (`subagent_type: "poteto-agent"`, `run_in_background: true`). On Codex:
+poteto-mode's Subagents section sets the Claude-specific default `subagent_type: "poteto-agent"`. Claude Code waits follow [Waits on Claude Code](#waits-on-claude-code). On Codex:
 
 - There is no `poteto-agent` subagent type. Route an ad-hoc subagent through poteto-mode's style by dispatching a `spawn_agent` whose instructions tell it to read the `poteto-mode` skill in full first.
 - `spawn_agent` calls already run concurrently with your turn, so `run_in_background: true` has no separate flag. Issue the dispatch and continue.
@@ -59,9 +75,19 @@ poteto-mode's Subagents section sets Claude-specific defaults (`subagent_type: "
 - Claude Code runs every subagent on this machine, so the **swarm** skill's workers and the fan-out playbooks (`orchestrate`, `autopilot-full`, `autopilot-stack`) isolate writers with worktrees. The same holds on Codex.
 - Keep the rest of the policy unchanged. Pass file pointers not inlined context, give each worker its own worktree or branch when they write, review every subagent's diff yourself.
 
+## Waits on Claude Code
+
+- The main session launches long commands, such as the `watch-pr` watcher and the external launcher, and lane fan-outs with `run_in_background: true`. It keeps their handles and acts on completion notices. Babysit's main-session `/loop` still handles watcher progress verdicts that do not exit, such as `WAITING/merge-queue`.
+- A subagent that needs a native lane's report before its next step dispatches the lane with `run_in_background: false` and reads the report from the `Agent` result. It puts independent dispatches in one message.
+- A subagent cannot run `/loop`. On GitHub, it runs `watch-pr` in the foreground with Bash `timeout: 600000` and `--timeout 240`, and acts on the verdict. It runs the watcher again after a `TIMEOUT` exit (5), and after every push or verdict it acts on, as babysit step 6 says. On another forge, it follows that forge's commands in babysit step 6 instead. If Bash moved the watcher to the background, the subagent supervises that task and starts no second watcher.
+- To wait on a background task it already started, such as an external lane, a subagent makes one foreground Bash call with `timeout: 600000` that returns within 540 seconds and checks for the task's final outcome. For a runner lane, the final outcome is a receipt that parses as JSON with a `status` field. The runner reserves the output and receipt files empty before the lane finishes, so an existing receipt file is not an outcome. If the task is still running, the subagent repeats the wait on the same task.
+- A subagent with an outstanding result does not end its turn to wait for a notice, and does not poll an output file in short calls.
+- These windows bound one observation call. They are never a lane or runner deadline, and never go to `pstack-runner --timeout`.
+- Codex is unaffected: `spawn_agent` runs concurrently, `wait_agent` blocks, and exec sessions return a handle.
+
 ## Models and providers
 
-Do not replace every configured entry with a Codex model. `/setup-pstack` writes portable descriptors such as `claude:opus@max`, `codex:gpt-5.6-sol@max`, and `grok:grok-4.7@xhigh`. In a Codex parent, only `codex:*` is native. Route Claude and Grok descriptors through the external launcher exactly as `provider-dispatch.md` specifies. The default panel runs one model from each of three providers and contains no older GPT or Claude substitute.
+Do not replace every configured entry with a Codex model. `/setup-pstack` writes portable descriptors, such as the [role defaults](model-catalog.md#role-defaults). In a Codex parent, only `codex:*` is native. Route Claude and Grok descriptors through the external launcher exactly as `provider-dispatch.md` specifies. The default panel runs one model from each of three providers and contains no older GPT or Claude substitute.
 
 ## Claude built-in skills pstack references
 
@@ -76,7 +102,7 @@ Some triggers name skills that ship with Claude Code, not pstack. They do not ex
 
 ## Vendored scripts
 
-`skills/poteto-mode/scripts/` ships the `watch-pr` PR watcher, the `orch` store CLI, `worktree-audit.sh`, and `runner/pstack-runner`. They are plain bun and bash, so they run the same on Codex; invoke them through `shell`. The external runner additionally needs the assigned `claude`, `codex`, or `grok` executable already authenticated. It rejects a Codex provider when Codex is the parent because that lane belongs on native `spawn_agent`. The other scripts need `bun`, `gh`, (for stack work) `gt`, and (for `worktree-audit.sh`) `jq` and `rg`. `worktree-audit.sh` reads Claude Code transcripts under `~/.claude/projects/`; point it at your runtime's transcript directory instead when you run it elsewhere.
+`skills/poteto-mode/scripts/` ships the `watch-pr` PR watcher, the `orch` store CLI, `worktree-audit.sh`, and `runner/pstack-runner`. They are plain bun and bash, so they run the same on Codex; invoke them through `shell`. The external runner additionally needs the assigned `claude`, `codex`, or `grok` executable already authenticated. It rejects a Codex provider when Codex is the parent because that lane belongs on native `spawn_agent`. The other scripts need `bun`, `gh` (or Origin's `origin` CLI where the playbook resolves it), and (for `worktree-audit.sh`) `jq` and `rg`. `worktree-audit.sh` reads Claude Code transcripts under `~/.claude/projects/`; point it at your runtime's transcript directory instead when you run it elsewhere.
 
 ## Instructions file
 
