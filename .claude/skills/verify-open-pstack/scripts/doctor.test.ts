@@ -11,7 +11,8 @@ async function fixture(): Promise<string> {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'pstack-doctor-'))); roots.push(root);
   return root;
 }
-const capability = (args: string[]): string | undefined => args.includes('--version') ? 'version' : args.includes('--help') ? '--plugin-dir --settings --setting-sources --json local path' : undefined;
+const T3_CLAUDE = '/operator/t3/claude';
+const capability = (args: string[]): string | undefined => args.includes('--version') ? 'version' : args.includes('--help') ? '--plugin-dir --settings --setting-sources --strict-mcp-config --add-dir --json local path' : undefined;
 async function loggedInCodex(root: string): Promise<void> {
   await mkdir(join(root, 'daily-codex'), { mode: 0o700 }); await writeFile(join(root, 'daily-codex/auth.json'), 'opaque existing login');
   process.env.CODEX_HOME = join(root, 'daily-codex');
@@ -36,12 +37,12 @@ test('parent doctor records both harness login checks from CLI output only', asy
   const run: Command = async (args, options) => {
     calls.push(args);
     if (args.join(' ') === 'codex login status') { expect(await readlink(join(options!.env!.CODEX_HOME!, 'auth.json'))).toBe(join(root, 'daily-codex/auth.json')); return ''; }
-    if (args.join(' ') === 'claude auth status') { expect(options!.env!.HOME).toBe(process.env.HOME!); return '{"loggedIn": true, "email": "operator@example.com"}'; }
+    if (args.join(' ') === `${T3_CLAUDE} auth status`) { expect(options!.env!.HOME).toBe(process.env.HOME!); return '{"loggedIn": true, "email": "operator@example.com"}'; }
     return capability(args)!;
   };
-  await doctor(root, run, 'darwin');
+  await doctor(root, run, 'darwin', false, ['claude', 'codex'], T3_CLAUDE);
   const text = await readFile(join(root, 'doctor.json'), 'utf8'), report = JSON.parse(text);
-  expect(report.result).toBe('pass'); expect(calls.some(args => args[0] === 'gh')).toBe(true);
+  expect(report.result).toBe('pass'); expect(calls.some(args => args[0] === 'gh')).toBe(true); expect(calls.some(args => args[0] === 'claude')).toBe(false);
   expect(report.checks['claude login']).toBe('logged in'); expect(text).not.toContain('operator@example.com'); expect(report.checks['codex login']).toBe('logged in');
   await expect(stat(join(root, 'probe-home/.codex'))).rejects.toThrow('ENOENT');
   expect(await readFile(join(root, 'daily-codex/auth.json'), 'utf8')).toBe('opaque existing login');
@@ -57,14 +58,14 @@ test.each([
 ] as const)('parent doctor blocks %s on %s with the fix', async (harness, failure, message) => {
   const root = await fixture(); await loggedInCodex(root);
   const run: Command = async args => {
-    if (args.join(' ') === 'claude auth status') {
+    if (args.join(' ') === `${T3_CLAUDE} auth status`) {
       if (harness === 'claude' && failure === 'logged out') return loggedOut();
       return harness === 'claude' ? failure === 'malformed output' ? 'Logged in' : '{"loggedIn": false}' : '{"loggedIn": true}';
     }
     if (args.join(' ') === 'codex login status') throw new Error('codex failed: Not logged in');
     return capability(args)!;
   };
-  const checked = doctor(root, run, 'darwin', false, [harness]);
+  const checked = doctor(root, run, 'darwin', false, [harness], T3_CLAUDE);
   await expect(checked).rejects.toThrow(message); await expect(checked).rejects.toBeInstanceOf(LoginRequired);
   const report = JSON.parse(await readFile(join(root, 'doctor.json'), 'utf8'));
   expect(report.result).toBe('blocked'); expect(report.reason).toContain(message);
@@ -73,11 +74,22 @@ test.each([
 });
 test('doctor records blocked capability checks', async () => {
   const root = await fixture();
-  await expect(doctor(root, async () => { throw new Error('Missing binary'); }, 'darwin')).rejects.toThrow('Missing binary');
+  await expect(doctor(root, async () => { throw new Error('Missing binary'); }, 'darwin', false, ['claude', 'codex'], T3_CLAUDE)).rejects.toThrow('Missing binary');
   expect(JSON.parse(await readFile(join(root, 'doctor.json'), 'utf8')).result).toBe('blocked');
 });
 test('doctor refuses non-Mac live verification before commands', async () => {
   const root = await fixture(), calls: string[][] = [];
   await expect(doctor(root, async args => { calls.push(args); return ''; }, 'linux')).rejects.toThrow('operator Mac');
   expect(calls).toEqual([]);
+});
+test('parent doctor refuses Claude without the T3 app transport before any command', async () => {
+  const root = await fixture(), calls: string[][] = [];
+  await expect(doctor(root, async args => { calls.push(args); return capability(args) ?? ''; }, 'darwin')).rejects.toThrow('unsupported-native-consumer:claude-app');
+  expect(calls).toEqual([]);
+  expect(JSON.parse(await readFile(join(root, 'doctor.json'), 'utf8')).result).toBe('blocked');
+});
+test('a Codex-only parent doctor needs no Claude transport', async () => {
+  const root = await fixture(); await loggedInCodex(root);
+  await doctor(root, async args => args.join(' ') === 'codex login status' ? '' : capability(args)!, 'darwin', false, ['codex']);
+  expect(JSON.parse(await readFile(join(root, 'doctor.json'), 'utf8')).result).toBe('pass');
 });

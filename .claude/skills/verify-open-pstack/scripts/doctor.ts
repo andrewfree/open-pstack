@@ -2,24 +2,27 @@ import { mkdir, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { command, isolatedEnv, save, type Command } from './io.ts';
 import { disableCodexAnalytics, linkCodexAuth, removeCodexHome } from './isolation.ts';
+import { assertNativeConsumers } from './native-consumer.ts';
 import { HARNESSES, type Harness } from './types.ts';
 
 export class LoginRequired extends Error {}
 const CLAUDE_FIX = 'run `claude auth login` from a shell on this Mac, not over SSH', CODEX_FIX = 'run `codex login` on this Mac';
 
-export async function doctor(root: string, run: Command = command, platform = process.platform, candidate = false, harnesses: readonly Harness[] = HARNESSES): Promise<void> {
+export async function doctor(root: string, run: Command = command, platform = process.platform, candidate = false, harnesses: readonly Harness[] = HARNESSES, claudeBinary?: string): Promise<void> {
   const report: Record<string, unknown> = { platform, candidate, date: new Date().toISOString(), skill: await realpath(join(import.meta.dir, '..')), checks: {} };
   const checks = report.checks as Record<string, string>;
   try {
     if (platform !== 'darwin') throw new Error('Live gate requires an operator Mac (Darwin)');
+    if (!candidate) assertNativeConsumers(harnesses, claudeBinary !== undefined);
+    const claude = claudeBinary ?? 'claude';
     const home = join(root, 'probe-home');
     for (const dir of ['tmp', '.codex', '.config/gh', '.cache']) await mkdir(join(home, dir), { recursive: true, mode: 0o700 });
     await disableCodexAnalytics(home);
     const env = isolatedEnv(home);
-    for (const binary of candidate ? ['bun', 'git', 'claude', 'codex'] : ['bun', 'git', 'claude', 'codex', 'gh']) checks[binary] = (await run([binary, '--version'], { env })).trim();
-    const claude = await run(['claude', '--help'], { env });
-    for (const flag of ['--plugin-dir', '--settings']) if (!claude.includes(flag)) throw new Error(`Claude isolation missing ${flag}`);
-    checks.claudeHelp = claude;
+    for (const binary of candidate ? ['bun', 'git', 'claude', 'codex'] : ['bun', 'git', 'claude', 'codex', 'gh']) checks[binary] = (await run([binary === 'claude' ? claude : binary, '--version'], { env })).trim();
+    const claudeHelp = await run([claude, '--help'], { env });
+    for (const flag of ['--plugin-dir', '--setting-sources', '--strict-mcp-config', '--add-dir']) if (!claudeHelp.includes(flag)) throw new Error(`Claude isolation missing ${flag}`);
+    checks.claudeHelp = claudeHelp;
     for (const args of [['codex', 'plugin', 'marketplace', 'add', '--help'], ['codex', 'plugin', 'add', '--help']]) {
       const help = await run(args, { env });
       if (!help.includes('--json')) throw new Error('Codex local plugin installation interface unavailable');
@@ -28,7 +31,7 @@ export async function doctor(root: string, run: Command = command, platform = pr
     }
     if (!candidate && harnesses.includes('claude')) {
       let loggedIn: unknown;
-      try { loggedIn = JSON.parse(await run(['claude', 'auth', 'status'], { env })).loggedIn; } catch {}
+      try { loggedIn = JSON.parse(await run([claude, 'auth', 'status'], { env })).loggedIn; } catch {}
       if (loggedIn !== true) throw new LoginRequired(`Claude login check failed: \`claude auth status\` did not report "loggedIn": true; ${CLAUDE_FIX}`);
       checks['claude login'] = 'logged in';
     }

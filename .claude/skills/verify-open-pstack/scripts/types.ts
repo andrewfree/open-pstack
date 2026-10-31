@@ -51,10 +51,12 @@ export interface SessionRecord {
   commands: string[];
   tools: { name: string; id: string; input: Record<string, any>; parent: string | null; result?: string; failed: boolean }[];
   context: string[];
+  appTools?: { tool: string; arguments: Record<string, unknown>; result: Record<string, unknown> }[];
+  appRoutes?: { providerInstanceId: string; model: string; efforts: string[] }[];
 }
 export interface Driver {
   preflight(receipt: Receipt): Promise<void>;
   prepare(receipt: Receipt): Promise<Installation[]>;
   exercise(receipt: Receipt): Promise<Observation[]>;
-  cleanup?(receipt: Receipt): Promise<void>;
+  cleanup?(receipt: Receipt): Promise<string | void>;
 }

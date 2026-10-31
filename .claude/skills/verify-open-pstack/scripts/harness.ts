@@ -1,27 +1,21 @@
 import { copyFile, mkdir, readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import { CLAUDE_TOOLS, recipe, type Fixture } from '../features/recipes.ts';
+import { recipe, type Fixture } from '../features/recipes.ts';
 import { requiredFeatures, requiredHarnesses } from './core.ts';
+import { assertDailyState, captureDailyState, dailyStatePaths, type DailyState, type DailyStatePaths } from './daily-state.ts';
 import { command, isolatedEnv, retainedFile, save, session, treeHash, type Command, type Session } from './io.ts';
 import { doctor } from './doctor.ts';
 import { assertCodexAuth, disableCodexAnalytics, linkCodexAuth, removeCodexHome, restoreSetup, snapshotSetup, type SetupSnapshot } from './isolation.ts';
+import { assertNativeConsumers } from './native-consumer.ts';
 import { sourceDigest, sourceHash } from './provenance.ts';
+import type { AppTransport } from './t3-app.ts';
 import { publishable } from './verify.ts';
 import { type Driver, type Harness, type Installation, type Observation, type Receipt, type SessionRecord } from './types.ts';
 
 const setupFeature = (feature: string): boolean => feature === 'setup' || feature === 'skill-invocation:setup-pstack';
-export function launch(harness: Harness, workspace: string, options: { cwd: string; addDirs: string[]; codexSandbox?: 'danger-full-access'; claudePermission?: 'bypassPermissions' }): string[] {
-  const addDirs = options.addDirs.flatMap(dir => ['--add-dir', dir]);
-  return harness === 'claude'
-    ? ['claude', '-p', '--input-format', 'stream-json', '--replay-user-messages', '--output-format', 'stream-json', '--verbose', '--no-session-persistence',
-      '--plugin-dir', join(workspace, 'plugins/pstack'), '--settings', '{"enabledPlugins":{"pstack@open-pstack":false}}',
-      '--permission-mode', options.claudePermission ?? 'dontAsk', ...options.claudePermission ? ['--strict-mcp-config'] : [], ...addDirs, '--allowedTools', CLAUDE_TOOLS]
-    : ['codex', 'exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-hook-trust', '-c', 'approval_policy="never"',
-      '--sandbox', options.codexSandbox ?? 'workspace-write', '--cd', options.cwd, ...addDirs, '-'];
-}
-/** Claude reads its prompt as one stream-json user message so the replayed message shows the slash expansion. */
-export function sessionInput(harness: Harness, prompt: string): string {
-  return harness === 'claude' ? JSON.stringify({ type: 'user', message: { role: 'user', content: prompt } }) + '\n' : prompt;
+export function launch(options: { cwd: string; addDirs: string[]; codexSandbox?: 'danger-full-access' }): string[] {
+  return ['codex', 'exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-hook-trust', '-c', 'approval_policy="never"',
+    '--sandbox', options.codexSandbox ?? 'workspace-write', '--cd', options.cwd, ...options.addDirs.flatMap(dir => ['--add-dir', dir]), '-'];
 }
 type Event = Record<string, any>;
 function resultText(blocks: Event[], id: string): string | undefined {
@@ -79,21 +73,50 @@ export class MacDriver implements Driver {
   private codexHomes: string[] = [];
   private setup?: SetupSnapshot;
   private restorationFailed = false;
-  constructor(private run: Command = command, private record: Session = session, private routes: string[] = []) {}
-  async cleanup(): Promise<void> {
-    if (this.setup) await restoreSetup(this.setup);
-    if (this.restorationFailed) throw new Error('Setup restoration failed; publication forbidden');
-    for (const home of this.codexHomes) await removeCodexHome(home);
-    this.codexHomes = [];
+  private daily?: { paths: DailyStatePaths; before: DailyState; root: string };
+  constructor(private run: Command = command, private record: Session = session, private routes: string[] = [], private app?: AppTransport) {}
+  async cleanup(): Promise<string | void> {
+    const failures: unknown[] = [];
+    const step = async (action: () => Promise<void>): Promise<void> => { try { await action(); } catch (error) { failures.push(error); } };
+    let kept = false;
+    if (this.setup) await step(() => restoreSetup(this.setup!));
+    if (this.restorationFailed) failures.push(new Error('Setup restoration failed; publication forbidden'));
+    await step(async () => { await this.app?.cleanup(); });
+    await step(async () => {
+      for (const home of this.codexHomes) await assertCodexAuth(home);
+      const liveServers = await this.app?.liveCodexServers() ?? [];
+      if (liveServers.length) {
+        await this.app!.keepCodexHomes(this.codexHomes, liveServers);
+        console.log(`Keeping the run-owned Codex home while T3's verification app-server (pid ${liveServers.join(', ')}) still uses it; the next run removes it after T3's idle release, about 30 minutes.`);
+        kept = true;
+      } else for (const home of this.codexHomes) await removeCodexHome(home);
+      this.codexHomes = [];
+    });
+    if (failures.length) throw failures[0];
+    if (this.daily) {
+      const after = await captureDailyState(this.daily.paths);
+      await save(join(this.daily.root, 'daily-state-after.json'), after);
+      assertDailyState(this.daily.before, after);
+    }
+    if (kept) return "Setup files restored and verified; run-owned Codex home kept, with its auth link verified, while T3's verification app-server still runs; private raw evidence retained";
   }
   private candidate(home: string): Command {
     return (args, options = {}) => this.run(args, { ...options, env: isolatedEnv(home) });
   }
   async preflight(receipt: Receipt): Promise<void> {
-    await doctor(receipt.artifactRoot, this.run, process.platform, false, requiredHarnesses(receipt));
+    const harnesses = requiredHarnesses(receipt);
+    assertNativeConsumers(harnesses, this.app !== undefined);
+    if (!this.app && requiredFeatures(receipt, 'codex').includes('runner')) throw new Error('unsupported-native-consumer:claude-app: the Codex runner feature verifies the T3 Claude Agent route and needs --t3-app');
+    await doctor(receipt.artifactRoot, this.run, process.platform, false, harnesses, harnesses.includes('claude') ? await this.app!.claudeBinaryPath() : undefined);
   }
   async prepare(receipt: Receipt): Promise<Installation[]> {
+    const harnesses = requiredHarnesses(receipt);
+    assertNativeConsumers(harnesses, this.app !== undefined);
+    await this.app?.prepare();
     const root = receipt.artifactRoot;
+    const paths = dailyStatePaths(this.app?.settingsPath);
+    this.daily = { paths, before: await captureDailyState(paths), root };
+    await save(join(root, 'daily-state-before.json'), this.daily.before);
     const referenceHome = join(root, 'source-home'), reference = join(referenceHome, 'workspace');
     await mkdir(join(referenceHome, 'tmp'), { recursive: true, mode: 0o700 });
     const trustedRun: Command = (args, options = {}) => this.run(args, { ...options, env: isolatedEnv(referenceHome) });
@@ -103,7 +126,7 @@ export class MacDriver implements Driver {
     const pinnedSource = await sourceHash(reference, receipt.sha, trustedRun);
     if (process.platform !== 'darwin') throw new Error('Live proof requires the operator Mac');
     const installs: Installation[] = [];
-    for (const harness of requiredHarnesses(receipt)) {
+    for (const harness of harnesses) {
       const home = join(root, 'state', harness), workspace = join(home, 'workspace');
       await mkdir(join(home, 'tmp'), { recursive: true, mode: 0o700 });
       for (const dir of ['.codex', '.config/gh', '.cache']) await mkdir(join(home, dir), { recursive: true, mode: 0o700 });
@@ -132,7 +155,7 @@ export class MacDriver implements Driver {
       const manifest = JSON.parse(await readFile(join(location, harness === 'claude' ? '.claude-plugin/plugin.json' : '.codex-plugin/plugin.json'), 'utf8'));
       if (await sourceDigest(workspace) !== pinnedSource) throw new Error('Pinned source changed during installation');
       installs.push({ harness, sha: receipt.sha, home, location, treeHash: expected, sourceHash: pinnedSource, pluginVersion: manifest.version,
-        cliVersion: (await candidateRun([harness, '--version'], { env })).trim() });
+        cliVersion: (await candidateRun([harness === 'claude' ? await this.app!.claudeBinaryPath() : harness, '--version'], { env })).trim() });
     }
     return installs;
   }
@@ -146,10 +169,12 @@ export class MacDriver implements Driver {
     return readFile(copy, 'utf8');
   }
   async exercise(receipt: Receipt): Promise<Observation[]> {
+    assertNativeConsumers(receipt.installations.map(installation => installation.harness), this.app !== undefined);
     const plans = receipt.installations.map(installation => ({ installation,
       features: requiredFeatures(receipt, installation.harness).sort((a, b) => Number(setupFeature(a)) - Number(setupFeature(b)))
-        .map(feature => ({ feature, cases: recipe(feature, installation.harness, this.routes) })) }));
+        .map(feature => ({ feature, cases: recipe(feature, installation.harness, this.routes, this.app?.runnerRoute) })) }));
     const observations: Observation[] = [];
+    const writePolicy = this.daily?.paths ?? dailyStatePaths(this.app?.settingsPath);
     for (const { installation, features } of plans) {
       const { harness, home } = installation, workspace = join(home, 'workspace');
       if (await sourceDigest(workspace) !== installation.sourceHash) throw new Error('Pinned source changed before exercise');
@@ -163,24 +188,30 @@ export class MacDriver implements Driver {
         if (setupFeature(feature)) this.setup = await snapshotSetup();
         try {
           for (const c of cases) {
-            await c.prepare?.(fixture);
-            const stdout = join(records, `${c.id}.jsonl`), stderr = join(records, `${c.id}.stderr`), cwd = c.cwd === 'workspace' ? workspace : dir;
-            const started = Date.now();
-            const exitCode = await this.record(launch(harness, workspace, { cwd, addDirs: cwd === dir ? [] : [dir], codexSandbox: c.codexSandbox, claudePermission: c.claudePermission }),
-              { cwd, env, input: sessionInput(harness, c.prompt(fixture)), stdout, stderr });
-            evidence.push(stdout, ...(await stat(stderr)).size ? [stderr] : []);
-            let record: SessionRecord, result;
             try {
-              const text = await readFile(stdout, 'utf8');
-              const rollout = harness === 'codex' ? await this.rollout(env.CODEX_HOME!, text, join(records, `${c.id}.rollout.jsonl`)) : '';
-              if (rollout) evidence.push(join(records, `${c.id}.rollout.jsonl`));
-              record = parseSession(harness, text, exitCode, started, rollout);
-              result = await c.assert(record, fixture);
-            } catch (error) { throw new Error(`${harness}/${feature}/${c.id}: ${error instanceof Error ? error.message : String(error)}`); }
-            assertions.push(...['exit-0', ...result.assertions].map(id => `${c.id}:${id}`));
-            for (const file of result.files) {
-              const copy = join(records, `${c.id}.${basename(file)}`);
-              await copyFile(file, copy); evidence.push(copy);
+              await c.prepare?.(fixture);
+              const stdout = join(records, `${c.id}.jsonl`), stderr = join(records, `${c.id}.stderr`), cwd = c.cwd === 'workspace' ? workspace : dir;
+              const rolloutCopy = join(records, `${c.id}.rollout.jsonl`), started = Date.now();
+              const appCase = harness === 'claude' || c.id.startsWith('app-route-');
+              const app = appCase ? await this.app!.record({ harness, projectSkill: feature === 'project-skill', pluginRoot: installation.location, workspace, fixture: dir,
+                prompt: c.prompt(fixture), env, stdout, stderr, started, cliVersion: installation.cliVersion, writePolicy }) : undefined;
+              const exitCode = app ? 0 : await this.record(launch({ cwd, addDirs: cwd === dir ? [] : [dir], codexSandbox: c.codexSandbox }), { cwd, env, input: c.prompt(fixture), stdout, stderr });
+              evidence.push(stdout, ...(await stat(stderr)).size ? [stderr] : [], ...app?.evidence ?? []);
+              let record: SessionRecord, result;
+              try {
+                if (app?.rolloutPath) await copyFile(app.rolloutPath, rolloutCopy);
+                const rollout = app ? '' : harness === 'codex' ? await this.rollout(env.CODEX_HOME!, await readFile(stdout, 'utf8'), rolloutCopy) : '';
+                if (app?.rolloutPath || rollout) evidence.push(rolloutCopy);
+                record = app?.record ?? parseSession(harness, await readFile(stdout, 'utf8'), exitCode, started, rollout);
+                result = await c.assert(record, fixture);
+              } catch (error) { throw new Error(`${harness}/${feature}/${c.id}: ${error instanceof Error ? error.message : String(error)}`); }
+              assertions.push(...[app ? 'terminal-success' : 'exit-0', ...result.assertions].map(id => `${c.id}:${id}`));
+              for (const file of result.files) {
+                const copy = join(records, `${c.id}.${basename(file)}`);
+                await copyFile(file, copy); evidence.push(copy);
+              }
+            } finally {
+              await c.cleanup?.(fixture);
             }
           }
         } finally {
@@ -192,7 +223,9 @@ export class MacDriver implements Driver {
         const [transcript, ...artifacts] = await Promise.all(evidence.map(path => retainedFile(receipt.artifactRoot, path)));
         const passed = `passed: ${assertions.join(' ')}`;
         observations.push({ harness, feature, reviewer: 'recipe', assertions,
-          surface: harness === 'claude' ? 'claude -p stream-json with the candidate plugin-dir' : 'codex exec --json with the run-owned candidate installation',
+          surface: harness === 'claude' ? 'T3 Claude app child with the exact candidate plugin and native session evidence'
+            : cases.some(c => c.id.startsWith('app-route-')) ? 'T3 Codex app parent with the run-owned candidate installation and native Claude dispatch'
+            : 'codex exec --json with the run-owned candidate installation',
           action: `recipe ${feature}: ${cases.map(c => c.id).join(', ')}`,
           observed: publishable(passed) ? passed : `passed ${assertions.length} assertions; ids retained privately`,
           transcript: transcript!.path, transcriptHash: transcript!.sha256, artifacts });
