@@ -585,6 +585,7 @@ const CATALOG_LANES: Record<string, [string, string]> = {
   'how explainer': ['claude:claude-sonnet-5-5@high', 'claude:sonnet@high'],
   'how explorer': ['devin:swe-2@max', 'devin:swe-2@max'],
   'interrogate reviewers': ['opencode:opencode/deepseek-v4.1-flash-free@max', 'opencode:opencode/deepseek-v4.1-flash-free@max'],
+  'perf-issue': ['kimi:kimi-code/k3@max', 'kimi:kimi-code/k3@max'],
   [WRITER_ROLE]: [WRITER_LANE, WRITER_LANE],
 };
 const NATIVE_AGENTS = ['pstack-sonnet-max', 'pstack-opus-5-5-max', 'pstack-haiku-5-5-max'];
