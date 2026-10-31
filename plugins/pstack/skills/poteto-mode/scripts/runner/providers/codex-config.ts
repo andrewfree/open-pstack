@@ -8,7 +8,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { LaunchRefusal } from "../registry/contract.ts";
 import { type JsonObject, object } from "./shared.ts";
 
 export const CODEX_NO_SUBAGENTS = "features.multi_agent_v2={enabled=false, max_concurrent_threads_per_session=1}";
@@ -25,48 +26,41 @@ function tableIn(path: string, key: string): JsonObject {
   return object(object(Bun.TOML.parse(readFileSync(path, "utf8")))?.[key]) ?? {};
 }
 
-function gitProjectRoot(cwd: string, env: NodeJS.ProcessEnv): string | null {
-  const git = Bun.which("git", { PATH: env.PATH ?? "" });
-  if (git === null) return null;
-  const result = Bun.spawnSync([git, "-C", cwd, "rev-parse", "--git-common-dir"], {
-    env: { ...env, LC_ALL: "C" },
-    stdout: "pipe",
-    stderr: "ignore",
-  });
-  if (result.exitCode !== 0) return null;
-  const commonDir = resolve(cwd, result.stdout.toString().trim());
-  return basename(commonDir) === ".git" ? realPath(dirname(commonDir)) : null;
-}
-
-function addressable(name: string): string {
+function addressable(name: string, path: string): string {
   if (!/^[A-Za-z0-9_-]+$/.test(name)) {
-    throw new Error(`Codex MCP server ${JSON.stringify(name)} cannot be switched off with --config`);
+    throw new LaunchRefusal(
+      `Codex MCP server ${JSON.stringify(name)} in ${path} cannot be switched off with --config: ` +
+        "a --config key path addresses only bare TOML keys (letters, digits, '_' and '-')"
+    );
   }
   return name;
 }
 
-function projectConfigPaths(cwd: string, env: NodeJS.ProcessEnv): string[] {
+function projectConfigPaths(cwd: string, gitProjectRoot: string | null, env: NodeJS.ProcessEnv): string[] {
   const dirs: string[] = [];
   for (let dir = resolve(cwd); ; dir = dirname(dir)) {
     dirs.push(dir);
     if (dirname(dir) === dir) break;
   }
-  const root = gitProjectRoot(cwd, env);
-  if (root !== null) dirs.push(root);
+  if (gitProjectRoot !== null) dirs.push(gitProjectRoot);
   const user = realPath(codexConfigPath(env));
   return [...new Set(dirs.map((dir) => join(dir, ".codex", "config.toml")))]
     .filter((path) => existsSync(path) && realPath(path) !== user);
 }
 
-export function codexMcpServerOverrides(cwd: string, env: NodeJS.ProcessEnv): string[] {
+export function codexMcpServerOverrides(
+  cwd: string,
+  gitProjectRoot: string | null,
+  env: NodeJS.ProcessEnv
+): string[] {
   const userPath = codexConfigPath(env);
   const userServers = existsSync(userPath) ? tableIn(userPath, "mcp_servers") : {};
   const overrides = Object.keys(userServers).flatMap((name) => [
     "--config",
-    `mcp_servers.${addressable(name)}.enabled=false`,
+    `mcp_servers.${addressable(name, userPath)}.enabled=false`,
   ]);
   const seen = new Set(Object.keys(userServers));
-  for (const path of projectConfigPaths(cwd, env)) {
+  for (const path of projectConfigPaths(cwd, gitProjectRoot, env)) {
     let servers: JsonObject;
     try {
       servers = tableIn(path, "mcp_servers");
@@ -78,7 +72,7 @@ export function codexMcpServerOverrides(cwd: string, env: NodeJS.ProcessEnv): st
       seen.add(name);
       overrides.push(
         "--config",
-        `mcp_servers.${addressable(name)}.enabled=false`,
+        `mcp_servers.${addressable(name, path)}.enabled=false`,
         "--config",
         object(server)?.url !== undefined
           ? `mcp_servers.${name}.url="http://127.0.0.1:9/"`
@@ -129,8 +123,7 @@ function removeAddedTrust(path: string, root: string, before: ReadonlySet<string
   }
 }
 
-export function guardCodexProjectTrust(cwd: string, env: NodeJS.ProcessEnv): () => void {
-  const root = gitProjectRoot(cwd, env);
+export function guardCodexProjectTrust(root: string | null, env: NodeJS.ProcessEnv): () => void {
   if (root === null) return () => {};
   const path = codexConfigPath(env);
   const before = projectKeysFor(path, root);

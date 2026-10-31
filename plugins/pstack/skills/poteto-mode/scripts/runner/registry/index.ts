@@ -5,6 +5,7 @@ import { FAMILIES, type FamilyName, RELEASED_PAIRS, ROLE_DEFAULTS } from "./mode
 import { ADAPTERS } from "./providers.ts";
 
 export type { Lane, LaunchFacts, ParseResult } from "./contract.ts";
+export { LaunchRefusal } from "./contract.ts";
 export { effortsOf, modelIds } from "./family.ts";
 
 export interface Registry {
