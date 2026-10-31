@@ -140,6 +140,7 @@ if (name === "claude") {
   console.log(JSON.stringify({type:"item.completed",item:{type:"agent_message",text:"CODEX_OK"}}));
   console.log(JSON.stringify({type:"turn.completed",usage:{input_tokens:20,cached_input_tokens:5,output_tokens:3,reasoning_output_tokens:1}}));
 } else if (process.env.GROK_FAKE_GROK_ERROR_RESULT === "1") {
+  console.error("GROK_STDERR_HEAD");
   console.log(JSON.stringify({type:"system",subtype:"init",skills:Array(500).fill("skill-name")}));
   console.log(JSON.stringify({type:"result",subtype:"error_during_execution",is_error:true,stop_reason:"cancelled",errors:["cancelled"]}));
 } else {
@@ -879,7 +880,54 @@ printf '%s\\n' '{"type":"thread.started","thread_id":"isolated"}' '{"type":"item
       error: { message: "cancelled" },
     });
     expect(recorded.error?.evidence).toStartWith("cancelled");
+    expect(recorded.error?.evidence).toContain("GROK_STDERR_HEAD");
+    expect(recorded.error?.evidence).toContain("[truncated ");
+    expect(recorded.error?.evidence).toEndWith('"stop_reason":"cancelled","errors":["cancelled"]}');
     expect(recorded.error?.evidence.length).toBeLessThanOrEqual(4_000);
+  });
+
+  it("keeps both ends of a noisy failure and marks what it dropped", async () => {
+    writeFileSync(join(bin, "grok"), `#!/usr/bin/env bun
+if (process.argv[2] === "models") {
+  console.log("You are logged in with grok.com.\\nAvailable models:\\n  * grok-4.6 (default)");
+  process.exit(0);
+}
+console.log("HEAD_MARKER" + "x".repeat(12000) + "TAIL_MARKER");
+process.exit(1);
+`);
+    const input = options("grok", "noisy-failure");
+    const result = await runLane(laneOf(input));
+    expect(result.exitCode).toBe(70);
+    const recorded = receipt(input.receiptPath);
+    expect(recorded.status).toBe("child-failed");
+    expect(recorded.error?.evidence).toStartWith("HEAD_MARKER");
+    expect(recorded.error?.evidence).toEndWith("TAIL_MARKER");
+    expect(recorded.error?.evidence).toContain("\n[truncated 8052 characters]\n");
+    expect(recorded.error?.evidence.length).toBeLessThanOrEqual(4_000);
+    expect(readFileSync(streamPath(recorded.stdoutPath), "utf8")).toBe(`HEAD_MARKER${"x".repeat(12000)}TAIL_MARKER\n`);
+  });
+
+  it("keeps both ends of a long malformed result", async () => {
+    writeFileSync(join(bin, "grok"), `#!/usr/bin/env bun
+if (process.argv[2] === "models") {
+  console.log("You are logged in with grok.com.\\nAvailable models:\\n  * grok-4.6 (default)");
+  process.exit(0);
+}
+console.error("MALFORMED_STDERR_HEAD");
+console.error("x".repeat(9000));
+console.log(JSON.stringify({ type: "result", result: "MALFORMED_TERMINAL_EVENT" }));
+`);
+    const input = options("grok", "grok-malformed-long");
+    const result = await runLane(laneOf(input));
+    expect(result.exitCode).toBe(65);
+    const recorded = receipt(input.receiptPath);
+    expect(recorded.status).toBe("malformed-output");
+    expect(recorded.error?.message).toContain("valid terminal status");
+    expect(recorded.error?.evidence).toStartWith("MALFORMED_STDERR_HEAD");
+    expect(recorded.error?.evidence).toEndWith('"result":"MALFORMED_TERMINAL_EVENT"}');
+    expect(recorded.error?.evidence).toContain("\n[truncated ");
+    expect(recorded.error?.evidence.length).toBeLessThanOrEqual(4_000);
+    expect(existsSync(input.outputPath)).toBe(false);
   });
 
   it("classifies an unavailable model without falling back", async () => {
