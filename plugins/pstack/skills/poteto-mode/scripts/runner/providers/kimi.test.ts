@@ -121,9 +121,10 @@ describe("kimi preflight", () => {
       .toEqual({ kind: "unavailable-model" });
   });
 
-  it("reads a non-JSON listing as inconclusive and named failures by name", () => {
-    expect(preflight(0, "Default model: k3")).toEqual({ kind: "inconclusive" });
-    expect(preflight(0, "{}")).toEqual({ kind: "inconclusive" });
+  it("reads an exit-0 listing without models as an unavailable model and other failures by name", () => {
+    expect(preflight(0, "Default model: k3")).toEqual({ kind: "unavailable-model" });
+    expect(preflight(0, "{}")).toEqual({ kind: "unavailable-model" });
+    expect(preflight(0, "Error: not logged in")).toEqual({ kind: "unauthenticated" });
     expect(preflight(1, "", "Error: not logged in")).toEqual({ kind: "unauthenticated" });
     expect(preflight(2, "", "boom")).toEqual({ kind: "inconclusive" });
   });
