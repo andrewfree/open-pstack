@@ -75,17 +75,31 @@ describe('exact-head evidence publication', () => {
     const f = fixture(true), calls: string[][] = [];
     const run: Command = async args => {
       calls.push(args);
-      if (args.join(' ') === 'claude auth status') return command([process.execPath, '-e', 'console.log(JSON.stringify({ loggedIn: false })); process.exit(1)']);
-      return args.includes('--version') ? 'version' : '--plugin-dir --settings --setting-sources --json local path';
+      if (args.join(' ') === '/operator/t3/claude auth status') return command([process.execPath, '-e', 'console.log(JSON.stringify({ loggedIn: false })); process.exit(1)']);
+      return args.includes('--version') ? 'version' : '--plugin-dir --settings --setting-sources --strict-mcp-config --add-dir --json local path';
     };
-    f.options.driver = new MacDriver(run, async () => { throw new Error('no session expected'); });
+    const app = { runnerRoute: { providerInstanceId: 'verify_claude', model: 'claude-opus-5-5' }, settingsPath: '/operator/t3/settings.json',
+      async prepare() { throw new Error('no preparation expected'); }, async record(): Promise<never> { throw new Error('no case expected'); }, async cleanup() {},
+      async claudeBinaryPath() { return '/operator/t3/claude'; }, async liveCodexServers() { return []; }, async keepCodexHomes() {} };
+    f.options.driver = new MacDriver(run, async () => { throw new Error('no session expected'); }, [], app);
     const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
     Object.defineProperty(process, 'platform', { ...platform, value: 'darwin' });
     try { await expect(verify(f.options)).rejects.toThrow('Claude login check failed: `claude auth status` did not report "loggedIn": true; run `claude auth login` from a shell on this Mac, not over SSH'); }
     finally { Object.defineProperty(process, 'platform', platform); }
     expect(f.calls.some(call => call === 'comment' || call.startsWith('status:'))).toBe(false);
     expect(calls.some(args => args.join(' ').startsWith('git clone') || args.join(' ').startsWith('codex plugin ') && !args.includes('--help'))).toBe(false);
-    expect(calls).toContainEqual(['claude', 'auth', 'status']);
+    expect(calls).toContainEqual(['/operator/t3/claude', 'auth', 'status']);
+  });
+
+  test('a Claude run without the T3 app transport stops before any command, install or GitHub write', async () => {
+    const f = fixture(true), calls: string[][] = [];
+    f.options.driver = new MacDriver(async args => { calls.push(args); return ''; }, async () => { throw new Error('no session expected'); });
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { ...platform, value: 'darwin' });
+    try { await expect(verify(f.options)).rejects.toThrow('unsupported-native-consumer:claude-app'); }
+    finally { Object.defineProperty(process, 'platform', platform); }
+    expect(calls).toEqual([]);
+    expect(f.calls.some(call => call === 'comment' || call.startsWith('status:'))).toBe(false);
   });
 
   test('self-test alone runs project proof in both harnesses', async () => {
