@@ -2,8 +2,9 @@ import { describe, expect, test } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import registryData from '../features/registry.json';
+import { recipe } from '../features/recipes.ts';
 import { classify, completeEvidence, matches, newReceipt, requiredFeatures, requiredHarnesses, validateRegistry } from './core.ts';
-import { type Receipt } from './types.ts';
+import { HARNESSES, type Receipt } from './types.ts';
 import codexManifest from '../../../../plugins/pstack/.codex-plugin/plugin.json';
 import claudeManifest from '../../../../plugins/pstack/.claude-plugin/plugin.json';
 
@@ -14,6 +15,7 @@ export function receipt(selfTest = false): Receipt {
   r.selection = classify([{ filename: 'README.md' }], registry);
   return r;
 }
+const both = (...features: string[]): string[] => HARNESSES.flatMap(h => features.map(f => `${h}:${f}`)).sort();
 export function evidence(r: Receipt): void {
   for (const harness of requiredHarnesses(r)) {
     r.installations.push({ harness, sha: r.sha, cliVersion: 'test', pluginVersion: '1.5.0',
@@ -34,7 +36,7 @@ describe('registry and ownership', () => {
     for (const filename of paths) expect(() => classify([{ filename }], registry)).not.toThrow();
   });
   test('validates external registry shape', () => {
-    for (const value of [null, {}, { ...registry, skills: ['../bad'] }, { ...registry, tools: ['x', 'x'] }, { ...registry, shared: [3] }, { ...registry, assets: undefined }, { ...registry, assets: ['../asset'] }, { ...registry, assets: ['x', 'x'] }]) {
+    for (const value of [null, {}, { ...registry, skills: ['../bad'] }, { ...registry, tools: ['x', 'x'] }, { ...registry, shared: [3] }, { ...registry, assets: undefined }, { ...registry, assets: ['../asset'] }, { ...registry, assets: ['x', 'x'] }, { ...registry, catalog: undefined }]) {
       expect(() => validateRegistry(value)).toThrow();
     }
   });
@@ -43,21 +45,53 @@ describe('registry and ownership', () => {
     expect(matches('skills/xyz/file', 'skills/x/**')).toBe(false);
   });
   test('repository-root attribution files are not runtime', () => {
-    for (const filename of ['NOTICE.md', 'README-UPSTREAM.md', 'LICENSE-cursor-team-kit', 'LICENSE-superpowers']) {
+    for (const filename of ['NOTICE.md', 'README-UPSTREAM.md', 'REVIEW.md', 'LICENSE-cursor-team-kit', 'LICENSE-superpowers']) {
       expect(classify([{ filename }], registry).noRuntime).toBe(true);
     }
   });
   test('markdown instructions are runtime', () => {
     for (const filename of ['plugins/pstack/skills/architect/SKILL.md', 'plugins/pstack/skills/architect/references/guide.md']) {
       const s = classify([{ filename }], registry);
-      expect(s.features).toContain('skill-invocation:architect');
+      expect(s.features).toEqual(both('skill-invocation:architect'));
       expect(s.noRuntime).toBe(false);
     }
   });
   test('shared references select every dependent skill and executable surface', () => {
     const s = classify([{ filename: 'plugins/pstack/skills/poteto-mode/references/codex-tools.md' }], registry);
     expect(s.skills).toEqual([...registry.skills].sort());
-    for (const feature of ['setup', 'runner', 'shipped-tools']) expect(s.features).toContain(feature);
+    for (const feature of both('setup', 'runner', 'shipped-tools', 'hook:startup')) expect(s.features).toContain(feature);
+    expect(s.features).toContain('claude:agent-preload:poteto-agent');
+    expect(s.features).not.toContain('codex:agent-preload:poteto-agent');
+  });
+  test('poteto-mode SKILL.md also reaches the Claude agent that preloads it', () => {
+    const s = classify([{ filename: 'plugins/pstack/skills/poteto-mode/SKILL.md' }], registry);
+    expect(s.features).toEqual([...both('skill-invocation:poteto-mode'), 'claude:agent-preload:poteto-agent'].sort());
+  });
+  const CATALOG = 'plugins/pstack/skills/poteto-mode/references/model-catalog.md';
+  test('catalog-only changes select catalog, setup and runner and no skill check', () => {
+    for (const filename of [CATALOG, 'plugins/pstack/agents/pstack-opus-max.md', 'plugins/pstack/agents/pstack-fable-low.md',
+      'plugins/pstack/agents/pstack-sonnet-max.md', 'plugins/pstack/agents/pstack-opus-5-5-low.md',
+      'plugins/pstack/skills/poteto-mode/scripts/runner/registry/models.ts', 'plugins/pstack/skills/poteto-mode/scripts/runner/providers/grok.ts']) {
+      const s = classify([{ filename }], registry);
+      expect(s.skills).toEqual([]);
+      expect(s.features).toEqual(both('catalog', 'runner', 'setup'));
+    }
+  });
+  test('a renamed or deleted catalog path keeps catalog ownership', () => {
+    for (const previous_filename of [CATALOG, 'plugins/pstack/agents/pstack-opus-max.md']) {
+      expect(classify([{ filename: 'docs/moved.md', previous_filename }], registry).features).toEqual(both('catalog', 'runner', 'setup'));
+    }
+  });
+  test('a catalog change mixed with a shared reference or a skill keeps their checks', () => {
+    const shared = classify([{ filename: CATALOG }, { filename: 'plugins/pstack/skills/poteto-mode/references/provider-dispatch.md' }], registry);
+    expect(shared.skills).toEqual([...registry.skills].sort());
+    for (const feature of both('catalog', 'setup', 'runner', 'shipped-tools')) expect(shared.features).toContain(feature);
+    const skill = classify([{ filename: 'plugins/pstack/agents/pstack-opus-max.md' }, { filename: 'plugins/pstack/skills/arena/SKILL.md' }], registry);
+    expect(skill.features).toEqual(both('catalog', 'runner', 'setup', 'skill-invocation:arena'));
+  });
+  test('an unlisted generated agent fails closed', () => {
+    expect(() => classify([{ filename: 'plugins/pstack/agents/pstack-retired-max.md' }], registry)).toThrow('Unmapped path');
+    expect(classify([{ filename: 'plugins/pstack/agents/poteto-agent.md' }], registry).skills).toEqual([...registry.skills].sort());
   });
   test('installed logo changes require only their actual Codex manifest consumer', () => {
     expect(codexManifest.interface.logo).toBe('./assets/logo.png');
@@ -66,7 +100,8 @@ describe('registry and ownership', () => {
     r.selection = classify([{ filename: 'plugins/pstack/assets/logo.png' }], registry);
     expect(r.selection.noRuntime).toBe(false);
     expect(r.selection.skills).toEqual([]);
-    expect(r.selection.features).toEqual(['assets:codex']);
+    expect(r.selection.features).toEqual(['codex:assets:codex']);
+    r.runFeatures = ['codex:assets:codex'];
     expect(requiredHarnesses(r)).toEqual(['codex']);
     expect(requiredFeatures(r, 'claude')).toEqual([]);
     expect(requiredFeatures(r, 'codex')).toEqual(['assets:codex']);
@@ -83,18 +118,28 @@ describe('registry and ownership', () => {
       expect(() => classify([{ filename: 'README.md', previous_filename: filename }], registry)).toThrow('Unmapped asset consumer');
     }
   });
-  test('manifest changes retain shared coverage in both harnesses', () => {
-    for (const filename of ['plugins/pstack/.claude-plugin/plugin.json', 'plugins/pstack/.codex-plugin/plugin.json']) {
-      const r = receipt();
-      r.selection = classify([{ filename }], registry);
-      expect(requiredHarnesses(r)).toEqual(['claude', 'codex']);
-      expect(requiredFeatures(r, 'claude')).toContain('setup');
-      expect(requiredFeatures(r, 'codex')).toContain('setup');
+  test('manifest changes classify as shared runtime unless they only bump the version', () => {
+    for (const filename of ['plugins/pstack/.claude-plugin/plugin.json', 'plugins/pstack/.codex-plugin/plugin.json', '.claude-plugin/marketplace.json', '.agents/plugins/marketplace.json']) {
+      expect(classify([{ filename }], registry).features).toContain('claude:setup');
     }
+    expect(classify([{ filename: '.agents/plugins/marketplace.json', versionOnly: true }], registry).features).toContain('codex:setup');
+    expect(classify([{ filename: 'plugins/pstack/.claude-plugin/plugin.json', versionOnly: true }], registry).features).toEqual(['claude:hook:startup']);
+    expect(classify([{ filename: '.claude-plugin/marketplace.json', versionOnly: true }], registry).features).toEqual(['claude:hook:startup']);
+    expect(classify([{ filename: 'plugins/pstack/.codex-plugin/plugin.json', versionOnly: true }], registry).features).toEqual(['codex:hook:startup']);
+  });
+  const RELEASE = [{ filename: '.claude-plugin/marketplace.json', versionOnly: true }, { filename: 'CHANGES.md' }, { filename: 'README.md' }, { filename: 'UPSTREAM.md' },
+    { filename: 'docs/reference.md' }, { filename: 'plugins/pstack/.claude-plugin/plugin.json', versionOnly: true }, { filename: 'plugins/pstack/.codex-plugin/plugin.json', versionOnly: true }];
+  test('a version-only release reaches only the startup hook in both harnesses', () => {
+    expect(classify(RELEASE, registry).features).toEqual(['claude:hook:startup', 'codex:hook:startup']);
+    const edited = RELEASE.map(f => f.filename === 'plugins/pstack/.codex-plugin/plugin.json' ? { filename: f.filename } : f);
+    const s = classify(edited, registry);
+    expect(s.skills).toEqual([...registry.skills].sort());
+    for (const feature of both('setup', 'runner', 'shipped-tools', 'hook:startup')) expect(s.features).toContain(feature);
   });
   test('asset self-test requires both harnesses without fictitious Claude asset proof', () => {
     const r = receipt(true);
     r.selection = classify([{ filename: 'plugins/pstack/assets/logo.png' }], registry);
+    r.runFeatures = ['codex:assets:codex'];
     expect(requiredHarnesses(r)).toEqual(['claude', 'codex']);
     expect(requiredFeatures(r, 'claude')).toEqual(['project-skill']);
     expect(requiredFeatures(r, 'codex')).toEqual(['assets:codex', 'project-skill']);
@@ -107,12 +152,21 @@ describe('registry and ownership', () => {
   test('bootstrap changes require its shipped tool consumers, not the unrelated runner', () => {
     const s = classify([{ filename: 'plugins/pstack/skills/poteto-mode/scripts/bootstrap.ts' }], registry);
     expect(s.noRuntime).toBe(false);
-    expect(s.features).toEqual(['shipped-tools']);
-    expect(s.features).not.toContain('runner');
+    expect(s.features).toEqual(both('shipped-tools'));
+  });
+  test('the transcript resolver belongs to Reflect rather than unrelated shipped tools', () => {
+    const path = 'plugins/pstack/skills/poteto-mode/scripts/resolve-codex-transcript.ts';
+    for (const file of [{ filename: path }, { filename: path.replace('.ts', '') }, { filename: 'docs/removed-resolver.md', previous_filename: path }]) {
+      const s = classify([file], registry);
+      expect(s.skills).toEqual(['reflect']);
+      expect(s.features).toEqual(both('skill-invocation:reflect'));
+    }
+    expect(() => classify([{ filename: path.replace('.ts', '.py') }], registry)).toThrow('Unmapped path');
+    expect(classify([{ filename: path.replace('.ts', '.test.ts') }], registry).noRuntime).toBe(true);
   });
   test('rename and deletion preserve old runtime ownership', () => {
     const s = classify([{ filename: 'docs/old.md', previous_filename: 'plugins/pstack/skills/architect/SKILL.md' }], registry);
-    expect(s.features).toContain('skill-invocation:architect');
+    expect(s.features).toContain('claude:skill-invocation:architect');
     expect(classify([{ filename: 'plugins/pstack/skills/architect/SKILL.md' }], registry).noRuntime).toBe(false);
   });
   test('unmapped paths and new executable leaves fail closed', () => {
@@ -124,9 +178,38 @@ describe('registry and ownership', () => {
     const r = receipt(true);
     r.selection = classify([{ filename: '.claude/skills/verify-open-pstack/scripts/verify.ts' }], registry);
     expect(r.selection.noRuntime).toBe(false);
-    expect(r.selection.features).toEqual(['project-skill']);
+    expect(r.selection.features).toEqual(both('project-skill'));
     evidence(r);
     expect(() => completeEvidence(r)).not.toThrow();
+  });
+  test('the shared recipe implementation reaches every implemented recipe and preserves project proof', () => {
+    const path = '.claude/skills/verify-open-pstack/features/recipes.ts';
+    const expected = [...both('catalog', 'setup', 'runner', 'shipped-tools', 'hook:startup', 'project-skill',
+      ...registry.skills.map(skill => `skill-invocation:${skill}`)), 'claude:agent-preload:poteto-agent'].sort();
+    for (const file of [{ filename: path }, { filename: 'docs/moved.md', previous_filename: path }]) {
+      const s = classify([file], registry);
+      expect(s.features).toEqual(expected);
+      expect(s.skills).toEqual([...registry.skills].sort());
+      expect(s.noRuntime).toBe(false);
+      for (const harness of HARNESSES) {
+        for (const feature of s.features.filter(f => f.startsWith(`${harness}:`))) {
+          expect(recipe(feature.slice(harness.length + 1), harness).length).toBeGreaterThan(0);
+        }
+      }
+    }
+  });
+  test('nearby verifier documentation retains only project proof', () => {
+    for (const filename of ['.claude/skills/verify-open-pstack/features/README.md',
+      '.claude/skills/verify-open-pstack/features/skill-invocation.md']) {
+      expect(classify([{ filename }], registry).features).toEqual(both('project-skill'));
+    }
+  });
+  test('shared recipe expansion survives overlapping catalog ownership without broadening ordinary catalog paths', () => {
+    const path = '.claude/skills/verify-open-pstack/features/recipes.ts';
+    const overlapping = { ...registry, catalog: [...registry.catalog, path], shared: [...registry.shared, path] };
+    expect(classify([{ filename: path }], overlapping)).toEqual(classify([{ filename: path }], registry));
+    const catalog = registry.catalog[0]!;
+    expect(classify([{ filename: catalog }], overlapping)).toEqual(classify([{ filename: catalog }], registry));
   });
   test('ordinary repository documentation selects no harnesses', () => {
     const s = classify([{ filename: 'README.md' }, { filename: 'docs/guide.md' }], registry);
@@ -134,10 +217,10 @@ describe('registry and ownership', () => {
     expect(s.features).toEqual([]);
   });
   test('consumed instructions and known verifier enforcement require native project proof', () => {
-    for (const filename of ['AGENTS.md', 'CLAUDE.md', 'tests/skill-collision-repro.sh']) {
+    for (const filename of ['AGENTS.md', 'CLAUDE.md', 'tests/skill-collision-repro.sh', '.github/workflows/ci.yml', 'package.json']) {
       const s = classify([{ filename }], registry);
       expect(s.noRuntime).toBe(false);
-      expect(s.features).toEqual(['project-skill']);
+      expect(s.features).toEqual(both('project-skill'));
       expect(classify([{ filename: 'docs/moved.md', previous_filename: filename }], registry).noRuntime).toBe(false);
     }
   });
@@ -151,7 +234,7 @@ describe('registry and ownership', () => {
     }
   });
   test('unregistered CI, tests, and scripts fail closed instead of bypassing runtime proof', () => {
-    for (const filename of ['.github/workflows/ci.yml', '.github/pull_request_template.md', 'tests/new-gate.sh', 'scripts/disable-proof.ts']) {
+    for (const filename of ['.github/workflows/new-gate.yml', '.github/pull_request_template.md', 'tests/new-gate.sh', 'scripts/disable-proof.ts']) {
       expect(() => classify([{ filename }], registry)).toThrow();
       expect(() => classify([{ filename: 'README.md', previous_filename: filename }], registry)).toThrow();
     }
@@ -177,6 +260,7 @@ describe('receipt and evidence boundaries', () => {
   test('each selected skill must have its own observation', () => {
     const r = receipt();
     r.selection = classify(registry.skills.slice(0, 2).map(s => ({ filename: `plugins/pstack/skills/${s}/SKILL.md` })), registry);
+    r.runFeatures = registry.skills.slice(0, 2).map(s => `claude:skill-invocation:${s}`);
     evidence(r);
     expect(() => completeEvidence(r)).not.toThrow();
     r.observations.pop();

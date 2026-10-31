@@ -1,22 +1,25 @@
-import { classify, completeEvidence, newReceipt } from './core.ts';
+import { recipe } from '../features/recipes.ts';
+import { classify, completeEvidence, newReceipt, requiredFeatures, requiredHarnesses } from './core.ts';
 import { retainedFile, sha256 } from './io.ts';
 import { REPO, type Driver, type GitHub, type Pull, type Receipt, type Registry } from './types.ts';
 
 class HeadMoved extends Error {}
-// Omit unsafe or oversized values whole rather than rewriting recorded evidence.
+export class Refused extends Error {}
+export const SESSION_LIMIT = 12;
 export const EVIDENCE_LIMIT = 160;
 export const publishable = (text: string, limit = EVIDENCE_LIMIT): boolean => text.length <= limit && /^[\x20-\x7e]*$/.test(text) && !/[`<>]/.test(text);
 const safe = (text: string, limit = EVIDENCE_LIMIT): string => publishable(text, limit) ? text : '[value omitted]';
 
-/** Build the single structured public record for this run. Failure details remain private in receipt.json. */
 export function evidence(receipt: Receipt): string {
   const failed = Boolean(receipt.failure);
   const lines = [
     '## Live evidence: Open Pstack',
     `- Candidate SHA: \`${receipt.sha}\``,
     `- Base SHA: \`${receipt.base}\``,
-    `- Result: ${failed ? 'FAILED — verification did not complete; rerun required' : receipt.selection.noRuntime && !receipt.selfTest ? 'PASSED — no runtime change' : 'PASSED — all mapped features verified'}`,
+    `- Result: ${failed ? 'FAILED — verification did not complete; rerun required' : receipt.selection.noRuntime && !receipt.selfTest ? 'PASSED — no runtime change' : 'PASSED — named features verified'}`,
     `- Self-test: ${receipt.selfTest ? failed ? 'required in both harnesses' : 'completed in both harnesses' : 'not requested'}`,
+    `- Planned sessions: ${receipt.sessions} (limit ${SESSION_LIMIT})`,
+    ...(receipt.wide ? [`- Wide run reason: ${safe(receipt.wide)}`] : []),
     `- Publisher revision: ${receipt.publisherRevision ? `\`${receipt.publisherRevision}\`` : 'not supplied'}`,
     `- Evidence-set SHA-256: \`${sha256(JSON.stringify({ installations: receipt.installations, observations: receipt.observations }))}\``,
   ];
@@ -50,6 +53,9 @@ export async function revalidateEvidence(receipt: Receipt): Promise<void> {
 type VerifyOptions = {
   pr: number;
   selfTest: boolean;
+  features: string[];
+  routes?: string[];
+  wide?: string;
   root: string;
   registry: Registry;
   github: GitHub;
@@ -92,9 +98,21 @@ export async function verify(options: VerifyOptions): Promise<Receipt> {
   };
   await phase('classify');
   receipt.selection = classify(await github.files(receipt.base, receipt.sha), options.registry);
-  if (receipt.selection.features.includes('project-skill') && receipt.publisherRevision !== receipt.sha) {
+  if (receipt.selection.features.includes('claude:project-skill') && receipt.publisherRevision !== receipt.sha) {
     throw new Error('Verifier-changing PRs must run from a checkout of the candidate head; rerun from that checkout');
   }
+  if (!receipt.selection.noRuntime && !options.features.length) throw new Refused('A runtime change requires at least one --feature <harness>:<feature>');
+  const refused = options.features.filter(feature => !receipt.selection.features.includes(feature));
+  if (refused.length) throw new Refused(`Outside this PR's classified reach: ${refused.join(', ')}. Reachable: ${receipt.selection.features.join(', ') || 'none'}`);
+  const project = receipt.selection.features.includes('claude:project-skill') ? ['claude:project-skill', 'codex:project-skill'] : [];
+  receipt.runFeatures = [...new Set([...options.features, ...project])];
+  for (const harness of requiredHarnesses(receipt)) {
+    for (const feature of requiredFeatures(receipt, harness)) receipt.sessions += recipe(feature, harness, options.routes).length;
+  }
+  console.log(`Planned headless sessions: ${receipt.sessions} (limit ${SESSION_LIMIT})`);
+  if (receipt.sessions > SESSION_LIMIT && !options.wide) throw new Refused(`${receipt.sessions} planned sessions exceed the limit of ${SESSION_LIMIT}; name fewer features or pass --wide "<reason>"`);
+  if (options.wide) receipt.wide = options.wide;
+  if (requiredHarnesses(receipt).length) await driver.preflight(receipt);
   try {
     await current(); await persist(receipt);
     if (!receipt.selection.noRuntime || receipt.selfTest) {
@@ -107,7 +125,7 @@ export async function verify(options: VerifyOptions): Promise<Receipt> {
     await publishComment();
     await current(); await revalidateEvidence(receipt);
     successAttempted = true;
-    await github.status(receipt.sha, 'success', receipt.commentUrl!, receipt.selection.noRuntime && !receipt.selfTest ? 'No runtime change' : 'All mapped features passed in both harnesses');
+    await github.status(receipt.sha, 'success', receipt.commentUrl!, receipt.selection.noRuntime && !receipt.selfTest ? 'No runtime change' : 'Named features passed');
     receipt.status = 'success'; await persist(receipt); await current(); await revalidateEvidence(receipt);
     return receipt;
   } catch (error) {
@@ -121,7 +139,6 @@ export async function verify(options: VerifyOptions): Promise<Receipt> {
     try { await persist(receipt); }
     catch (persistError) { appendFailure('persist failure receipt', persistError); }
 
-    // Failed setup restoration or Codex auth-link cleanup forbids all publication.
     if (cleanupComplete && !cleanupFailed) {
       if (!commentAttempted) {
         try { await current(); await publishComment(); }
