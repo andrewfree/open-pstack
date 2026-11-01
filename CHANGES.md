@@ -3,6 +3,10 @@
 Open Pstack lands on green: Mergify merges a ready PR to main once verify and exact-head live-gate pass and no review thread is unresolved, and a workflow resolves Unfret's own threads. A PR that touches `.github/` or the Mergify config also waits for Unfret, and workflow changes require operator queueing.
 This port applies the Cursor → Claude Code substitutions in skill bodies. Earlier drafts left them flagged; this revision resolves them. A later pass added a Codex build that shares the same skills; see [Codex port](#codex-port) below.
 
+## Unreleased
+
+- The T3 Claude dispatch guide reads requested effort from the live catalog's `values`, acknowledges T3's worktree isolation while keeping writer lanes unqualified, and reads task status only after a completion notification. Read-only lanes retain async dispatch and plan mode.
+
 ## 1.16.1-local.2 routes Codex-parent Claude lanes through T3
 
 Re-ports the open work of andrewfree/open-pstack PR #1 (`fix/t3-claude-dispatch`) onto the registry runner. PR #1's Kimi fixes already landed in 1.16.1-local.1.
