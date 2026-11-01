@@ -71,8 +71,8 @@ for (const harness of ['claude', 'codex'] as const) {
     ]);
     expect(report.roles.slice(3).map(r => [r.descriptors, r.routes])).toEqual([
       [['codex:gpt-6-luna@max'], [harness === 'codex' ? 'native' : 'external']],
-      [['claude:claude-opus-5-5@max'], [harness === 'claude' ? 'native' : 'external']],
-      [['claude:sonnet@high'], [harness === 'claude' ? 'native' : 'external']],
+      [['claude:claude-opus-5-5@max'], [harness === 'claude' ? 'native' : 't3-claude-agent']],
+      [['claude:sonnet@high'], [harness === 'claude' ? 'native' : 't3-claude-agent']],
       [['devin:swe-2@max'], ['external']],
       [['opencode:opencode/deepseek-v4.1-flash-free@max'], ['external']],
       [['kimi:kimi-code/k3@max'], ['external']],
@@ -184,8 +184,12 @@ for (const harness of ['claude', 'codex'] as const) {
 
   test(`${harness}: the runner recipe's default route is the candidate's role default for this parent`, async () => {
     const f = await fixture(harness), [c] = recipe('runner', harness), installed = await readCatalog(location);
-    await c!.prepare!(f);
     const [route] = installed.defaults.get(harness === 'claude' ? 'bug-fix' : 'judgment and prose')!;
+    if (installed.route(harness, route!) === 't3-claude-agent') {
+      await expect(c!.prepare!(f)).rejects.toThrow(`requires-t3-app-surface:${route}`);
+      return;
+    }
+    await c!.prepare!(f);
     const [provider, rest] = route!.split(':'), [model, effort] = rest!.split('@');
     expect(provider).not.toBe(harness);
     expect(c!.prompt(f)).toContain(`--parent ${harness} --provider ${provider} --model ${model} --effort ${effort} --mode read-only`);

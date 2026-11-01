@@ -21,6 +21,11 @@ export const REGISTRY: Registry = {
   releasedPairs: RELEASED_PAIRS,
 };
 
+export function parentRoute(parent: Parent, provider: string): "native" | "t3-claude-agent" | "external" {
+  if (parent === provider) return "native";
+  return parent === "codex" && provider === "claude" ? "t3-claude-agent" : "external";
+}
+
 export interface LaneRequest {
   readonly parent: string;
   readonly provider: string;

@@ -3,6 +3,12 @@
 Open Pstack lands on green: Mergify merges a ready PR to main once verify and exact-head live-gate pass and no review thread is unresolved, and a workflow resolves Unfret's own threads. A PR that touches `.github/` or the Mergify config also waits for Unfret, and workflow changes require operator queueing.
 This port applies the Cursor → Claude Code substitutions in skill bodies. Earlier drafts left them flagged; this revision resolves them. A later pass added a Codex build that shares the same skills; see [Codex port](#codex-port) below.
 
+## 1.16.1-local.2 restores T3 Claude dispatch after the upstream sync
+
+- Codex-parent Claude lanes use T3's Claude Agent catalog to resolve a rolling family to a concrete model ID and preserve the requested effort. Registered exact pins and kept predecessors retain their exact ID. The mapping rejects proxy providers, unavailable selected accounts, unsupported efforts and writers, follows T3 completion instructions without polling, and never falls back to headless Claude. This ports the dispatch portion of andrewfree/open-pstack PR #1 for CodeOne papercut #3475 onto the current runner, without its older verifier changes.
+- The verifier catalog distinguishes T3 from an external route and refuses headless T3 execution. Its obsolete Claude shell writer recipe now checks route refusal and absence of provider/output effects; actual T3 dispatch still requires the app surface.
+- The registry owns the parent route and generates the catalog from it. The shell runner records `route-refused`/78 before CLI lookup, adapter launch arguments or authentication for a T3 Claude lane, retaining private receipt/stream artifacts and preserving existing files. Setup and the shared Codex tool mapping use the same route boundary. Claude-native agents and other external providers keep their existing routes.
+
 ## 1.16.1-local.1 merges upstream Open Pstack 1.16.0 into the local build
 
 - Merges ericlitman/open-pstack main `b4c5e3d` (Open Pstack 1.16.0, Cursor pstack 0.15.29) into the local 1.5.1-local.10 build. Upstream's 0.15.29 sync supersedes the local Cursor pstack 0.15.9 import.

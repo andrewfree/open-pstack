@@ -12,7 +12,7 @@ import {
   writeSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { type Lane, type LaunchFacts, LaunchRefusal, type ParseResult } from "./registry/index.ts";
+import { type Lane, type LaunchFacts, LaunchRefusal, parentRoute, type ParseResult } from "./registry/index.ts";
 import {
   ERROR_EVIDENCE_LIMIT,
   evidence,
@@ -591,6 +591,8 @@ function statusExitCode(status: ReceiptStatus): number {
       return 70;
     case "unauthenticated":
       return 77;
+    case "route-refused":
+      return 78;
     case "timed-out":
       return 124;
   }
@@ -1092,6 +1094,39 @@ export async function runLane(
   started: number = Date.now()
 ): Promise<RunResult> {
   validateLane(lane);
+  if (parentRoute(lane.parent, lane.adapter.id) === "t3-claude-agent") {
+    const streams = reserveOutputs(lane);
+    try {
+      const completed = Date.now();
+      const receipt = completeReceipt(lane, {
+        status: "route-refused",
+        startedAt: new Date(started).toISOString(),
+        completedAt: new Date(completed).toISOString(),
+        elapsedMs: completed - started,
+        executable: null,
+        preflight: { argv: [], status: "not-run", evidence: "" },
+        argv: [],
+        exitCode: null,
+        signal: null,
+        reportedModel: null,
+        modelVerified: false,
+        modelEvidence: null,
+        sessionId: null,
+        usage: null,
+        costUsd: null,
+        error: {
+          message: "a Codex parent dispatches Claude through the T3 Claude Agent route or records a dropout; see provider-dispatch.md#the-t3-claude-agent-route",
+          evidence: "parent=codex provider=claude; no CLI or authentication preflight started",
+        },
+      });
+      removeIfExists(lane.outputPath);
+      writeReceipt(lane.receiptPath, receipt);
+      return { exitCode: statusExitCode(receipt.status), receipt };
+    } finally {
+      closeSync(streams.stdout);
+      closeSync(streams.stderr);
+    }
+  }
   const deadlineAt = lane.timeoutMs === null ? null : started + lane.timeoutMs;
   const progress: LaneProgress = {
     executable: null,

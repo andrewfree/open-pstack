@@ -150,7 +150,7 @@ describe("registry data", () => {
       const cells = routes.split("\n").find((line) => line.startsWith(`| ${adapter.id} |`))!.split(" | ");
       expect(cells.slice(1, 3)).toEqual([
         adapter.id === "claude" ? "native `Agent`" : "external runner",
-        adapter.id === "codex" ? "native `spawn_agent`" : "external runner",
+        adapter.id === "codex" ? "native `spawn_agent`" : adapter.id === "claude" ? "T3 Claude Agent (read-only); otherwise dropout" : "external runner",
       ]);
     }
   });
@@ -217,6 +217,22 @@ describe("generated files", () => {
 
 describe("hand-written dispatch and setup rules", () => {
   const dispatch = readFileSync(join(PLUGIN_ROOT, "skills/poteto-mode/references/provider-dispatch.md"), "utf8");
+
+  it("resolves T3 Claude models through the app catalog without polling or shell fallbacks", () => {
+    const t3 = section(dispatch, "## The T3 Claude Agent route", "## External lanes");
+    expect(t3).toContain('`driverKind` is `claudeAgent`');
+    expect(t3).toContain("Never pass the bare family alias to `target.model`");
+    expect(t3).toContain("require that exact ID");
+    expect(t3).toContain('`id: "effort"`');
+    expect(t3).toContain('`target.options: { effort }`');
+    expect(t3).toContain('`interactionMode: "default"`');
+    expect(t3).toContain("Follow the returned `next`");
+    expect(t3).toContain("end the turn without polling");
+    expect(t3).toContain("unsupported-access-mode");
+    expect(t3).toContain("A failed route never authorizes a shell fallback");
+    expect(t3).not.toContain('`interactionMode: "plan"`');
+    expect(t3).not.toContain("task_status");
+  });
   const setup = readFileSync(join(PLUGIN_ROOT, "skills/setup-pstack/SKILL.md"), "utf8");
   const section = (text: string, from: string, to: string): string => {
     const start = text.indexOf(from), end = text.indexOf(to);

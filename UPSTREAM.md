@@ -10,9 +10,9 @@ open-pstack tracks [Cursor's pstack](https://github.com/cursor/plugins/tree/main
 | Path | `pstack/` |
 | Commit | `88d47514b82e7c44f00f2b2a72ff6dd12158038c` |
 | Upstream version | `0.15.29` |
-| open-pstack version | `1.16.1-local.1` |
+| open-pstack version | `1.16.1-local.2` |
 
-The table above is the current Cursor sync point. Open Pstack 1.16.0 imported this 0.15.29 sync. Open Pstack 1.16.1-local.1 is a local build of upstream Open Pstack 1.16.0; `CHANGES.md` lists its local changes. `README-UPSTREAM.md` preserves the upstream pstack README verbatim. `CHANGES.md` and `NOTICE.md` describe the adaptations and provenance.
+The table above is the current Cursor sync point. Open Pstack 1.16.0 imported this 0.15.29 sync. Open Pstack 1.16.1-local.2 is a local build of upstream Open Pstack 1.16.0; `CHANGES.md` lists its local changes. `README-UPSTREAM.md` preserves the upstream pstack README verbatim. `CHANGES.md` and `NOTICE.md` describe the adaptations and provenance.
 
 ## Upstream-only exclusions
 
@@ -42,6 +42,8 @@ The table above is the current Cursor sync point. Open Pstack 1.16.0 imported th
 - `poteto-agent.md` does not take `b93e811`'s search of `~/.cursor/plugins/` for poteto-mode, its highest-version rule, or its note that the skill catalog hides poteto-mode. The Claude agent preloads `pstack:poteto-mode`, the port's poteto-mode is not hidden, and Codex has no `poteto-agent` type. The agent keeps upstream's "Use the absolute path your parent gave you."
 
 ## Local port-patch ledger
+
+- **CodeOne #3475, T3 Claude dispatch**: preserve the parent-owned T3 Claude Agent mapping in `provider-dispatch.md`, its setup/Codex pointers, and the registry route used by the generated catalog and shell refusal. T3 requires live concrete model IDs and option values, not CLI family aliases. The local runner returns `route-refused`/78 before provider lookup for Codex-parent Claude lanes. Do not restore the old shell fallback during a sync.
 
 - **#235 — Claude transcript folder encoding**: the port wrote Claude Code's per-project transcript path into `recall`, `automate-me` and the `session-pickup` playbook. Claude Code encodes each `/` and each `.` in the workspace path as `-`, so a `.claude/worktrees/` session's folder holds `--claude-worktrees-`. Keep both characters in those three lines during syncs.
 - **#140 — Reflect transcript resolution**: Cursor's Reflect step 1 reads the `agent-transcripts/` directory its system prompt names; the port had substituted Claude Code's per-project directory, which left Codex without a lookup. The port replaces that step's body with one line that points to `plugins/pstack/skills/poteto-mode/references/codex-tools.md#active-transcripts`, and leaves the rest of `reflect/SKILL.md` unchanged. That mapping section holds the harness specifics: the Claude per-project scope, layouts, candidate and scan limits, opening-message verification, the Codex resolver call, and the 2,000-word digest fallback. The port-authored Bun resolver `plugins/pstack/skills/poteto-mode/scripts/resolve-codex-transcript.ts`, started through the `sh` launcher `resolve-codex-transcript` next to it so project Bun config and `.env` files cannot affect it, looks up the parent's known chat ID in Codex's read-only `threads` index, checks rollout scope and ownership, and prints opening-message metadata without transcript text. Preserve this divergence during upstream syncs: keep step 1 as the one-line pointer and keep the mapping section and resolver.
