@@ -91,7 +91,7 @@ describe('isolated harness boundaries', () => {
     expect(JSON.parse(await readFile(join(root, 'doctor.json'), 'utf8')).result).toBe('pass');
     expect(calls.every(c => c.includes('--help') || c.includes('--version'))).toBe(true);
   });
-  test('doctor disables Codex analytics in its run-owned home before any Codex command', async () => {
+  test('doctor disables Codex analytics and Apps in its run-owned home before any Codex command', async () => {
     const root = await fixture(), daily = await loginFixture(root), dailyConfig = join(daily, '..', 'config.toml');
     await writeFile(dailyConfig, '[analytics]\nenabled = true\n');
     const calls: string[][] = [];
@@ -99,7 +99,7 @@ describe('isolated harness boundaries', () => {
       if (args[0] === 'codex') {
         calls.push(args);
         const config = join(options!.env!.CODEX_HOME!, 'config.toml');
-        expect(Bun.TOML.parse(await readFile(config, 'utf8'))).toEqual({ analytics: { enabled: false } });
+        expect(Bun.TOML.parse(await readFile(config, 'utf8'))).toEqual({ analytics: { enabled: false }, features: { apps: false } });
         expect((await stat(config)).mode & 0o777).toBe(0o600);
         expect(options!.env!.DO_NOT_TRACK).toBe('1');
       }
