@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assertDailyState, captureDailyState, type DailyStatePaths } from './daily-state.ts';
@@ -43,4 +43,35 @@ test('detects newly created memory and configuration and removed memory', async 
   await writeFile(paths.files[1]!, '[features]\napps = true\n');
   const configChanged = await captureDailyState(paths);
   expect(() => assertDailyState(before, configChanged)).toThrow(paths.files[1]!);
+});
+
+test('ignores project-root files without changing them or ignoring project memory', async () => {
+  const paths = await fixture(), projects = paths.directories[0]!;
+  await mkdir(join(projects, 'project/memory'), { recursive: true });
+  const finder = join(projects, '.DS_Store'), memory = join(projects, 'project/memory/MEMORY.md');
+  await writeFile(finder, 'Finder metadata');
+  await writeFile(memory, 'original memory');
+  const before = await captureDailyState(paths);
+  expect(before[memory]).toBeString();
+  expect(before[finder]).toBeUndefined();
+  expect(await readFile(finder, 'utf8')).toBe('Finder metadata');
+  await writeFile(memory, 'changed memory');
+  const after = await captureDailyState(paths);
+  expect(() => assertDailyState(before, after)).toThrow(memory);
+});
+
+test('captures linked project memory while skipping links to files and absent targets', async () => {
+  const paths = await fixture(), projects = paths.directories[0]!, target = join(paths.home, 'linked-project');
+  await mkdir(join(target, 'memory'), { recursive: true });
+  await mkdir(projects);
+  await writeFile(join(target, 'memory/MEMORY.md'), 'linked memory');
+  await writeFile(join(paths.home, 'metadata'), 'ordinary file');
+  await symlink(target, join(projects, 'linked'));
+  await symlink(join(paths.home, 'metadata'), join(projects, 'file-link'));
+  await symlink(join(paths.home, 'absent'), join(projects, 'broken-link'));
+  const before = await captureDailyState(paths);
+  expect(before[join(projects, 'linked/memory/MEMORY.md')]).toBeString();
+  await writeFile(join(target, 'memory/MEMORY.md'), 'changed linked memory');
+  const after = await captureDailyState(paths);
+  expect(() => assertDailyState(before, after)).toThrow('linked/memory/MEMORY.md');
 });

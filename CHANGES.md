@@ -5,6 +5,8 @@ This port applies the Cursor → Claude Code substitutions in skill bodies. Earl
 
 ## Unreleased
 
+- The verifier skips non-directory entries such as Finder metadata when enumerating Claude project memory, while continuing to track linked project directories. Its run-owned Codex config disables Apps, preventing built-in connector servers from violating the existing T3-only MCP inventory rule. Daily-state comparisons and MCP assertions remain unchanged.
+
 - The T3 Claude dispatch guide reads requested effort from the live catalog's `values`, acknowledges T3's worktree isolation while keeping writer lanes unqualified, and reads task status only after a completion notification. Read-only lanes retain async dispatch and plan mode.
 
 ## 1.16.1-local.2 routes Codex-parent Claude lanes through T3

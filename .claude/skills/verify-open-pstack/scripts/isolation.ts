@@ -24,8 +24,8 @@ export async function linkCodexAuth(home: string): Promise<void> {
   await symlink(source, join(await codexDirectory(home), 'auth.json'));
 }
 
-export async function disableCodexAnalytics(home: string): Promise<void> {
-  await writeFile(join(await codexDirectory(home), 'config.toml'), '[analytics]\nenabled = false\n', { mode: 0o600 });
+export async function configureCodexVerification(home: string): Promise<void> {
+  await writeFile(join(await codexDirectory(home), 'config.toml'), '[analytics]\nenabled = false\n[features]\napps = false\n', { mode: 0o600 });
 }
 
 export async function assertCodexAuth(home: string): Promise<void> {
