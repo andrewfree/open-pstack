@@ -28,7 +28,7 @@ A kept predecessor in the catalog matches its family. Dispatch it with the sheet
 
 The top-level harness resolves the route once. A child receives an assigned provider, model, effort, access mode, prompt, working directory, and output path. A child never detects the harness, chooses a provider, or launches another model. Environment markers may corroborate the top-level harness before fan-out, but nested processes inherit parent markers and must not use them for routing.
 
-The catalog's [route table](model-catalog.md#routes) gives each provider's route from each parent. A provider native to the parent uses the parent's subagent primitive. Every other provider uses the external runner.
+The catalog's [route table](model-catalog.md#routes) gives each provider's route from each parent. A provider native to the parent uses the parent's subagent primitive. On a Codex parent, Claude uses the T3 Claude Agent route below. Every other cross-provider lane uses the external runner.
 
 `inherit-parent` and `auto` remain aliases. They use the parent's current model and effort through its native subagent primitive. In a panel they still consume one lane, but they reduce provider diversity; say so in the synthesis record.
 
@@ -41,7 +41,25 @@ Native dispatch avoids a second CLI startup and its base context.
 
 Do not send a same-provider descriptor to the external runner. It rejects that call because the native route is cheaper and already available.
 
+## The T3 Claude Agent route
+
+A Codex parent dispatches a configured Claude lane through T3's app-owned Claude Agent provider. The shell runner returns `route-refused` (exit 78) before executable lookup, authentication, or model execution for Codex-parent Claude calls. Outside T3, record `no-t3-route`; never run headless Claude, substitute a proxy or Cursor, or change the configured family, account, or effort.
+
+1. Discover `orchestrator_capabilities` and `delegate_task` on the parent's tool surface, allowing harness prefixes. Call capabilities before the first delegation. Use the returned provider/model/option IDs, not CLI aliases or environment markers. If tools load lazily, try the named capability tool once before declaring it absent. A failed lookup is `no-t3-route`.
+2. Use an explicitly selected provider instance only when its `driverKind` is `claudeAgent` and both `canRunChildTask` and `canRunCrossProviderChildTask` are true. Otherwise use the available default instance `claudeAgent`, or the only eligible Claude Agent instance. If multiple eligible instances remain without a default, ask which account to use; never pick another account after a failure. Missing or disabled selected instances are `unavailable-provider-instance`.
+3. Normalize the descriptor by the read-time rules above. For a rolling family alias, match concrete IDs with the catalog family's revision prefix and a suffix containing only numeric segments separated by hyphens. Compare numeric version segments, treating missing trailing segments as zero; a final eight-digit date breaks version ties. Select the highest matching revision returned by the chosen instance. For a registered exact pin, kept predecessor, or unregistered concrete model, require that exact ID. Never pass the bare family alias to `target.model`, treat a proxy-prefixed ID as Claude Agent, or substitute another family. A missing match is `unavailable-model`. A truncated catalog is not proof of absence: use the tool's documented search after an unresolved model lookup, or report the unresolved catalog rather than guessing.
+4. For a requested effort other than `default`, require an option with `id: "effort"` whose `values` contain that exact effort, then pass `target.options: { effort }`. `default` omits an explicit effort option. Missing support is `unsupported-effort`; never reduce the effort or translate it to a thinking toggle, `ultracode`, or `ultrathink`.
+5. This mapping supports `read-only` lanes. An `isolated-write` lane is `unsupported-access-mode` before dispatch. A writable path in a prompt does not establish isolation. Writer routing needs a separately verified mapping to T3's worktree capability; do not create a top-level thread as a substitute.
+6. Call `delegate_task` with `target: { providerInstanceId, model, options }`, the complete brief, grounding paths, and explicit read-only/no-subagents boundaries. The child receives no parent history. Use `interactionMode: "default"`; plan mode and narrowed runtime modes can introduce approval waits and do not enforce read-only access. Omit `runtimeMode` unless the owner requests supervision. Use `mode: "wait"` when this turn needs the result, otherwise `mode: "async"`, and a unique `clientRequestId` per lane and round. Retry the same ID only after an uncertain transport result for that same dispatch. Every new review is a fresh task with the brief and prior findings.
+7. Follow the returned `next`. When completion wakes the thread, end the turn without polling, sleeping, or adding a watcher. A wait timeout leaves the child running. Retain `taskId`, `childThreadId`, and `link`; read the child's terminal result through the documented T3 result/thread tools on completion. Success requires `status: "completed"`, `workState: "result_available"`, and a non-empty final response. A handle or dispatch acknowledgment is not success. Questions and approvals remain pending; terminal failure is `task-failed`, an empty response is `empty-result`. A `waiting_for_children` state stays in progress. Later backing-thread turns are not this task's result. Cancel a replaced or unneeded task with `task_cancel`, never by interrupting its thread. There is no implicit runtime timeout.
+
+Before dispatch, reserve distinct private record and output paths without overwriting existing files. Record `route: "t3-claude-agent"`, descriptor, selected provider instance, concrete model, requested effort, client request ID, task/thread IDs, link, status, and nullable dropout reason. Unavailable fields stay null. Record the requested target as evidence, never as proof of a served model or hidden reasoning depth. On completion write the actual final response; on dropout remove only the empty output reservation and retain the record. The child prompt's read-only and no-subagents requirements are not a tool allowlist or a sandbox guarantee.
+
+Apply the calling skill's dropout policy to refusals. A failed route never authorizes a shell fallback, another provider/account, or `inherit-parent`.
+
 ## External lanes
+
+This section applies only to routes marked external runner in the catalog.
 
 The launcher lives at `skills/poteto-mode/scripts/runner/pstack-runner` under the installed plugin. The parent writes the complete candidate prompt to a unique file, creates a unique output directory or worktree, and invokes the launcher directly. Do not put another agent in front of it.
 

@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { dirname, join } from "node:path";
 import { ACCESS_MODES, PARENTS, type Parent } from "../types.ts";
 import { access, type EnvPolicy, type ProviderAdapter } from "./contract.ts";
-import { defaultDescriptor, effortsOf, modelIds, REGISTRY, type Registry } from "./index.ts";
+import { defaultDescriptor, effortsOf, modelIds, parentRoute, REGISTRY, type Registry } from "./index.ts";
 
 export interface GeneratedFile {
   readonly path: string;
@@ -30,6 +30,7 @@ const table = (header: readonly string[], rows: readonly (readonly string[])[]):
 ];
 
 function route(adapter: ProviderAdapter, parent: Parent): string {
+  if (parentRoute(parent, adapter.id) === "t3-claude-agent") return "T3 Claude Agent (read-only); otherwise dropout";
   return adapter.id === parent ? `native ${code(PARENTS[parent].native)}` : "external runner";
 }
 

@@ -40,7 +40,7 @@ const WRITER_ROLE = 'feature, refactoring', WRITER_LANE = 'codex:gpt-6.1-sol@max
 export interface Catalog {
   defaults: Map<string, string[]>;
   kept: Map<string, string>;
-  route(harness: Harness, descriptor: string): 'native' | 'external';
+  route(harness: Harness, descriptor: string): 'native' | 'external' | 't3-claude-agent';
 }
 
 export async function readCatalog(location: string): Promise<Catalog> {
@@ -59,7 +59,10 @@ export async function readCatalog(location: string): Promise<Catalog> {
     if (!descriptor.includes(':')) return 'native';
     const cell = routes.find(row => row[0] === descriptor.slice(0, descriptor.indexOf(':')))?.[column[harness]];
     if (cell === undefined) throw new Error(`catalog-route-missing:${descriptor}`);
-    return cell.startsWith('native') ? 'native' : 'external';
+    if (cell.startsWith('native')) return 'native';
+    if (cell.startsWith('T3 Claude Agent')) return 't3-claude-agent';
+    if (cell === 'external runner') return 'external';
+    throw new Error(`catalog-route-unknown:${descriptor}`);
   } };
 }
 
@@ -275,7 +278,7 @@ const projectSkill: Case = {
 };
 
 const writer: Case = {
-  id: 'linked-worktree-writer',
+  id: 'claude-shell-refused',
   codexSandbox: 'danger-full-access',
   async prepare(f) {
     const repo = join(f.dir, 'writer-repo');
@@ -284,18 +287,21 @@ const writer: Case = {
     await git(f, '-C', repo, 'worktree', 'add', '-q', '-b', 'writer', join(f.dir, 'writer-lane'));
     await writeFile(join(f.dir, 'writer.prompt.md'), 'Create the file WRITTEN.md in the current directory containing the single word PONG, then reply DONE.\n');
   },
-  prompt: f => `${invoke(f.harness, 'poteto-mode', `Dispatch exactly one external lane and nothing else. Run the installed launcher ${join(f.location, 'skills/poteto-mode/scripts/runner/pstack-runner')} with these arguments and wait for it to exit: --parent codex --provider claude --model opus --effort max --mode isolated-write --prompt ${join(f.dir, 'writer.prompt.md')} --cwd ${join(f.dir, 'writer-lane')} --output ${join(f.dir, 'writer.output.md')} --receipt ${join(f.dir, 'writer.receipt.json')}`)}. ${rules(f.dir)}`,
+  prompt: f => `${invoke(f.harness, 'poteto-mode', `Verify the forbidden Claude shell route returns route-refused with exit 78, without starting a provider. Do not retry or launch a model. Run the installed launcher ${join(f.location, 'skills/poteto-mode/scripts/runner/pstack-runner')} with these arguments and retain its refusal: --parent codex --provider claude --model opus --effort max --mode isolated-write --prompt ${join(f.dir, 'writer.prompt.md')} --cwd ${join(f.dir, 'writer-lane')} --output ${join(f.dir, 'writer.output.md')} --receipt ${join(f.dir, 'writer.receipt.json')}`)}. ${rules(f.dir)}`,
   async assert(record, f) {
     if (!record.commands.some(c => c.includes('pstack-runner'))) throw new Error('runner-not-run');
     const receipt = JSON.parse(await readFile(join(f.dir, 'writer.receipt.json'), 'utf8')), lane = join(f.dir, 'writer-lane');
-    if (receipt.status !== 'complete') throw new Error(`receipt-status:${receipt.status}`);
+    if (receipt.status !== 'route-refused') throw new Error(`receipt-status:${receipt.status}`);
     if (receipt.parent !== 'codex' || receipt.provider !== 'claude' || receipt.model !== 'opus' || receipt.effort !== 'max' || receipt.mode !== 'isolated-write' || receipt.cwd !== lane) throw new Error('receipt-route-mismatch');
     if (receipt.outputPath !== join(f.dir, 'writer.output.md') || !(Date.parse(receipt.startedAt) >= record.started)) throw new Error('receipt-not-this-session');
-    const settings = parseJson(receipt.argv[receipt.argv.indexOf('--settings') + 1]) as { sandbox?: { filesystem?: { denyWrite?: unknown } } } | undefined;
-    if (!Bun.deepEquals(settings?.sandbox?.filesystem?.denyWrite, [await realpath(join(f.dir, 'writer-repo/.git'))])) throw new Error('shared-git-not-denied');
-    const effect = await written(record, join(lane, 'WRITTEN.md'));
-    if ((await readFile(join(lane, 'WRITTEN.md'), 'utf8')).trim() !== 'PONG') throw new Error('writer-effect-mismatch:WRITTEN.md');
-    return { assertions: ['runner-ran', 'receipt-complete', 'shared-git-denied', effect], files: [join(f.dir, 'writer.receipt.json'), join(lane, 'WRITTEN.md')] };
+    if (receipt.executable !== null || receipt.exitCode !== null || receipt.preflight.status !== 'not-run' || receipt.preflight.argv.length || receipt.argv.length) throw new Error('refused-route-started-provider');
+    for (const path of [join(f.dir, 'writer.output.md'), join(lane, 'WRITTEN.md')]) {
+      if (await lstat(path).catch(() => undefined)) throw new Error('refused-route-wrote-output');
+    }
+    for (const path of [receipt.stdoutPath, receipt.stderrPath]) {
+      if (typeof path !== 'string' || (await readFile(path)).length) throw new Error('refused-route-nonempty-stream');
+    }
+    return { assertions: ['runner-ran', 'route-refused', 'provider-not-started', 'no-writer-output'], files: [join(f.dir, 'writer.receipt.json')] };
   },
 };
 
@@ -359,6 +365,7 @@ function runner(harness: Harness, routes: string[]): Case[] {
         const installed = await readCatalog(f.location);
         route ||= installed.defaults.get(DEFAULT_ROLES[harness])?.[0] ?? '';
         const parts = ROUTE.exec(route);
+        if (parts && installed.route(harness, route) === 't3-claude-agent') throw new Error(`requires-t3-app-surface:${route}`);
         if (!parts || installed.route(harness, route) !== 'external') throw new Error(`runner-route-not-external:${route || DEFAULT_ROLES[harness]}`);
         [, provider = '', model = '', effort = ''] = parts;
         await writeFile(lane(f, 'prompt.md'), 'Reply with the single word PONG.\n');
@@ -630,7 +637,7 @@ function consumeSheet(harness: Harness, optIn: boolean): Case {
         .map(r => ({ ...r, routes: r.descriptors.map(d => installed.route(harness, d)) })),
         writerSandbox: optIn && installed.route(harness, WRITER_LANE) === 'external' ? 'full-access' : null };
     },
-    prompt: f => `${invoke(f.harness, 'poteto-mode', `Do no engineering work and launch no lane. For this task the pstack model sheet is ${sheet(f)}; use it in place of any configured sheet. For each of these roles, in this order, find the descriptors this parent would dispatch and the route of each: ${expected.roles.map(r => JSON.stringify(r.role)).join(', ')}. Write to ${report(f)} only JSON of the form {"roles":[{"role":"<role>","descriptors":["<provider:model@effort>"],"routes":["native" or "external"]}],"writerSandbox":"<value>" or null}, one route per descriptor, where "native" is this parent's own subagent primitive and "external" is the external runner. writerSandbox is the --writer-sandbox value this parent would pass when it dispatches the first descriptor of the ${JSON.stringify(WRITER_ROLE)} role as an isolated-write writer, or null if it would pass none.`)} ${rules(f.dir)}`,
+    prompt: f => `${invoke(f.harness, 'poteto-mode', `Do no engineering work and launch no lane. For this task the pstack model sheet is ${sheet(f)}; use it in place of any configured sheet. For each of these roles, in this order, find the descriptors this parent would dispatch and the route of each: ${expected.roles.map(r => JSON.stringify(r.role)).join(', ')}. Write to ${report(f)} only JSON of the form {"roles":[{"role":"<role>","descriptors":["<provider:model@effort>"],"routes":["native" or "external" or "t3-claude-agent"]}],"writerSandbox":"<value>" or null}, one route per descriptor, where "native" is this parent's own subagent primitive , "external" is the external runner, and "t3-claude-agent" is app-owned Claude dispatch from Codex. writerSandbox is the --writer-sandbox value this parent would pass when it dispatches the first descriptor of the ${JSON.stringify(WRITER_ROLE)} role as an isolated-write writer, or null if it would pass none.`)} ${rules(f.dir)}`,
     async assert(record, f) {
       const assertions = [loaded(record, 'pstack:poteto-mode'), await written(record, report(f))];
       if (!Bun.deepEquals(parseJson(await readFile(report(f), 'utf8')), expected)) throw new Error('catalog-route-mismatch');
