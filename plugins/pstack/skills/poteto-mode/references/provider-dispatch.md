@@ -55,7 +55,24 @@ For a Codex parent's `claude` lane, the parent resolves this route once per fan-
 
 Read-only here relies on plan mode and the child prompt. It does not provide the external runner's explicit tool allowlist or recursion block. Before rollout, verify that the actual app route completes without a question or approval wait.
 
-Before dispatch, reserve unique private lane-record and output paths exclusively, without overwriting existing files. The parent keeps a record beside the other lane receipts containing `route: "t3-claude-agent"`, normalized `descriptor`, `providerInstanceId`, concrete `model`, `effort`, `clientRequestId`, `taskId`, `childThreadId`, `status`, and nullable `dropoutReason`. Unavailable values stay null. Record the requested target as evidence, not a provider-reported served model or hidden reasoning depth. On success, the parent writes the final response to the reserved output path; on dropout, it removes only its empty output reservation and retains the record. A task handle or dispatch acknowledgment is not a completed result.
+Before dispatch, reserve unique private lane-record and output paths exclusively, without overwriting existing files. The parent keeps a JSON record beside the other lane receipts with these exact keys:
+
+```json
+{
+  "route": "t3-claude-agent",
+  "descriptor": null,
+  "providerInstanceId": null,
+  "model": null,
+  "effort": null,
+  "clientRequestId": null,
+  "taskId": null,
+  "childThreadId": null,
+  "status": null,
+  "dropoutReason": null
+}
+```
+
+Fill `descriptor` with the normalized descriptor, `model` with the concrete ID passed in `target.model`, and the other fields with their dispatch or result values as they become available. The JSON key is `model`, not `concreteModel` or `reportedModel`. Unavailable values stay null. Record the requested target as evidence, not a provider-reported served model or hidden reasoning depth. On success, the parent writes the final response to the reserved output path; on dropout, it removes only its empty output reservation and retains the record. A task handle or dispatch acknowledgment is not a completed result.
 
 Apply the calling skill's existing dropout policy to every refusal above. Never fall back to the external runner, Cursor, a proxy, another account, or `inherit-parent`. Outside T3, Codex-parent Claude lanes are unavailable until the operator explicitly chooses another assignment.
 

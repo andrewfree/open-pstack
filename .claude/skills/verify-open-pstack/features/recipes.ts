@@ -417,7 +417,8 @@ function appRunner(appRoute: AppRoute | undefined, fixed: string): Case {
       const receipt = object(JSON.parse(await readFile(lane(f), 'utf8')));
       const expected = { route: 't3-claude-agent', descriptor: route, providerInstanceId: appRoute!.providerInstanceId, model: chosen, effort,
         clientRequestId: launch.arguments.clientRequestId, taskId: result.taskId, childThreadId: result.childThreadId, status: 'completed', dropoutReason: null };
-      if (Object.entries(expected).some(([key, value]) => receipt[key] !== value)) throw new Error('app-route-lane-record-mismatch');
+      const mismatched = Object.entries(expected).filter(([key, value]) => receipt[key] !== value).map(([key]) => key);
+      if (mismatched.length) throw new Error(`app-route-lane-record-mismatch:${mismatched.join(',')}`);
       if ((await readFile(output(f), 'utf8')).trim() !== 'PONG') throw new Error('app-route-output-not-PONG');
       return { assertions: [loaded(record, 'pstack:poteto-mode'), 'native-catalog-before-dispatch', 'concrete-family-revision', 'coordinator-catalog-match', 'live-capability-route',
         'native-t3-dispatch', 'async-plan-request', 'matching-child-run', 'lane-record', 'completed-PONG', await written(record, lane(f)), await written(record, output(f))], files: [lane(f), output(f)] };
