@@ -5,7 +5,7 @@ This port applies the Cursor → Claude Code substitutions in skill bodies. Earl
 
 ## Unreleased
 
-- The verifier skips non-directory entries such as Finder metadata when enumerating Claude project memory, while continuing to track linked project directories. Its run-owned Codex config disables Apps, preventing built-in connector servers from violating the existing T3-only MCP inventory rule. Daily-state comparisons and MCP assertions remain unchanged.
+- The verifier skips non-directory entries such as Finder metadata when enumerating Claude project memory, while continuing to track linked project directories. Its run-owned Codex config disables Apps and the Data Analytics plugin's MCP server, preserving the existing T3-only MCP inventory rule. Claude fixture plugin caches and marketplace metadata use a run-owned directory with the normal app login. The native Codex parser binds async child-completion notifications to the recorded delegate and terminal status, and requires the same message sequence in the rollout. Daily-state comparisons and MCP assertions remain unchanged.
 
 - The T3 Claude dispatch guide reads requested effort from the live catalog's `values`, acknowledges T3's worktree isolation while keeping writer lanes unqualified, and reads task status only after a completion notification. Read-only lanes retain async dispatch and plan mode.
 
