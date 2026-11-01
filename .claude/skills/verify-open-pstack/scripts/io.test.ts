@@ -59,7 +59,7 @@ describe('private values and retained file boundaries', () => {
       expect(env).toMatchObject({ HOME: '/Users/operator', USER: 'operator-user', LOGNAME: 'operator-login',
         PATH: '/usr/local/bin:/usr/bin:/bin', TMPDIR: '/run/home/tmp', XDG_CONFIG_HOME: '/run/home/.config',
         XDG_CACHE_HOME: '/run/home/.cache', GH_CONFIG_DIR: '/run/home/.config/gh',
-        CODEX_HOME: '/run/home/.codex' });
+        CODEX_HOME: '/run/home/.codex', CLAUDE_CODE_PLUGIN_CACHE_DIR: '/run/home/claude-plugins' });
       delete process.env.CLAUDE_CONFIG_DIR;
       expect(isolatedEnv('/run/home').CLAUDE_CONFIG_DIR).toBeUndefined();
       process.env.CLAUDE_CONFIG_DIR = '/Users/operator/custom-claude';

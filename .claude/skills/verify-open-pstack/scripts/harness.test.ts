@@ -49,6 +49,7 @@ describe('isolated harness boundaries', () => {
         expect(env.HOME).toBe('/operator/home'); expect(env.USER).toBe('operator-user'); expect(env.LOGNAME).toBe('operator-login');
         expect(env.GIT_CONFIG_GLOBAL).toBe('/dev/null'); expect(env.TMPDIR).toBe('/run/state/tmp');
         expect(env.CLAUDE_CONFIG_DIR).toBe('/daily/claude'); expect(env.CODEX_HOME).toBe('/run/state/.codex');
+        expect(env.CLAUDE_CODE_PLUGIN_CACHE_DIR).toBe('/run/state/claude-plugins');
         expect(env.GH_CONFIG_DIR).toBe('/run/state/.config/gh');
         expect(JSON.stringify(env)).not.toContain('/daily/codex');
       }
@@ -91,7 +92,7 @@ describe('isolated harness boundaries', () => {
     expect(JSON.parse(await readFile(join(root, 'doctor.json'), 'utf8')).result).toBe('pass');
     expect(calls.every(c => c.includes('--help') || c.includes('--version'))).toBe(true);
   });
-  test('doctor disables Codex analytics in its run-owned home before any Codex command', async () => {
+  test('doctor disables Codex analytics and Apps in its run-owned home before any Codex command', async () => {
     const root = await fixture(), daily = await loginFixture(root), dailyConfig = join(daily, '..', 'config.toml');
     await writeFile(dailyConfig, '[analytics]\nenabled = true\n');
     const calls: string[][] = [];
@@ -99,7 +100,8 @@ describe('isolated harness boundaries', () => {
       if (args[0] === 'codex') {
         calls.push(args);
         const config = join(options!.env!.CODEX_HOME!, 'config.toml');
-        expect(Bun.TOML.parse(await readFile(config, 'utf8'))).toEqual({ analytics: { enabled: false } });
+        expect(Bun.TOML.parse(await readFile(config, 'utf8'))).toEqual({ analytics: { enabled: false }, features: { apps: false },
+          plugins: { 'data-analytics@openai-curated-remote': { mcp_servers: { data: { enabled: false } } } } });
         expect((await stat(config)).mode & 0o777).toBe(0o600);
         expect(options!.env!.DO_NOT_TRACK).toBe('1');
       }

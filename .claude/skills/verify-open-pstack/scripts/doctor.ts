@@ -1,7 +1,7 @@
 import { mkdir, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { command, isolatedEnv, save, type Command } from './io.ts';
-import { disableCodexAnalytics, linkCodexAuth, removeCodexHome } from './isolation.ts';
+import { configureCodexVerification, linkCodexAuth, removeCodexHome } from './isolation.ts';
 import { assertNativeConsumers } from './native-consumer.ts';
 import { HARNESSES, type Harness } from './types.ts';
 
@@ -17,7 +17,7 @@ export async function doctor(root: string, run: Command = command, platform = pr
     const claude = claudeBinary ?? 'claude';
     const home = join(root, 'probe-home');
     for (const dir of ['tmp', '.codex', '.config/gh', '.cache']) await mkdir(join(home, dir), { recursive: true, mode: 0o700 });
-    await disableCodexAnalytics(home);
+    await configureCodexVerification(home);
     const env = isolatedEnv(home);
     for (const binary of candidate ? ['bun', 'git', 'claude', 'codex'] : ['bun', 'git', 'claude', 'codex', 'gh']) checks[binary] = (await run([binary === 'claude' ? claude : binary, '--version'], { env })).trim();
     const claudeHelp = await run([claude, '--help'], { env });

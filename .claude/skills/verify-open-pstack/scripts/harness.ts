@@ -5,7 +5,7 @@ import { requiredFeatures, requiredHarnesses } from './core.ts';
 import { assertDailyState, captureDailyState, dailyStatePaths, type DailyState, type DailyStatePaths } from './daily-state.ts';
 import { command, isolatedEnv, retainedFile, save, session, treeHash, type Command, type Session } from './io.ts';
 import { doctor } from './doctor.ts';
-import { assertCodexAuth, disableCodexAnalytics, linkCodexAuth, removeCodexHome, restoreSetup, snapshotSetup, type SetupSnapshot } from './isolation.ts';
+import { assertCodexAuth, configureCodexVerification, linkCodexAuth, removeCodexHome, restoreSetup, snapshotSetup, type SetupSnapshot } from './isolation.ts';
 import { assertNativeConsumers } from './native-consumer.ts';
 import { sourceDigest, sourceHash } from './provenance.ts';
 import type { AppTransport } from './t3-app.ts';
@@ -130,7 +130,7 @@ export class MacDriver implements Driver {
       const home = join(root, 'state', harness), workspace = join(home, 'workspace');
       await mkdir(join(home, 'tmp'), { recursive: true, mode: 0o700 });
       for (const dir of ['.codex', '.config/gh', '.cache']) await mkdir(join(home, dir), { recursive: true, mode: 0o700 });
-      await disableCodexAnalytics(home);
+      await configureCodexVerification(home);
       const env = isolatedEnv(home, harness);
       const candidateRun = this.candidate(home);
       await candidateRun(['git', 'clone', '--no-checkout', '--', `https://github.com/${receipt.repo}.git`, workspace], { env });
