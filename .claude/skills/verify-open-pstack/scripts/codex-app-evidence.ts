@@ -51,6 +51,45 @@ function itemText(item: ObjectValue): string {
   }).join('\n');
 }
 const allowedMcpTools = new Set(['orchestrator_capabilities', 'delegate_task', 'task_status', 't3_thread_read']);
+function nativeToolResult(item: ObjectValue): ObjectValue | undefined {
+  if (item.type !== 'mcpToolCall' || item.server !== 't3-code' || item.status !== 'completed' || item.error !== null || item.result == null) return;
+  const result = object(item.result);
+  if ((result.isError !== undefined && result.isError !== false) || result.structuredContent == null) return;
+  return object(result.structuredContent);
+}
+function userPrompts(items: ObjectValue[], expected: string): string[] {
+  const messages = items.filter(item => item.type === 'userMessage');
+  if (!messages.length) throw new Error('Missing Codex native user request');
+  const prompts = messages.map(itemText);
+  if (prompts[0] !== expected && prompts[0] !== `Act as the test sub-agent for this task.\n\n${expected}`) throw new Error('Codex native request does not match delegated prompt');
+  const notified = new Set<string>();
+  for (const message of messages.slice(1)) {
+    const notification = itemText(message), position = items.indexOf(message);
+    const matches: string[] = [];
+    for (const [index, item] of items.entries()) {
+      if (index >= position || item.tool !== 'delegate_task') continue;
+      const dispatched = nativeToolResult(item);
+      if (!dispatched) continue;
+      const args = object(item.arguments), taskId = string(dispatched.taskId, 'delegated task');
+      if (args.mode !== 'async') continue;
+      const title = args.title === undefined ? '' : ` (${string(args.title, 'delegate title')})`;
+      for (const terminal of items.slice(position + 1)) {
+        if (terminal.tool !== 'task_status' || object(terminal.arguments).taskId !== taskId) continue;
+        const result = nativeToolResult(terminal);
+        if (!result || result.taskId !== taskId || result.status !== 'completed' || result.workState !== 'result_available'
+          || result.hasPendingChildRuns !== false || result.hasPendingQuestion !== false || result.pendingApproval !== null
+          || typeof result.summary !== 'string' || !dispatched.childRunId || !dispatched.childThreadId
+          || result.childRunId !== dispatched.childRunId || result.childThreadId !== dispatched.childThreadId
+          || result.latestTerminalRunId !== dispatched.childRunId || result.latestTerminalStatus !== 'completed'
+          || result.providerInstanceId !== dispatched.providerInstanceId || result.model !== dispatched.model) continue;
+        if (notification === `Delegated task ${taskId}${title} [completed]:\n${result.summary}`) matches.push(taskId);
+      }
+    }
+    if (matches.length !== 1 || notified.has(matches[0]!)) throw new Error('Codex extra user message is not a bound delegated completion');
+    notified.add(matches[0]!);
+  }
+  return prompts;
+}
 async function checkFileChanges(changes: unknown, cwd: unknown, policy?: NativeWritePolicy): Promise<void> {
   if (!Array.isArray(changes)) throw new Error('Missing Codex native file changes');
   for (const value of changes) {
@@ -145,8 +184,7 @@ export async function parseCodexAppEvidence(text: string, expected: CodexAppEvid
     }
   }
   if ([...pending.values()].some(item => item.type === 'mcpToolCall' && item.server === 't3-code' && item.tool === 'delegate_task')) throw new Error('Missing Codex delegate_task completion');
-  const nativePrompt = itemText(one(items.filter(item => item.type === 'userMessage'), 'native user request'));
-  if (nativePrompt !== expected.prompt && nativePrompt !== `Act as the test sub-agent for this task.\n\n${expected.prompt}`) throw new Error('Codex native request does not match delegated prompt');
+  const nativePrompts = userPrompts(items, expected.prompt);
   const codexHome = await realpath(expected.codexHome);
   const homeReplies = events.filter(event => event.result !== undefined && object(event.result).codexHome !== undefined);
   if (homeReplies.length) {
@@ -202,13 +240,11 @@ export async function parseCodexAppEvidence(text: string, expected: CodexAppEvid
       skills.push({ name: name!, path: source, sha256: createHash('sha256').update(contents).digest('hex') });
     }
   }
-  if (prompts.length !== 1 || prompts[0] !== nativePrompt) throw new Error('Codex rollout request differs from native request');
+  if (!isDeepStrictEqual(prompts, nativePrompts)) throw new Error('Codex rollout request differs from native request');
   const toolCalls: CodexAppTool[] = [];
   for (const item of items) {
     if (item.type !== 'mcpToolCall' || item.server !== 't3-code') continue;
-    const result = item.result == null ? undefined : object(item.result);
-    const succeeded = item.status === 'completed' && item.error === null && result && (result.isError === undefined || result.isError === false) && result.structuredContent != null;
-    toolCalls.push({ tool: string(item.tool, 'MCP tool name'), arguments: object(item.arguments), result: succeeded ? object(result.structuredContent) : {} });
+    toolCalls.push({ tool: string(item.tool, 'MCP tool name'), arguments: object(item.arguments), result: nativeToolResult(item) ?? {} });
   }
   const commands = items.filter(item => item.type === 'commandExecution' && typeof item.command === 'string');
   const context = rows.map(row => object(row.payload)).filter(payload => payload.type === 'message' && payload.role === 'developer' && Array.isArray(payload.content))
