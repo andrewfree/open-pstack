@@ -2,7 +2,7 @@ import { afterEach, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { readCatalog, recipe, type Fixture } from '../features/recipes.ts';
+import { mirrored, readCatalog, recipe, type Fixture } from '../features/recipes.ts';
 import { command } from './io.ts';
 import type { Harness, SessionRecord } from './types.ts';
 
@@ -185,4 +185,32 @@ test('Codex apply preserves bytes outside the existing model mirror', async () =
   expect((await c.assert(record('codex'), f)).assertions).toContain('codex-mirror');
   await writeFile(integrationPath(f), `Changed.\n${block(profile)}\nAfter.\n`);
   await expect(c.assert(record('codex'), f)).rejects.toThrow('setup-guidance-integration-bytes-changed');
+});
+
+test('Codex guidance starts consistently after the legacy setup first-run case', async () => {
+  const f = await fixture('codex'), legacy = recipe('setup', 'codex').at(-1)!;
+  await legacy.prepare!(f);
+  const defaults = [...(await readCatalog(location)).defaults].map(([role, lanes]) => `${role}: ${lanes.join(', ')}`);
+  await save(f, `# pstack model configuration\n\n${defaults.join('\n')}\ncodex writer sandbox: bounded\n`);
+  expect((await legacy.assert(record('codex'), f)).assertions).toContain('sheet:role-defaults');
+  const guidance = caseFor('codex');
+  await guidance.prepare!(f);
+  expect(await mirrored(f, sheetPath(f))).toEqual(['codex-mirror']);
+  expect(await readFile(integrationPath(f), 'utf8')).toStartWith('Unrelated instructions.\n');
+  expect((await guidance.assert(record('codex', [preview(await proposed(f))]), f)).assertions).toContain('configuration-unchanged');
+});
+
+test('Codex guidance preparation refuses malformed mirror boundaries before writing', async () => {
+  for (const malformed of [
+    '<!-- pstack:models:begin -->\nmissing end\n',
+    '<!-- pstack:models:end -->\nreversed\n<!-- pstack:models:begin -->\n',
+    '<!-- pstack:models:begin -->\n<!-- pstack:models:begin -->\n<!-- pstack:models:end -->\n',
+  ]) {
+    const f = await fixture('codex');
+    await writeFile(sheetPath(f), 'Original sheet bytes.\n');
+    await writeFile(integrationPath(f), malformed);
+    await expect(caseFor('codex').prepare!(f)).rejects.toThrow('setup-guidance-invalid-codex-mirror');
+    expect(await readFile(sheetPath(f), 'utf8')).toBe('Original sheet bytes.\n');
+    expect(await readFile(integrationPath(f), 'utf8')).toBe(malformed);
+  }
 });
