@@ -597,7 +597,15 @@ function setupGuidance(harness: Harness): Case[] {
           if (!previews.some(text => {
             try { validate(text); return true; } catch { return false; }
           })) throw new Error('setup-guidance-complete-preview-missing');
-          assertions.push('complete-assistant-preview', 'configuration-unchanged');
+          const response = (record.assistantText ?? []).join('\n');
+          for (const path of [profilePath(f), sheet, integrationPath(f)]) {
+            const forms = [path, ...(path.startsWith(homedir() + '/') ? ['~' + path.slice(homedir().length)] : [])];
+            if (!forms.some(form => {
+              const escaped = form.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+              return new RegExp('(?:^|[\\s`\'"(<\\[])' + escaped + '(?=$|[\\s`\'">)\\],]|[.:;](?:\\s|$))').test(response);
+            })) throw new Error('setup-guidance-preview-path-missing');
+          }
+          assertions.push('complete-assistant-preview', 'preview-source-and-destinations', 'configuration-unchanged');
         } else {
           assertions.push(await written(record, sheet));
           validate(await readFile(sheet, 'utf8'));
