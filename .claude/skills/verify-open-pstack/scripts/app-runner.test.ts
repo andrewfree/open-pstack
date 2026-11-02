@@ -73,6 +73,20 @@ test('rejects a lane record for another task', async () => {
   const lane = JSON.parse(await readFile(path, 'utf8')); lane.taskId = 'unrelated'; await writeFile(path, JSON.stringify(lane));
   await expect(c.assert(r, f)).rejects.toThrow('lane-record');
 });
+test('requires the concrete T3 model under the documented model key', async () => {
+  const r = record(), f = await fixture(r), c = await appCase(f), path = join(f.dir, 'app-lane.json');
+  const lane = JSON.parse(await readFile(path, 'utf8'));
+  lane.concreteModel = lane.model; delete lane.model;
+  await writeFile(path, JSON.stringify(lane));
+  await expect(c.assert(r, f)).rejects.toThrow('app-route-lane-record-mismatch:model');
+});
+test('lane mismatch diagnostics name every mismatched field without including recorded values', async () => {
+  const r = record(), f = await fixture(r), c = await appCase(f), path = join(f.dir, 'app-lane.json');
+  const lane = JSON.parse(await readFile(path, 'utf8'));
+  lane.taskId = 'unrelated-private-value'; lane.childThreadId = 'other-private-value';
+  await writeFile(path, JSON.stringify(lane));
+  await expect(c.assert(r, f)).rejects.toThrow(new Error('app-route-lane-record-mismatch:taskId,childThreadId'));
+});
 test('compares numeric versions before dates, excludes proxy IDs, and requires an exact pin unchanged', () => {
   expect(t3Model(['claude-opus-5-5-20260101', 'claude-opus-5-5-20260102', 'claude-opus-5-4', 'proxy-claude-opus-99-9'], 'opus')).toBe('claude-opus-5-5-20260102');
   expect(t3Model(['claude-opus-5-5', 'claude-opus-5-10'], 'opus')).toBe('claude-opus-5-10');
