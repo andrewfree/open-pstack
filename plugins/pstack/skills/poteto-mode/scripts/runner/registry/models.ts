@@ -25,6 +25,15 @@ export const FAMILIES = [
     predecessors: [{ model: "gpt-5.6-sol", efforts: UP_TO_ULTRA }],
   }),
   family({
+    name: "astra",
+    label: "GPT-6 Astra",
+    provider: "codex",
+    model: "gpt-6-astra",
+    efforts: UP_TO_ULTRA,
+    defaultEffort: "high",
+    upstream: null,
+  }),
+  family({
     name: "grok",
     label: "Grok 4.7",
     provider: "grok",
@@ -219,4 +228,5 @@ export const RELEASED_PAIRS = [
   { pair: "cursor:gemini-3.7-flash", family: "gemini-3.7-flash" },
   { pair: "claude:claude-haiku-5-5", family: "haiku-5-5" },
   { pair: "kimi:kimi-code/k3", family: "kimi-k3" },
+  { pair: "codex:gpt-6-astra", family: "astra" },
 ] as const satisfies readonly ReleasedPair<FamilyName>[];

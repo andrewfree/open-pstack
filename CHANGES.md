@@ -3,6 +3,12 @@
 Open Pstack lands on green: Mergify merges a ready PR to main once verify and exact-head live-gate pass and no review thread is unresolved, and a workflow resolves Unfret's own threads. A PR that touches `.github/` or the Mergify config also waits for Unfret, and workflow changes require operator queueing.
 This port applies the Cursor → Claude Code substitutions in skill bodies. Earlier drafts left them flagged; this revision resolves them. A later pass added a Codex build that shares the same skills; see [Codex port](#codex-port) below.
 
+## Unreleased
+
+- Register GPT-6 Astra as an optional direct Codex family with explicit effort selection.
+- Add complete opt-in correctness-first model sheets for Codex and Claude. Code writers use Sol or Astra, readers use Luna or bounded Haiku, and Opus supplies critique. Existing first-run defaults and user settings remain unchanged until explicit setup.
+- Add a standalone Python model evaluation lab, source-backed token-price catalogs, metadata-only importers, deterministic microtasks, and conservative trial summaries. The repository test command includes the Python suite. No private logs or live trial receipts ship with the source.
+
 ## 1.16.1-local.2 routes Codex-parent Claude lanes through T3
 
 Re-ports the open work of andrewfree/open-pstack PR #1 (`fix/t3-claude-dispatch`) onto the registry runner. PR #1's Kimi fixes already landed in 1.16.1-local.1.
