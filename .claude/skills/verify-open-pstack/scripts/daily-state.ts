@@ -1,4 +1,4 @@
-import { lstat, readdir, readFile, readlink } from 'node:fs/promises';
+import { lstat, readdir, readFile, readlink, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { sha256 } from './io.ts';
 import type { NativeWritePolicy } from './command-policy.ts';
@@ -47,8 +47,13 @@ export async function captureDailyState(paths: DailyStatePaths): Promise<DailySt
   }
   for (const path of paths.files) await file(path, path === paths.settingsPath);
   for (const projects of paths.directories) {
-    const entries = await readdir(projects).catch(absent);
-    for (const project of entries ?? []) await memory(join(projects, project, 'memory'));
+    const entries = await readdir(projects, { withFileTypes: true }).catch(absent);
+    for (const project of entries ?? []) {
+      const directory = join(projects, project.name);
+      if (project.isDirectory() || project.isSymbolicLink() && (await stat(directory).catch(absent))?.isDirectory()) {
+        await memory(join(directory, 'memory'));
+      }
+    }
   }
   return Object.fromEntries(Object.entries(result).sort(([a], [b]) => a.localeCompare(b)));
 }
