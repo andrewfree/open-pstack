@@ -352,6 +352,19 @@ class ImportTests(unittest.TestCase):
         self.assertIsNone(result["usage"]["input_uncached"])
         self.assertIn("receipt_input_token_semantics_unknown", result["warnings"])
 
+    def test_anthropic_does_not_infer_openai_counter_semantics(self):
+        raw = {"prompt_tokens": 100, "cache_read_input_tokens": 80,
+               "cache_creation_input_tokens": 0, "completion_tokens": 5}
+        native = self.load([claude(raw)], "claude")["records"][0]["usage"]
+        file = self.root / "receipt.json"
+        file.write_text(json.dumps({"schemaVersion": 1, "request_id": "req", "provider": "claude", "usage": raw}))
+        receipt = import_file(file, "pstack")["records"][0]["usage"]
+        for usage in (native, receipt):
+            self.assertIsNone(usage["input_uncached"])
+            self.assertIsNone(usage["input_total"])
+            self.assertIsNone(usage["output_total"])
+            self.assertEqual(usage["cache_read"], 80)
+
     def test_unknown_null_counter_is_not_corrupt(self):
         r = self.load([request({"input_tokens": 10, "output_tokens": None})], "openai")
         self.assertEqual(len(r["records"]), 1)
