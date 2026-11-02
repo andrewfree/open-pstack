@@ -524,7 +524,8 @@ function setupGuidance(harness: Harness): Case[] {
     const validate = (text: string): void => {
       if (!Bun.deepEquals(roleLines(text).sort(), expectedRoles)) throw new Error('setup-guidance-role-map-mismatch');
       bounded(text);
-      if (guidance.some(paragraph => text.split(paragraph).length !== 2 || !text.split('\n').includes(paragraph)) || text.indexOf(guidance[0]!) > text.indexOf(guidance[1]!)) {
+      if (guidance.some((paragraph, index) => text.split(paragraph).length !== 2 || !text.split('\n').includes(paragraph)
+        || index > 0 && text.indexOf(guidance[index - 1]!) > text.indexOf(paragraph))) {
         throw new Error('setup-guidance-paragraph-mismatch');
       }
       let previous = -1;
@@ -533,7 +534,7 @@ function setupGuidance(harness: Harness): Case[] {
         if (positions.length !== 1 || positions[0]! <= previous) throw new Error('setup-guidance-heading-mismatch');
         previous = positions[0]!;
       }
-      if (!(text.indexOf(GUIDANCE_HEADINGS[1]!) < text.indexOf(guidance[0]!) && text.indexOf(guidance[0]!) < text.indexOf(GUIDANCE_HEADINGS[2]!) && text.indexOf(GUIDANCE_HEADINGS[2]!) < text.indexOf(guidance[1]!))) {
+      if (!(text.indexOf(GUIDANCE_HEADINGS[1]!) < text.indexOf(guidance[0]!) && text.indexOf(guidance[1]!) < text.indexOf(GUIDANCE_HEADINGS[2]!) && text.indexOf(GUIDANCE_HEADINGS[2]!) < text.indexOf(guidance[2]!))) {
         throw new Error('setup-guidance-heading-placement-mismatch');
       }
     };
@@ -556,10 +557,12 @@ function setupGuidance(harness: Harness): Case[] {
           role === 'arena cross-judge pool' ? [judge] : [...new Set(lanes.map(lane => lane.includes(':') ? reading : lane))]]);
         expectedRoles = roles.map(([role, lanes]) => `${role}: ${lanes.join(', ')}`).sort();
         const nonce = crypto.randomUUID();
-        guidance = [`Keep the existing reading limit at 100000 tokens; evidence key ${nonce}-existing.`,
+        guidance = [`Preserve this existing-only review rule; evidence key ${nonce}-existing-only.`,
+          `Keep the existing reading limit at 100000 tokens; evidence key ${nonce}-shared.`,
           `Escalate uncertain reading through the direct subscription route; evidence key ${nonce}-profile.`];
-        prepared = sheetText(roles) + `\n${BOUNDED_SETTING}\n\n${GUIDANCE_HEADINGS[1]}\n\n${guidance[0]}\n`;
-        profile = prepared + `\n${GUIDANCE_HEADINGS[2]}\n\n${guidance[1]}\n`;
+        const common = sheetText(roles) + `\n${BOUNDED_SETTING}\n\n${GUIDANCE_HEADINGS[1]}\n\n`;
+        prepared = common + `${guidance[0]}\n\n${guidance[1]}\n`;
+        profile = common + `${guidance[1]}\n\n${GUIDANCE_HEADINGS[2]}\n\n${guidance[2]}\n`;
         integration = await readFile(integrationPath(f), 'utf8').catch(error => {
           if (error.code === 'ENOENT') return undefined;
           throw error;
@@ -569,7 +572,7 @@ function setupGuidance(harness: Harness): Case[] {
       },
       prompt: f => `${invoke(harness, 'setup-pstack', `Use the complete explicit local profile at ${profilePath(f)}. This is a named guidance addition, so show the complete step 7 preview even though the existing roles and bounded setting are valid. Keep all role assignments and high efforts from that profile, preserve existing headings and guidance exactly, include its added guidance once, and retain codex writer sandbox: bounded. Ask nothing else. I authorize the normal real native model probes for both assigned families. All ordinary model roles use ${reading}; only arena cross-judge pool uses ${judge}. Keep inherit-parent and auto unchanged. Resolve both descriptors through the installed catalog and use only this parent's native route. No external provider family is assigned or authorized. Do not call external CLIs, model APIs, proxies, or any alternate route. Use ${judge} as the independent cross-judge from the explicit pool; a different provider is preferred when possible, not required. Do not substitute a model, shim a tool, or skip probes. ${apply
         ? 'I preconfirm both configuration writes after the complete preview. Continue through normal setup writes, readback and the real step 9 smoke with both assigned native families and a separate independent judge. Drain every probe and smoke handle before replying. Decline both optional verification-skill offers.'
-        : 'I explicitly request stopping immediately after the complete step 7 preview, before any configuration write, directory creation for configuration, parent integration change, or step 9 smoke. Display the entire proposed sheet as a fenced markdown block in your actual assistant response, including all roles, the setting, all headings, and both guidance paragraphs. A report file or a statement that a preview exists does not satisfy this request.'}`)} Do not push, post, or contact GitHub.`,
+        : 'I explicitly request stopping immediately after the complete step 7 preview, before any configuration write, directory creation for configuration, parent integration change, or step 9 smoke. Display the entire proposed sheet as a fenced markdown block in your actual assistant response, including all roles, the setting, all headings, and every retained and added guidance paragraph. A report file or a statement that a preview exists does not satisfy this request.'}`)} Do not push, post, or contact GitHub.`,
       async assert(record, f) {
         const sheet = join(f.configHome, 'pstack-models.md'), assertions = [loaded(record, 'pstack:setup-pstack')];
         if (await readFile(profilePath(f), 'utf8') !== profile) throw new Error('setup-guidance-profile-source-changed');
