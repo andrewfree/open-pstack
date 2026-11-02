@@ -18,6 +18,16 @@ Restore both files byte for byte afterwards, including restoring original absenc
 
 Claude uses the operator's normal config/login; Codex uses a run-owned home with auth symlinked to the daily login. Do not redirect `HOME`, copy credentials, start login, or use a mock as setup proof. Generated configuration alone does not prove the consuming surface. Setup restoration is the only permitted temporary change to these daily Claude files.
 
+## Guidance preservation selection
+
+Select `claude:setup-guidance` and `codex:setup-guidance` when the change concerns retaining profile guidance and displaying the complete proposed sheet. This named feature has two cases per harness and leaves the eight-case `setup` feature unchanged. It uses the same setup snapshot, restoration, and sequential execution protections.
+
+Both cases seed a complete sheet and an explicit local profile with unique nonce-bearing guidance. The profile repeats the existing guidance and adds a separate heading and paragraph, so successful rendering must retain the original text and order while adding the new guidance exactly once. Every ordinary model role uses the parent's reading family: Codex uses `codex:gpt-6-luna@high`, and Claude uses `claude:claude-haiku-5-5@high`. Only `arena cross-judge pool` uses the distinct judge family, `codex:gpt-6.1-sol@high` or `claude:opus@high`. Existing `inherit-parent` and `auto` assignments remain unchanged. Preparation validates both descriptors against the installed model matrix, selectable effort, and native route. Both inputs retain exactly one bounded writer setting.
+
+`preview-guidance` explicitly requests a stop after the complete step 7 preview, before any configuration write or smoke. It authorizes the normal native probes. The assertion requires a complete fenced Markdown sheet in actual top-level native assistant output, with every role, the bounded setting, headings and both exact guidance paragraphs. Reports written to files, tool output and statements that a preview exists do not count. The prepared sheet and existing integration must remain byte-identical, including original integration absence.
+
+`apply-guidance` preconfirms the writes and requests normal installed probes, readback and behavioral smoke, with all workers and the independent judge restricted to the assigned native families. It asserts the saved complete role map, exact guidance and heading order, one bounded setting, unchanged profile source, and the Codex mirror or Claude import, preserving unrelated integration bytes. Codex retains its workspace-write sandbox with the run-owned configuration directory explicitly writable. Neither case uses tool shims, replaces routes, skips required probes, or authorizes external CLI, proxy or model API calls. Both retain normal raw native evidence. These assertions prove the changed rendering and saved artifacts; the parent reviews retained native logs for route or probe violations before activation, and they do not independently certify every unchanged probe or smoke operation.
+
 ## Headless
 
 The `keep-setting` case also seeds two non-role guidance paragraphs. It requires their exact text and order, rejects duplication, and includes them in the Codex mirror comparison. Removing or rewriting the guidance fails even when every role and setting remains correct.

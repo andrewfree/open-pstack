@@ -59,6 +59,7 @@ export function classify(files: ChangedFile[], registry: Registry): Selection {
     if (!covered && !registry.nonRuntime.some(p => matches(path, p))) throw new Error(`Unmapped path: ${path}`);
   }
   skills.forEach(s => both(`skill-invocation:${s}`));
+  HARNESSES.forEach(h => { if (features.has(`${h}:setup`)) features.add(`${h}:setup-guidance`); });
   return { paths, skills: [...skills].sort(), features: [...features].sort(), noRuntime: !features.size };
 }
 

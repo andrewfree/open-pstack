@@ -512,6 +512,110 @@ export async function mirrored(f: Fixture, sheet: string): Promise<string[]> {
   return ['codex-mirror'];
 }
 
+const GUIDANCE_HEADINGS = ['# pstack model configuration', '## Existing guidance', '## Added profile guidance'];
+function setupGuidance(harness: Harness): Case[] {
+  return [false, true].map(apply => {
+    const profilePath = (f: Fixture) => join(f.dir, 'setup-guidance-profile.md');
+    const integrationPath = (f: Fixture) => join(f.configHome, harness === 'codex' ? 'AGENTS.md' : 'CLAUDE.md');
+    let prepared = '', profile = '', integration: string | undefined;
+    let expectedRoles: string[] = [], guidance: string[] = [];
+    const reading = harness === 'codex' ? 'codex:gpt-6-luna@high' : 'claude:claude-haiku-5-5@high';
+    const judge = harness === 'codex' ? 'codex:gpt-6.1-sol@high' : 'claude:opus@high';
+    const validate = (text: string): void => {
+      if (!Bun.deepEquals(roleLines(text).sort(), expectedRoles)) throw new Error('setup-guidance-role-map-mismatch');
+      bounded(text);
+      if (guidance.some(paragraph => text.split(paragraph).length !== 2 || !text.split('\n').includes(paragraph)) || text.indexOf(guidance[0]!) > text.indexOf(guidance[1]!)) {
+        throw new Error('setup-guidance-paragraph-mismatch');
+      }
+      let previous = -1;
+      for (const heading of GUIDANCE_HEADINGS) {
+        const positions = [...text.matchAll(/^#{1,6} .+$/gm)].filter(match => match[0] === heading).map(match => match.index);
+        if (positions.length !== 1 || positions[0]! <= previous) throw new Error('setup-guidance-heading-mismatch');
+        previous = positions[0]!;
+      }
+      if (!(text.indexOf(GUIDANCE_HEADINGS[1]!) < text.indexOf(guidance[0]!) && text.indexOf(guidance[0]!) < text.indexOf(GUIDANCE_HEADINGS[2]!) && text.indexOf(GUIDANCE_HEADINGS[2]!) < text.indexOf(guidance[1]!))) {
+        throw new Error('setup-guidance-heading-placement-mismatch');
+      }
+    };
+    return {
+      id: apply ? 'apply-guidance' : 'preview-guidance',
+      async prepare(f) {
+        const installed = await readCatalog(f.location);
+        const catalog = await readFile(join(f.location, 'skills/poteto-mode/references/model-catalog.md'), 'utf8');
+        const matrix = catalog.split('\n## Model matrix\n')[1]?.split('\n## ')[0] ?? '';
+        const models = matrix.split('\n').filter(line => line.startsWith('| ')).map(line => line.slice(2, -2).split(' | '));
+        for (const descriptor of [reading, judge]) {
+          const parts = ROUTE.exec(descriptor);
+          if (!parts || !models.some(row => row[2] === parts[1] && row[3] === parts[2] && row[5]?.split(' ').includes(parts[3]!))) {
+            throw new Error(`setup-guidance-model-not-selectable:${descriptor}`);
+          }
+          if (installed.route(harness, descriptor) !== 'native') throw new Error(`setup-guidance-route-not-native:${descriptor}`);
+        }
+        if (!installed.defaults.has('arena cross-judge pool')) throw new Error('catalog-role-missing:arena cross-judge pool');
+        const roles = [...installed.defaults].map(([role, lanes]): [string, string[]] => [role,
+          role === 'arena cross-judge pool' ? [judge] : [...new Set(lanes.map(lane => lane.includes(':') ? reading : lane))]]);
+        expectedRoles = roles.map(([role, lanes]) => `${role}: ${lanes.join(', ')}`).sort();
+        const nonce = crypto.randomUUID();
+        guidance = [`Keep the existing reading limit at 100000 tokens; evidence key ${nonce}-existing.`,
+          `Escalate uncertain reading through the direct subscription route; evidence key ${nonce}-profile.`];
+        prepared = sheetText(roles) + `\n${BOUNDED_SETTING}\n\n${GUIDANCE_HEADINGS[1]}\n\n${guidance[0]}\n`;
+        profile = prepared + `\n${GUIDANCE_HEADINGS[2]}\n\n${guidance[1]}\n`;
+        integration = await readFile(integrationPath(f), 'utf8').catch(error => {
+          if (error.code === 'ENOENT') return undefined;
+          throw error;
+        });
+        await writeFile(join(f.configHome, 'pstack-models.md'), prepared);
+        await writeFile(profilePath(f), profile);
+      },
+      prompt: f => `${invoke(harness, 'setup-pstack', `Use the complete explicit local profile at ${profilePath(f)}. This is a named guidance addition, so show the complete step 7 preview even though the existing roles and bounded setting are valid. Keep all role assignments and high efforts from that profile, preserve existing headings and guidance exactly, include its added guidance once, and retain codex writer sandbox: bounded. Ask nothing else. I authorize the normal real native model probes for both assigned families. All ordinary model roles use ${reading}; only arena cross-judge pool uses ${judge}. Keep inherit-parent and auto unchanged. Resolve both descriptors through the installed catalog and use only this parent's native route. No external provider family is assigned or authorized. Do not call external CLIs, model APIs, proxies, or any alternate route. Use ${judge} as the independent cross-judge from the explicit pool; a different provider is preferred when possible, not required. Do not substitute a model, shim a tool, or skip probes. ${apply
+        ? 'I preconfirm both configuration writes after the complete preview. Continue through normal setup writes, readback and the real step 9 smoke with both assigned native families and a separate independent judge. Drain every probe and smoke handle before replying. Decline both optional verification-skill offers.'
+        : 'I explicitly request stopping immediately after the complete step 7 preview, before any configuration write, directory creation for configuration, parent integration change, or step 9 smoke. Display the entire proposed sheet as a fenced markdown block in your actual assistant response, including all roles, the setting, all headings, and both guidance paragraphs. A report file or a statement that a preview exists does not satisfy this request.'}`)} Do not push, post, or contact GitHub.`,
+      async assert(record, f) {
+        const sheet = join(f.configHome, 'pstack-models.md'), assertions = [loaded(record, 'pstack:setup-pstack')];
+        if (await readFile(profilePath(f), 'utf8') !== profile) throw new Error('setup-guidance-profile-source-changed');
+        if (!apply) {
+          if (await readFile(sheet, 'utf8') !== prepared) throw new Error('setup-guidance-preview-sheet-changed');
+          const after = await readFile(integrationPath(f), 'utf8').catch(error => {
+            if (error.code === 'ENOENT') return undefined;
+            throw error;
+          });
+          if (after !== integration) throw new Error('setup-guidance-preview-integration-changed');
+          const previews = (record.assistantText ?? []).flatMap(text => [...text.matchAll(/```(?:markdown|md)\s*\n([\s\S]*?)\n```/g)].map(match => match[1]!));
+          if (!previews.some(text => {
+            try { validate(text); return true; } catch { return false; }
+          })) throw new Error('setup-guidance-complete-preview-missing');
+          assertions.push('complete-assistant-preview', 'configuration-unchanged');
+        } else {
+          assertions.push(await written(record, sheet));
+          validate(await readFile(sheet, 'utf8'));
+          assertions.push(...await mirrored(f, sheet));
+          if (harness === 'codex') {
+            const after = await readFile(integrationPath(f), 'utf8'), previous = integration ?? '';
+            const block = /<!-- pstack:models:begin -->\n[\s\S]*?<!-- pstack:models:end -->/;
+            const beforeBlock = block.exec(previous), afterBlock = block.exec(after)!;
+            if (beforeBlock ? after.replace(afterBlock[0], '') !== previous.replace(beforeBlock[0], '')
+              : !after.startsWith(previous) || !/^\n*<!-- pstack:models:begin -->\n[\s\S]*?<!-- pstack:models:end -->\n?$/.test(after.slice(previous.length))) {
+              throw new Error('setup-guidance-integration-bytes-changed');
+            }
+          } else {
+            const after = await readFile(integrationPath(f), 'utf8');
+            const imports = (text: string) => [...text.matchAll(/^@[^\r\n]*pstack-models\.md[ \t]*$/gm)];
+            const expected = f.configHome === join(homedir(), '.claude') ? '@~/.claude/pstack-models.md' : '@./pstack-models.md';
+            const previous = integration ?? '', oldImports = imports(previous), newImports = imports(after);
+            if (oldImports.length > 1 || newImports.length !== 1 || newImports[0]![0] !== expected) throw new Error('setup-guidance-claude-import-mismatch');
+            if (oldImports.length === 1 ? after !== previous.replace(oldImports[0]![0], expected)
+              : !after.startsWith(previous) || !/^\n*@[^\r\n]+\n?$/.test(after.slice(previous.length))) throw new Error('setup-guidance-integration-bytes-changed');
+            assertions.push('claude-import');
+          }
+          assertions.push('complete-saved-sheet');
+        }
+        return { assertions: [...assertions, 'guidance-preserved-and-added-once', 'profile-source-unchanged', `setting:${BOUNDED_SETTING}`],
+          files: [sheet, profilePath(f), ...(apply ? [integrationPath(f)] : [])] };
+      },
+    };
+  });
+}
+
 const KEPT = 'grok:grok-4.6', KEPT_EFFORT = 'high';
 function keptPredecessor(): Case {
   const proposal = (f: Fixture) => join(f.dir, 'proposal.json');
@@ -803,6 +907,7 @@ export function recipe(feature: string, harness: Harness, routes: string[] = [],
   if (feature === 'project-skill') return [projectSkill];
   if (feature === 'hook:startup') return [startupHook];
   if (feature === 'runner') return runner(harness, routes, appRoute);
+  if (feature === 'setup-guidance') return setupGuidance(harness);
   if (feature === 'setup' || feature === 'skill-invocation:setup-pstack') return setup;
   if (feature === 'catalog') return catalog(harness, includeCorrectnessProfile);
   if (feature === 'shipped-tools') return [shippedTools];

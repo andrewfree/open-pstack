@@ -12,7 +12,7 @@ import type { AppTransport } from './t3-app.ts';
 import { publishable } from './verify.ts';
 import { HARNESSES, type Driver, type Harness, type Installation, type Observation, type Receipt, type SessionRecord } from './types.ts';
 
-const setupFeature = (feature: string): boolean => feature === 'setup' || feature === 'skill-invocation:setup-pstack';
+const setupFeature = (feature: string): boolean => feature === 'setup' || feature === 'setup-guidance' || feature === 'skill-invocation:setup-pstack';
 export function launch(options: { cwd: string; addDirs: string[]; codexSandbox?: 'danger-full-access' }): string[] {
   return ['codex', 'exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-hook-trust', '-c', 'approval_policy="never"',
     '--sandbox', options.codexSandbox ?? 'workspace-write', '--cd', options.cwd, ...options.addDirs.flatMap(dir => ['--add-dir', dir]), '-'];
@@ -33,7 +33,9 @@ export function parseSession(harness: Harness, text: string, exitCode: number, s
       .flatMap(e => [...(e.message.content as string).matchAll(/<command-name>\/([^<\s]+)<\/command-name>/g)].map(m => m[1]!));
     const context = stream.filter(e => e.type === 'system' && e.subtype === 'hook_response' && e.hook_event === 'SessionStart' &&
       e.exit_code === 0 && e.outcome === 'success' && typeof e.stdout === 'string').map(e => e.stdout as string);
-    return { harness, exitCode, started, context,
+    const assistantText = stream.filter(e => e.type === 'assistant' && e.parent_tool_use_id == null && Array.isArray(e.message?.content))
+      .flatMap(e => (e.message.content as Event[]).filter(b => b.type === 'text' && typeof b.text === 'string').map(b => b.text as string));
+    return { harness, exitCode, started, context, assistantText,
       skills: [...commands, ...uses.filter(u => u.name === 'Skill' && typeof u.input?.skill === 'string').map(u => u.input.skill as string)],
       commands: uses.filter(u => u.name === 'Bash' && typeof u.input?.command === 'string').map(u => u.input.command as string),
       tools: stream.filter(e => e.type === 'assistant' && Array.isArray(e.message?.content)).flatMap(e => (e.message.content as Event[]).filter(b => b.type === 'tool_use')
@@ -52,7 +54,8 @@ export function parseSession(harness: Harness, text: string, exitCode: number, s
     .map(([, name, path]) => path!.includes('/plugins/cache/open-pstack/pstack/') ? name! : path!);
   const tools = items.filter(i => i.type === 'command_execution' && typeof i.command === 'string').map(i => ({ name: 'command', id: String(i.id),
     input: { command: i.command as string }, result: typeof i.aggregated_output === 'string' ? i.aggregated_output : undefined, parent: null, failed: i.exit_code !== 0 }));
-  return { harness, exitCode, started, skills, commands, tools, context };
+  const assistantText = items.filter(i => i.type === 'agent_message' && typeof i.text === 'string').map(i => i.text as string);
+  return { harness, exitCode, started, skills, commands, tools, context, assistantText };
 }
 export async function codexInstallation(output: string, home: string, expected: string): Promise<string> {
   const result = JSON.parse(output);
@@ -203,7 +206,8 @@ export class MacDriver implements Driver {
               const appCase = harness === 'claude' || c.id.startsWith('app-route-');
               const app = appCase ? await this.app!.record({ harness, projectSkill: feature === 'project-skill', pluginRoot: installation.location, workspace, fixture: dir,
                 prompt: c.prompt(fixture), env, stdout, stderr, started, cliVersion: installation.cliVersion, writePolicy }) : undefined;
-              const exitCode = app ? 0 : await this.record(launch({ cwd, addDirs: cwd === dir ? [] : [dir], codexSandbox: c.codexSandbox }), { cwd, env, input: c.prompt(fixture), stdout, stderr });
+              const addDirs = [...(cwd === dir ? [] : [dir]), ...(harness === 'codex' && setupFeature(feature) ? [fixture.configHome] : [])];
+              const exitCode = app ? 0 : await this.record(launch({ cwd, addDirs, codexSandbox: c.codexSandbox }), { cwd, env, input: c.prompt(fixture), stdout, stderr });
               evidence.push(stdout, ...(await stat(stderr)).size ? [stderr] : [], ...app?.evidence ?? []);
               let record: SessionRecord, result;
               try {
