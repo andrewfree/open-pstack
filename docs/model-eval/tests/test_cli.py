@@ -1,11 +1,14 @@
 import contextlib
+import hashlib
+from html import escape
 import io
 import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from modeleval.__main__ import grade_bundle, main, ROOT
+from modeleval.__main__ import grade_bundle, main, read_json, write, ROOT
 from modeleval.cases import suite_sha256
 from modeleval.reporting import render_html, render_markdown
 
@@ -98,6 +101,43 @@ class IntegrationTests(unittest.TestCase):
         html=render_html(usage)
         self.assertNotIn('<img',html)
         self.assertIn('&lt;img',html)
+
+    def test_report_escapes_untrusted_counts(self):
+        payload = '<img src=x onerror="alert(1)">'
+        usage = {'groups': [{'provider': 'toy', 'model': 'example', 'count': payload,
+                            'weighted_cache_read_token_fraction': '0.5',
+                            'weighted_cache_coverage': {'observed': payload}}]}
+        trials = {'groups': [{'provider': 'toy', 'model': 'example', 'repeat_first_passes': payload,
+                             'repeat_count': payload, 'repeat_critical_failures': payload}],
+                  'ranking': {'verdict': 'INCONCLUSIVE', 'reasons': []}}
+        html = render_html(usage, trials)
+        self.assertNotIn(payload, html)
+        self.assertEqual(html.count(escape(payload)), 5)
+
+    def test_cli_utf8_files_under_non_utf8_default_encoding(self):
+        original_open = io.open
+
+        def legacy_open(file, mode='r', buffering=-1, encoding=None, errors=None, newline=None, **kwargs):
+            if 'b' not in mode and encoding in (None, 'locale'):
+                encoding = 'cp1252'
+            return original_open(file, mode, buffering, encoding, errors, newline, **kwargs)
+
+        with tempfile.TemporaryDirectory() as scratch:
+            folder = Path(scratch)
+            response, receipt, output = [folder / name for name in ('response.json', 'receipt.json', 'out.json')]
+            answer = '{"note":"café 雪"}'
+            response.write_bytes(answer.encode('utf-8'))
+            receipt.write_bytes(json.dumps(self.receipt()).encode('utf-8'))
+            with patch('io.open', legacy_open):
+                self.assertEqual(read_json(response), {'note': 'café 雪'})
+                write(output, answer)
+                self.assertEqual(output.read_bytes(), answer.encode('utf-8'))
+                with patch('modeleval.__main__.grade_response', return_value={}) as grade:
+                    self.assertEqual(main(['grade', 'usage-accounting-v1', str(response), '--output', str(output), '--force']), 0)
+                    grade.assert_called_once_with('usage-accounting-v1', answer)
+                self.assertEqual(main(['grade-bundle', '--response', str(response), '--receipt', str(receipt), '--output', str(output), '--force']), 0)
+                result = read_json(output)['trials'][0]
+                self.assertEqual(result['response_sha256'], hashlib.sha256(answer.encode('utf-8')).hexdigest())
 
 
 if __name__ == '__main__':

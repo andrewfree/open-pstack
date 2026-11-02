@@ -57,15 +57,15 @@ def render_html(usage, trials=None):
         width = 0 if ratio is None else max(0, min(100, float(ratio) * 100))
         coverage = group["weighted_cache_coverage"]
         bars.append(f'<div class="row"><div><strong>{escape(_label(group))}</strong>'
-                    f'<span>{_percent(ratio)} · {coverage["observed"]}/{group["count"]} requests observed</span></div>'
+                    f'<span>{_percent(ratio)} · {escape(str(coverage["observed"]))}/{escape(str(group["count"]))} requests observed</span></div>'
                     f'<small>{escape(group.get("source_kind", "unknown"))} · {escape(group.get("billing_basis", "unknown"))} · workload property, not model property</small>'
                     f'<div class="track" role="img" aria-label="Cached input share {_percent(ratio)}"><i style="width:{width:.4f}%"></i></div></div>')
     trial_html = ""
     if trials:
         items = []
         for group in trials["groups"]:
-            items.append(f'<tr><td>{escape(_label(group))}</td><td>{group["repeat_first_passes"]}/{group["repeat_count"]}</td>'
-                         f'<td>{group["repeat_critical_failures"]}</td></tr>')
+            items.append(f'<tr><td>{escape(_label(group))}</td><td>{escape(str(group["repeat_first_passes"]))}/{escape(str(group["repeat_count"]))}</td>'
+                         f'<td>{escape(str(group["repeat_critical_failures"]))}</td></tr>')
         reasons = sorted(set(trials["ranking"].get("reasons", []) + [r for g in trials['groups'] for r in g.get('inconclusive_reasons', [])]))
         trial_html = ('<section><h3>Live subscription pilot</h3><p><strong>' + escape(trials["ranking"]["verdict"]) +
                       '</strong>. One bundled run per model, three narrow tasks. This checks the workflow; it does not rank speed or general quality.</p>'

@@ -299,6 +299,47 @@ class ImportTests(unittest.TestCase):
         self.assertFalse(r["records"])
         self.assertIn("contradictory_usage_aliases", self.codes(r))
 
+    def test_request_identity_preserves_all_usage_aliases(self):
+        aliases = {"input_tokens": ("prompt_tokens", "inputTokens"),
+                   "cached_input_tokens": ("cachedInputTokens",),
+                   "cache_write_input_tokens": ("cache_creation_input_tokens", "cacheCreationInputTokens"),
+                   "output_tokens": ("completion_tokens", "outputTokens"),
+                   "reasoning_output_tokens": ("reasoningTokens",)}
+        for canonical, names in aliases.items():
+            for alias in names:
+                with self.subTest(alias=alias):
+                    usage = counters(w=10)
+                    usage[alias] = usage.pop(canonical)
+                    without = self.load([request(usage, identity=None)], "openai")["records"][0]
+                    with_id = self.load([request(usage)], "openai")["records"][0]
+                    self.assertEqual(with_id["usage"], without["usage"])
+                    self.assertEqual(with_id["warnings"], without["warnings"])
+                    self.assertEqual(with_id["usage"]["input_uncached"], 50)
+                    self.assertEqual(with_id["usage"]["cache_write_unknown"], 10)
+
+    def test_identity_bearing_invalid_and_conflicting_aliases_are_excluded(self):
+        for alias in ("inputTokens", "cachedInputTokens", "cache_creation_input_tokens",
+                      "cacheCreationInputTokens", "outputTokens", "reasoningTokens"):
+            with self.subTest(alias=alias):
+                invalid = self.load([request(counters() | {alias: -1})], "openai")
+                self.assertFalse(invalid["records"])
+                self.assertIn("invalid_usage_counter", self.codes(invalid))
+        for alias in ("inputTokens", "cachedInputTokens", "cache_creation_input_tokens",
+                      "cacheCreationInputTokens", "outputTokens"):
+            with self.subTest(alias=alias):
+                conflict = self.load([request(counters()), request({alias: 999})], "openai")
+                self.assertFalse(conflict["records"])
+                self.assertIn("contradictory_usage_aliases", self.codes(conflict))
+
+    def test_camelcase_partial_usage_merges_without_retaining_content(self):
+        first = request({"inputTokens": 100, "cachedInputTokens": 40, "cacheCreationInputTokens": 0}, partial=True)
+        last = request({"outputTokens": 20, "reasoningTokens": 3, "content": "PRIVATE_TEXT"})
+        result = self.load([first, last], "openai")
+        self.assertEqual(len(result["records"]), 1)
+        usage = result["records"][0]["usage"]
+        self.assertEqual((usage["input_total"], usage["input_uncached"], usage["output_total"], usage["reasoning_output"]), (100, 60, 20, 3))
+        self.assertNotIn("PRIVATE_TEXT", json.dumps(result))
+
     def test_prompt_content_never_returns_or_becomes_telemetry(self):
         secret = "HISTORICAL_SECRET_SENTINEL"
         fake = request(counters(), identity="FAKE_CONTENT_ID")

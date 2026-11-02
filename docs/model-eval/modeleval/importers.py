@@ -19,6 +19,19 @@ FORMATS = {"auto", "codex", "claude", "anthropic", "kimi", "openai", "grok", "ps
 MAX_LINE_BYTES = 8 * 1024 * 1024
 _MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_./:@+\-]{0,159}\Z")
 _PROVIDERS = {"openai", "anthropic", "kimi", "xai", "cursor", "unknown"}
+_COUNTER_KEYS = {"input_tokens", "prompt_tokens", "inputTokens", "cached_input_tokens",
+                 "cachedInputTokens", "cache_write_input_tokens", "cache_creation_input_tokens",
+                 "cacheCreationInputTokens", "cache_read_input_tokens", "output_tokens",
+                 "completion_tokens", "outputTokens", "reasoning_output_tokens", "reasoningTokens",
+                 "inputOther", "inputCacheRead", "inputCacheCreation", "output",
+                 "cache_write_30m_input_tokens", "cache_write_12h_input_tokens"}
+_DETAIL_COUNTER_KEYS = {
+    "cache_creation": ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens"),
+    "input_tokens_details": ("cached_tokens", "cache_write_tokens"),
+    "prompt_tokens_details": ("cached_tokens", "cache_write_tokens"),
+    "output_tokens_details": ("thinking_tokens", "reasoning_tokens"),
+    "completion_tokens_details": ("reasoning_tokens",),
+}
 
 
 def _hash(value):
@@ -121,19 +134,9 @@ def _writes(usage, total):
 def _normalize(raw, dialect):
     usage = dict.fromkeys(USAGE_FIELDS)
     warnings = []
-    counter_keys = {"input_tokens", "prompt_tokens", "inputTokens", "cached_input_tokens",
-                    "cachedInputTokens", "cache_write_input_tokens", "cache_creation_input_tokens",
-                    "cacheCreationInputTokens", "cache_read_input_tokens", "output_tokens",
-                    "completion_tokens", "outputTokens", "reasoning_output_tokens", "reasoningTokens",
-                    "inputOther", "inputCacheRead", "inputCacheCreation", "output",
-                    "cache_write_30m_input_tokens", "cache_write_12h_input_tokens"}
-    if any(k in counter_keys and v is not None and _counter(v) is None for k, v in raw.items()):
+    if any(k in _COUNTER_KEYS and v is not None and _counter(v) is None for k, v in raw.items()):
         return None, ["invalid_usage_counter"]
-    for container, keys in (("cache_creation", ("ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens")),
-                            ("input_tokens_details", ("cached_tokens", "cache_write_tokens")),
-                            ("prompt_tokens_details", ("cached_tokens", "cache_write_tokens")),
-                            ("output_tokens_details", ("thinking_tokens", "reasoning_tokens")),
-                            ("completion_tokens_details", ("reasoning_tokens",))):
+    for container, keys in _DETAIL_COUNTER_KEYS.items():
         detail = _dict(raw.get(container))
         if any(k in detail and detail[k] is not None and _counter(detail[k]) is None for k in keys):
             return None, ["invalid_usage_counter"]
@@ -497,11 +500,9 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
             group["partial"] = group["partial"] or partial
             filtered = {}
             for field, value in raw.items():
-                detail_keys = {"input_tokens_details": ("cached_tokens", "cache_write_tokens"), "prompt_tokens_details": ("cached_tokens", "cache_write_tokens"),
-                               "output_tokens_details": ("reasoning_tokens",), "completion_tokens_details": ("reasoning_tokens",)}
-                if field in detail_keys:
-                    filtered[field] = {k: v for k, v in _dict(value).items() if k in detail_keys[field] and v is not None}
-                elif field in {"input_tokens", "prompt_tokens", "output_tokens", "completion_tokens", "cached_input_tokens", "cache_write_input_tokens", "reasoning_output_tokens", "cache_write_30m_input_tokens", "cache_write_12h_input_tokens"}:
+                if field in _DETAIL_COUNTER_KEYS:
+                    filtered[field] = {k: v for k, v in _dict(value).items() if k in _DETAIL_COUNTER_KEYS[field] and v is not None}
+                elif field in _COUNTER_KEYS:
                     if value is not None:
                         filtered[field] = value
                 else:
