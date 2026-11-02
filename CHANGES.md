@@ -8,6 +8,7 @@ This port applies the Cursor → Claude Code substitutions in skill bodies. Earl
 - Register GPT-6 Astra as an optional direct Codex family with explicit effort selection.
 - Add complete opt-in correctness-first model sheets for Codex and Claude. Code writers use Sol or Astra, readers use Luna or bounded Haiku, and Opus supplies critique. Existing first-run defaults and user settings remain unchanged until explicit setup.
 - Add a standalone Python model evaluation lab, source-backed token-price catalogs, metadata-only importers, deterministic microtasks, and conservative trial summaries. The repository test command includes the Python suite. No private logs or live trial receipts ship with the source.
+- Extend live catalog qualification to consume both complete profiles, and bind the profile directory into immutable candidate provenance checks. These cases prepare verification; their unit tests do not claim a live pass.
 
 ## 1.16.1-local.2 routes Codex-parent Claude lanes through T3
 

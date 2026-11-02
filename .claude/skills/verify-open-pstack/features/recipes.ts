@@ -711,7 +711,48 @@ function consumeSheet(harness: Harness, optIn: boolean): Case {
 }
 
 function catalog(harness: Harness): Case[] {
-  return [consumeSheet(harness, true), consumeSheet(harness, false), ...(harness === 'claude' ? [nativeAgents] : [])];
+  return [consumeSheet(harness, true), consumeSheet(harness, false), correctnessProfile(harness), ...(harness === 'claude' ? [nativeAgents] : [])];
+}
+
+function correctnessProfile(harness: Harness): Case {
+  const assignments: [string, string[]][] = [
+    ['feature, refactoring', ['codex:gpt-6.1-sol@high']],
+    ['bug-fix', ['codex:gpt-6.1-sol@high']],
+    ['perf-issue', ['codex:gpt-6.1-sol@high']],
+    ['hillclimb', ['codex:gpt-6.1-sol@high']],
+    ['judgment and prose', ['claude:opus@high']],
+    ['hardest tasks', ['codex:gpt-6-astra@high']],
+    ['how explorer', [harness === 'codex' ? 'codex:gpt-6-luna@high' : 'claude:claude-haiku-5-5@high']],
+    ['how explainer', ['codex:gpt-6.1-sol@high']],
+    ['why investigators, synthesizer', ['inherit-parent']],
+    ['reflect tooling, judgment, divergent, synthesizer', ['inherit-parent']],
+    ['arena runners', ['codex:gpt-6.1-sol@high', 'codex:gpt-6-astra@high']],
+    ['arena cross-judge pool', ['claude:opus@high', 'codex:gpt-6.1-sol@high']],
+    ['swarm workers', ['codex:gpt-6.1-sol@high']],
+    ['architect runners', ['codex:gpt-6.1-sol@high', 'codex:gpt-6-astra@high']],
+    ['interrogate reviewers', ['claude:opus@high', 'codex:gpt-6.1-sol@high']],
+  ];
+  const sheet = (f: Fixture) => join(f.dir, 'correctness-first-profile.md'), report = (f: Fixture) => join(f.dir, 'profile-routes.json');
+  let profile = '', roles: { role: string; descriptors: string[]; routes: string[] }[] = [];
+  return {
+    id: 'consume-correctness-profile',
+    async prepare(f) {
+      const installed = await readCatalog(f.location);
+      if (!Bun.deepEquals([...installed.defaults.keys()].sort(), assignments.map(([role]) => role).sort())) throw new Error('profile-role-set-mismatch');
+      profile = await readFile(join(f.workspace, `docs/model-routing/correctness-first-${harness}.md`), 'utf8');
+      if (!Bun.deepEquals(roleLines(profile), assignments.map(([role, lanes]) => `${role}: ${lanes.join(', ')}`))) throw new Error('profile-assignments-mismatch');
+      if (!Bun.deepEquals(settingLines(profile), [BOUNDED_SETTING])) throw new Error('profile-setting-not-bounded');
+      roles = assignments.map(([role, descriptors]) => ({ role, descriptors, routes: descriptors.map(d => installed.route(harness, d)) }));
+      await writeFile(sheet(f), profile);
+    },
+    prompt: f => `${invoke(f.harness, 'poteto-mode', `Do no engineering work and launch no lane. For this task the pstack model sheet is ${sheet(f)}; use it in place of any configured sheet. For each of these roles, in this order, find the descriptors this parent would dispatch and the route of each: ${assignments.map(([role]) => JSON.stringify(role)).join(', ')}. Write to ${report(f)} only JSON of the form {"roles":[{"role":"<role>","descriptors":["<provider:model@effort or inherit-parent>"],"routes":["native", "external", or "t3"]}],"writerSetting":"<sheet's codex writer sandbox value>","writerSandbox":"<value>" or null}, one route per descriptor. Preserve inherit-parent as the descriptor and report its native route. writerSandbox is the --writer-sandbox value this parent would pass for an isolated-write writer assigned to the ${JSON.stringify(WRITER_ROLE)} role, or null if it would pass none.`)} ${rules(f.dir)}`,
+    async assert(record, f) {
+      const assertions = [loaded(record, 'pstack:poteto-mode'), await written(record, report(f))];
+      if (await readFile(sheet(f), 'utf8') !== profile) throw new Error('profile-sheet-changed');
+      if (!Bun.deepEquals(parseJson(await readFile(report(f), 'utf8')), { roles, writerSetting: 'bounded', writerSandbox: null })) throw new Error('profile-route-mismatch');
+      return { assertions: [...assertions, 'profile-sheet-unchanged', 'setting:codex writer sandbox: bounded', ...roles.map(r => `role:${r.role.replaceAll(' ', '-')}`)], files: [report(f), sheet(f)] };
+    },
+  };
 }
 
 const shippedTools: Case = {
