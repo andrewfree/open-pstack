@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { mirrored, readCatalog, recipe, type Fixture } from '../features/recipes.ts';
 import { command } from './io.ts';
@@ -12,8 +12,8 @@ const workspace = resolve(import.meta.dir, '../../../..'), location = join(works
 const sheetPath = (f: Fixture) => join(f.configHome, 'pstack-models.md');
 const profilePath = (f: Fixture) => join(f.dir, 'setup-guidance-profile.md');
 const integrationPath = (f: Fixture) => join(f.configHome, f.harness === 'codex' ? 'AGENTS.md' : 'CLAUDE.md');
-async function fixture(harness: Harness): Promise<Fixture> {
-  const dir = await realpath(await mkdtemp(join(tmpdir(), 'pstack-setup-guidance-'))); roots.push(dir);
+async function fixture(harness: Harness, parent = tmpdir()): Promise<Fixture> {
+  const dir = await realpath(await mkdtemp(join(parent, 'pstack-setup-guidance-'))); roots.push(dir);
   const configHome = join(dir, 'config');
   await mkdir(configHome);
   return { harness, dir, workspace, location, configHome, run: command };
@@ -21,7 +21,8 @@ async function fixture(harness: Harness): Promise<Fixture> {
 const record = (harness: Harness, text: string[] = []): SessionRecord => ({
   harness, exitCode: 0, started: Date.now() - 1000, skills: ['pstack:setup-pstack'], commands: [], tools: [], context: [], assistantText: text,
 });
-const preview = (profile: string) => `Complete proposed sheet:\n\`\`\`markdown\n${profile}\`\`\``;
+const fenced = (profile: string) => `Complete proposed sheet:\n\`\`\`markdown\n${profile}\`\`\``;
+const preview = (f: Fixture, profile: string) => [profilePath(f), sheetPath(f), integrationPath(f)].map(p => `\`${p}\``).join('\n') + '\n' + fenced(profile);
 const caseFor = (harness: Harness, apply = false) => recipe('setup-guidance', harness)[apply ? 1 : 0]!;
 async function proposed(f: Fixture): Promise<string> {
   const existingOnly = (await readFile(sheetPath(f), 'utf8')).split('\n').find(line => line.startsWith('Preserve this existing-only'))!;
@@ -64,31 +65,53 @@ for (const harness of ['claude', 'codex'] as const) {
       const f = await fixture(harness), c = caseFor(harness);
       if (existing !== undefined) await writeFile(integrationPath(f), existing);
       await c.prepare!(f);
-      const evidence = await c.assert(record(harness, [preview(await proposed(f))]), f);
+      const evidence = await c.assert(record(harness, [preview(f, await proposed(f))]), f);
       expect(evidence.assertions).toContain('complete-assistant-preview');
       expect(evidence.assertions).toContain('configuration-unchanged');
     }
+  });
+  test(`${harness}: preview requires the profile source and both exact destination paths`, async () => {
+    const f = await fixture(harness), c = caseFor(harness);
+    await c.prepare!(f);
+    const paths = [profilePath(f), sheetPath(f), integrationPath(f)];
+    const full = fenced(await proposed(f));
+    const render = (shown: string[]) => shown.map(p => `\`${p}\``).join('\n') + '\n' + full;
+    for (const missing of paths) {
+      for (const replacement of ['', `${missing}.bak`, `/different${missing}`]) {
+        await expect(c.assert(record(harness, [render(paths.map(p => p === missing ? replacement : p))]), f))
+          .rejects.toThrow('setup-guidance-preview-path-missing');
+      }
+    }
+    const evidence = await c.assert(record(harness, [render(paths)]), f);
+    expect(evidence.assertions).toContain('preview-source-and-destinations');
+  });
+  test(`${harness}: preview accepts home-relative paths across assistant text blocks`, async () => {
+    const f = await fixture(harness, homedir()), c = caseFor(harness);
+    await c.prepare!(f);
+    const paths = [profilePath(f), sheetPath(f), integrationPath(f)].map(p => `\`~${p.slice(homedir().length)}\``);
+    const evidence = await c.assert(record(harness, [...paths, fenced(await proposed(f))]), f);
+    expect(evidence.assertions).toContain('preview-source-and-destinations');
   });
   test(`${harness}: rejects report claims, partial roles, altered or duplicated guidance, headings and settings`, async () => {
     const f = await fixture(harness), c = caseFor(harness);
     await c.prepare!(f);
     const profile = await proposed(f);
-    await writeFile(join(f.dir, 'result.md'), preview(profile));
+    await writeFile(join(f.dir, 'result.md'), preview(f, profile));
     const existing = profile.split('\n').find(line => line.startsWith('Keep the existing'))!;
     const added = profile.split('\n').find(line => line.startsWith('Escalate uncertain'))!;
     for (const text of [undefined, 'The complete preview is in result.md.', profile,
-      preview(profile.replace(/^bug-fix:.*\n/m, '')), preview(profile.replace(/^bug-fix:.*$/m, 'bug-fix: grok:grok-4.7@high')),
-      preview(profile.replace(existing, 'Changed existing guidance.')), preview(profile.replace(added, '')),
-      preview(profile.replace(added, `${added} altered`)), preview(`${profile}\n${existing}\n`),
-      preview(profile.replace('## Existing guidance', '## Changed guidance')),
-      preview(profile.replace('codex writer sandbox: bounded', 'codex writer sandbox: full-access'))]) {
+      preview(f, profile.replace(/^bug-fix:.*\n/m, '')), preview(f, profile.replace(/^bug-fix:.*$/m, 'bug-fix: grok:grok-4.7@high')),
+      preview(f, profile.replace(existing, 'Changed existing guidance.')), preview(f, profile.replace(added, '')),
+      preview(f, profile.replace(added, `${added} altered`)), preview(f, `${profile}\n${existing}\n`),
+      preview(f, profile.replace('## Existing guidance', '## Changed guidance')),
+      preview(f, profile.replace('codex writer sandbox: bounded', 'codex writer sandbox: full-access'))]) {
       await expect(c.assert(record(harness, text === undefined ? [] : [text]), f)).rejects.toThrow('setup-guidance-complete-preview-missing');
     }
   });
   test(`${harness}: preview rejects configuration mutation and changed explicit source`, async () => {
     const f = await fixture(harness), c = caseFor(harness);
     await c.prepare!(f);
-    const prepared = await readFile(sheetPath(f), 'utf8'), profile = await proposed(f), r = record(harness, [preview(profile)]);
+    const prepared = await readFile(sheetPath(f), 'utf8'), profile = await proposed(f), r = record(harness, [preview(f, profile)]);
     await writeFile(sheetPath(f), profile);
     await expect(c.assert(r, f)).rejects.toThrow('setup-guidance-preview-sheet-changed');
     await writeFile(sheetPath(f), prepared);
@@ -129,7 +152,7 @@ for (const harness of ['claude', 'codex'] as const) {
     const existingOnly = original.split('\n').find(line => line.startsWith('Preserve this existing-only'))!;
     expect(existingOnly).toBeTruthy();
     expect(incoming).not.toContain(existingOnly);
-    await expect(c.assert(record(harness, [preview(incoming)]), f)).rejects.toThrow('setup-guidance-complete-preview-missing');
+    await expect(c.assert(record(harness, [preview(f, incoming)]), f)).rejects.toThrow('setup-guidance-complete-preview-missing');
     const apply = caseFor(harness, true);
     await writeFile(integrationPath(f), 'Unrelated instructions.\n');
     await apply.prepare!(f);
@@ -197,7 +220,7 @@ test('Codex guidance starts consistently after the legacy setup first-run case',
   await guidance.prepare!(f);
   expect(await mirrored(f, sheetPath(f))).toEqual(['codex-mirror']);
   expect(await readFile(integrationPath(f), 'utf8')).toStartWith('Unrelated instructions.\n');
-  expect((await guidance.assert(record('codex', [preview(await proposed(f))]), f)).assertions).toContain('configuration-unchanged');
+  expect((await guidance.assert(record('codex', [preview(f, await proposed(f))]), f)).assertions).toContain('configuration-unchanged');
 });
 
 test('Codex guidance preparation refuses malformed mirror boundaries before writing', async () => {
