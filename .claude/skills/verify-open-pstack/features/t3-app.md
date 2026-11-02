@@ -42,6 +42,8 @@ T3 keeps an idle Codex app-server, with the home it started with, for about 30 m
 
 ## Agent rendezvous
 
+A missing advertised route or `app-route-coordinator-catalog-mismatch` is a discovery error that permits one new native lookup under T3's error exception. Preserve the failed run and its original receipts; use the refreshed catalog only in a new verification run. Do not rewrite a failed case's receipt, manufacture a new capture timestamp, or substitute a different route to pass. Catalog retention is a coordinator obligation; the verifier checks each supplied receipt and the actual execution independently.
+
 When the verifier prints that a case awaits `delegate_task`, read `t3-app/pending.json` from the private run root. For each request:
 
 1. Use the native `orchestrator_capabilities` discovery retained for this coordinating thread, calling it once before the first dispatch if it has not already been captured. Reuse that original `structuredContent` and capture timestamp across cases; never replace its timestamp with the current time or borrow another thread's catalog. Refresh only when the active T3 instructions permit it, such as after an error or a user-named provider change. The catalog must identify this coordinating `parentThreadId` and show the selected provider and model can run a child task with the requested effort. T3 lists a model's efforts in the `values` of its `effort` option. An absent route stops the case; do not silently substitute a provider or model.
