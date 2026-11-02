@@ -29,6 +29,7 @@ export interface Observation {
 export interface Installation {
   harness: Harness; cliVersion: string; pluginVersion: string; sha: string;
   location: string; treeHash: string; home: string; sourceHash?: string;
+  correctnessProfile?: boolean;
 }
 export interface Receipt {
   schema: 1; repo: string; pr: number; sha: string; base: string; phase: Phase;

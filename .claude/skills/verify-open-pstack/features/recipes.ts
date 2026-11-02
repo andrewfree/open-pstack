@@ -712,8 +712,8 @@ function consumeSheet(harness: Harness, optIn: boolean): Case {
   };
 }
 
-function catalog(harness: Harness): Case[] {
-  return [consumeSheet(harness, true), consumeSheet(harness, false), correctnessProfile(harness), ...(harness === 'claude' ? [nativeAgents] : [])];
+function catalog(harness: Harness, includeCorrectnessProfile: boolean): Case[] {
+  return [consumeSheet(harness, true), consumeSheet(harness, false), ...(includeCorrectnessProfile ? [correctnessProfile(harness)] : []), ...(harness === 'claude' ? [nativeAgents] : [])];
 }
 
 function correctnessProfile(harness: Harness): Case {
@@ -797,13 +797,13 @@ const startupHook: Case = {
   },
 };
 
-export function recipe(feature: string, harness: Harness, routes: string[] = [], appRoute?: AppRoute): Case[] {
+export function recipe(feature: string, harness: Harness, routes: string[] = [], appRoute?: AppRoute, includeCorrectnessProfile = true): Case[] {
   if (feature === 'assets:codex') throw new Error('unsupported-native-consumer:assets:codex');
   if (feature === 'project-skill') return [projectSkill];
   if (feature === 'hook:startup') return [startupHook];
   if (feature === 'runner') return runner(harness, routes, appRoute);
   if (feature === 'setup' || feature === 'skill-invocation:setup-pstack') return setup;
-  if (feature === 'catalog') return catalog(harness);
+  if (feature === 'catalog') return catalog(harness, includeCorrectnessProfile);
   if (feature === 'shipped-tools') return [shippedTools];
   if (feature === 'agent-preload:poteto-agent' && harness === 'claude') return [agentPreload];
   if (feature === 'skill-invocation:reflect') return reflect(harness);

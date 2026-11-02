@@ -132,7 +132,7 @@ describe('isolated harness boundaries', () => {
     await expect(verifyProjectDoctor([JSON.stringify({ ...JSON.parse(text), result: 'blocked' })], workspace)).rejects.toThrow('passing child doctor');
   });
 
-  test.each([false, true])('prepare pins local Git candidate and links existing Codex login (install failure=%s)', async failInstall => {
+  test.each([{ failInstall: false, profile: false }, { failInstall: false, profile: true }, { failInstall: true, profile: false }])('prepare pins candidate declarations and links existing Codex login (%j)', async ({ failInstall, profile }) => {
     const root = await fixture(), repository = join(root, 'repository'), operatorHome = join(root, 'operator-home'), calls: string[][] = [];
     const auth = await loginFixture(root);
     for (const manifest of ['.claude-plugin', '.codex-plugin']) {
@@ -143,6 +143,10 @@ describe('isolated harness boundaries', () => {
     await writeFile(join(repository, '.claude/skills/verify-open-pstack/SKILL.md'), 'pinned project skill');
     await mkdir(join(repository, '.agents/skills'), { recursive: true });
     await symlink('../../.claude/skills/verify-open-pstack', join(repository, '.agents/skills/verify-open-pstack'));
+    if (profile) {
+      await mkdir(join(repository, 'docs/model-routing'), { recursive: true });
+      await writeFile(join(repository, 'docs/model-routing/correctness-first-codex.md'), 'pinned Codex profile');
+    }
     await command(['git', 'init', repository], { env: gitEnv });
     await command(['git', 'add', '.'], { cwd: repository, env: gitEnv });
     await command(['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com', '-c', 'commit.gpgsign=false', 'commit', '-m', 'fixture'], { cwd: repository, env: gitEnv });
@@ -209,6 +213,7 @@ describe('isolated harness boundaries', () => {
         const installs = await preparation; receipt.installations = installs;
         expect(installs.map(i => i.harness)).toEqual(['claude', 'codex']);
         expect(installs.every(i => i.sha === sha)).toBe(true);
+        expect(installs.map(i => i.correctnessProfile)).toEqual([false, profile]);
         expect(installs.every(i => /^[a-f0-9]{64}$/.test(i.sourceHash!))).toBe(true);
         expect(installs[0]!.sourceHash).toBe(installs[1]!.sourceHash);
         expect(calls.some(c => c.join(' ') === 'codex plugin add pstack@open-pstack --json')).toBe(true);
@@ -217,6 +222,14 @@ describe('isolated harness boundaries', () => {
           await expect(driver.exercise(one)).rejects.toThrow('fixture native surface reached');
         }
         expect(sessions.map(args => args[0])).toEqual(['app:claude', 'codex']);
+        if (profile) {
+          const installation = installs.find(i => i.harness === 'codex')!;
+          await rm(join(installation.home, 'workspace/docs/model-routing/correctness-first-codex.md'));
+          const one = newReceipt(REPO, 111, sha, sha, false, root);
+          one.installations = [installation]; one.runFeatures = ['codex:catalog'];
+          await expect(driver.exercise(one)).rejects.toThrow('Pinned source changed before exercise');
+          expect(sessions).toHaveLength(2);
+        }
       }
     } finally {
       await mkdir(join(root, 'artifacts'), { mode: 0o700 });
