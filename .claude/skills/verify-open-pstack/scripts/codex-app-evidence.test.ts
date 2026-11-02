@@ -48,7 +48,55 @@ async function fixture(): Promise<{ expected: CodexAppEvidenceOptions; events: E
 }
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 
+async function asyncFixture() {
+  const f = await fixture(), taskId = 'owned-task', title = 'Bound PONG lane';
+  const route = { taskId, childThreadId: 'child-thread', childRunId: 'child-run', providerInstanceId: 'verify_claude', model: 'claude-opus-5-5' };
+  const dispatched = { ...delegation(), arguments: { mode: 'async', task: 'Reply PONG', title, clientRequestId: 'one-task' },
+    result: { structuredContent: { ...route, status: 'running' } } };
+  const terminal: Event = { ...delegation('status'), tool: 'task_status', arguments: { taskId }, result: { structuredContent: { ...route,
+    status: 'completed', workState: 'result_available', hasPendingChildRuns: false, hasPendingQuestion: false, pendingApproval: null,
+    latestTerminalRunId: route.childRunId, latestTerminalStatus: 'completed', summary: 'PONG' } } };
+  const text = `Delegated task ${taskId} (${title}) [completed]:\nPONG`;
+  const notification = { type: 'userMessage', id: 'completion', content: [{ type: 'text', text }] };
+  f.events.splice(-1, 0, nativeItem(dispatched), nativeItem(notification), nativeItem(terminal));
+  f.rows.splice(-1, 0, message(text, 'user.text')); await f.save();
+  return { ...f, dispatched, terminal, notification };
+}
+
 describe('Codex app native evidence', () => {
+  test('binds an async completion notification to the original delegate and later terminal status in both streams', async () => {
+    const f = await asyncFixture();
+    const evidence = await parseCodexAppEvidence(serialize(f.events), f.expected);
+    expect(evidence.toolCalls.map(call => call.tool)).toEqual(['delegate_task', 'task_status']);
+    expect(evidence.items.filter(item => item.type === 'userMessage')).toHaveLength(2);
+  });
+  test.each(['unrelated', 'summary', 'title', 'foreign-task', 'foreign-run', 'foreign-thread', 'pending-child', 'pending-question', 'pending-approval', 'failed-tool', 'wrong-route', 'duplicate', 'before-dispatch', 'status-before-wake', 'non-async'])('rejects %s async completion evidence', async kind => {
+    const f = await asyncFixture(), result = f.terminal.result.structuredContent;
+    if (kind === 'unrelated') f.notification.content[0]!.text = 'Do another task';
+    if (kind === 'summary') result.summary = 'different output';
+    if (kind === 'title') f.dispatched.arguments.title = 'different title';
+    if (kind === 'foreign-task') f.terminal.arguments.taskId = 'foreign';
+    if (kind === 'foreign-run') result.latestTerminalRunId = 'foreign';
+    if (kind === 'foreign-thread') result.childThreadId = 'foreign';
+    if (kind === 'pending-child') result.hasPendingChildRuns = true;
+    if (kind === 'pending-question') result.hasPendingQuestion = true;
+    if (kind === 'pending-approval') result.pendingApproval = { requestId: 'approval' };
+    if (kind === 'failed-tool') f.terminal.status = 'failed';
+    if (kind === 'wrong-route') result.providerInstanceId = 'foreign';
+    if (kind === 'duplicate') f.events.splice(-2, 0, nativeItem({ ...f.notification, id: 'duplicate' }));
+    if (kind === 'before-dispatch') [f.events[7], f.events[8]] = [f.events[8]!, f.events[7]!];
+    if (kind === 'status-before-wake') [f.events[8], f.events[9]] = [f.events[9]!, f.events[8]!];
+    if (kind === 'non-async') f.dispatched.arguments.mode = 'wait';
+    await expect(parseCodexAppEvidence(serialize(f.events), f.expected)).rejects.toThrow('bound delegated completion');
+  });
+  test.each(['missing', 'different', 'duplicate'])('rejects %s rollout completion notification', async kind => {
+    const f = await asyncFixture();
+    if (kind === 'missing') f.rows.splice(-2, 1);
+    if (kind === 'different') f.rows[f.rows.length - 2] = message('different output', 'user.text');
+    if (kind === 'duplicate') f.rows.splice(-1, 0, message(f.notification.content[0]!.text, 'user.text'));
+    await f.save();
+    await expect(parseCodexAppEvidence(serialize(f.events), f.expected)).rejects.toThrow('rollout request differs');
+  });
   test('accepts repeated native ready notifications for only t3-code', async () => {
     const f = await fixture(); f.events.splice(7, 0, mcpStatus('ready'));
     expect((await parseCodexAppEvidence(serialize(f.events), f.expected)).sessionId).toBe(sessionId);
