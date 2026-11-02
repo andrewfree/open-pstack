@@ -5,6 +5,8 @@ This port applies the Cursor → Claude Code substitutions in skill bodies. Earl
 
 ## Unreleased
 
+- The Codex Claude-route refusal fixture runs a shell check that succeeds only when the installed runner exits 78. This lets the existing successful-command parser observe the expected refusal without accepting arbitrary failed commands. Regression tests use real shell results through that parser and reject unexpected runner exit codes; receipt and guard assertions are unchanged.
+
 - The T3 dispatch guide gives an explicit lane-record JSON shape and places the concrete target ID under `model`. The verifier still rejects renamed or mismatched fields and now names those fields in its private failure reason without printing their values.
 
 - The Codex app-route fixture reads installed references separately in byte ranges of at most 8192 bytes per shell command. This works around T3 truncating the native completion record when the dispatch guide and generated catalog are printed together; truncated command evidence still fails verification.
