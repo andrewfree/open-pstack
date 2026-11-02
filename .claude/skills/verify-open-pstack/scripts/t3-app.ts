@@ -121,12 +121,13 @@ export function capabilityRoutes(request: AppRequest, reply: JsonObject, started
   const receipt = reply.capabilities, catalog = receipt?.result;
   const run = reply.activity?.recentRuns?.find((r: JsonObject) => r.runId === reply.status?.childRunId);
   const at = Date.parse(receipt?.capturedAt);
-  if (!(at >= started && at <= Date.parse(run?.requestedAt)) || catalog?.parentThreadId !== request.parentThreadId) throw new Error('Missing fresh coordinating-parent capability receipt');
+  const requestedAt = Date.parse(run?.requestedAt);
+  if (!(Number.isFinite(at) && at <= requestedAt && requestedAt >= started) || catalog?.parentThreadId !== request.parentThreadId) throw new Error('Missing coordinating-parent capability receipt before a fresh child run');
   const routes: AppRouteEvidence[] = [];
   for (const target of [request.target, ...request.runnerTarget ? [request.runnerTarget] : []]) {
     const provider = catalog.providers?.find((p: JsonObject) => p.providerInstanceId === target.providerInstanceId);
     const model = provider?.models?.find((m: JsonObject) => m.id === target.model);
-    if (!provider?.canRunChildTask || !model) throw new Error('Requested route is absent from the live capability catalog');
+    if (!provider?.canRunChildTask || !model) throw new Error('Requested route is absent from the coordinating-parent capability catalog');
     const models = target === request.runnerTarget ? provider.models : [model];
     for (const selected of models) {
       const effort = selected.options?.find((o: JsonObject) => o.id === 'effort');
