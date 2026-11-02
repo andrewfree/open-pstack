@@ -147,9 +147,9 @@ def _normalize(raw, dialect):
         if len(values) > 1:
             return None, ["contradictory_usage_aliases"]
     if dialect == "anthropic":
-        usage["input_uncached"] = _first(raw, "input_tokens", "prompt_tokens", "inputTokens")
+        usage["input_uncached"] = _first(raw, "input_tokens", "inputTokens")
         usage["cache_read"] = _first(raw, "cache_read_input_tokens", "cached_input_tokens", "cachedInputTokens")
-        usage["output_total"] = _first(raw, "output_tokens", "completion_tokens", "outputTokens")
+        usage["output_total"] = _first(raw, "output_tokens", "outputTokens")
         usage["reasoning_output"] = _first(_dict(raw.get("output_tokens_details")), "thinking_tokens", "reasoning_tokens")
         aggregate = _first(raw, "cache_creation_input_tokens", "cache_write_input_tokens", "cacheCreationInputTokens")
         usage["cache_write_30m"] = usage["cache_write_12h"] = 0
