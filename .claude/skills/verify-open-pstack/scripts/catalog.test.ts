@@ -119,6 +119,77 @@ for (const harness of ['claude', 'codex'] as const) {
     await writeFile(join(f.dir, 'routes.json'), JSON.stringify({ ...report, writerSandbox: 'full-access' }));
     await expect(c!.assert(record(harness, 'pstack:poteto-mode'), f)).rejects.toThrow('catalog-route-mismatch');
   });
+
+  test(`${harness}: the correctness profile consumes all 15 roles and rejects changed descriptors, roles, routes, inheritance and sandbox`, async () => {
+    const f = await fixture(harness), c = recipe('catalog', harness).find(c => c.id === 'consume-correctness-profile')!, installed = await readCatalog(location);
+    await c.prepare!(f);
+    const path = join(f.dir, 'correctness-first-profile.md'), profile = await readFile(path, 'utf8');
+    expect(profile).toBe(await readFile(join(workspace, `docs/model-routing/correctness-first-${harness}.md`), 'utf8'));
+    expect(c.prompt(f)).toContain(path);
+    const roles = promptRoles(c, f), lines = await sheet(path);
+    expect(roles).toHaveLength(15);
+    expect([...roles].sort()).toEqual([...installed.defaults.keys()].sort());
+    const report = { roles: reportRoles(roles, lines, installed, harness), writerSetting: 'bounded', writerSandbox: null };
+    expect(report.roles.find(r => r.role === 'hardest tasks')?.descriptors).toEqual(['codex:gpt-6-astra@high']);
+    expect(report.roles.find(r => r.role === 'how explorer')).toEqual({ role: 'how explorer',
+      descriptors: [harness === 'codex' ? 'codex:gpt-6-luna@high' : 'claude:claude-haiku-5-5@high'], routes: ['native'] });
+    for (const role of ['why investigators, synthesizer', 'reflect tooling, judgment, divergent, synthesizer']) {
+      expect(report.roles.find(r => r.role === role)).toEqual({ role, descriptors: ['inherit-parent'], routes: ['native'] });
+    }
+    const output = join(f.dir, 'profile-routes.json'), done = record(harness, 'pstack:poteto-mode');
+    await writeFile(output, JSON.stringify(report));
+    const evidence = await c.assert(done, f);
+    expect(evidence.files).toEqual([output, path]);
+    expect(evidence.assertions).toContain('setting:codex writer sandbox: bounded');
+    expect(evidence.assertions.filter(a => a.startsWith('role:'))).toHaveLength(15);
+
+    const change = (role: string, fields: Partial<(typeof report.roles)[number]>) => ({ ...report,
+      roles: report.roles.map(r => r.role === role ? { ...r, ...fields } : r) });
+    const wrong = [
+      change('hardest tasks', { descriptors: ['codex:gpt-6.1-sol@high'] }),
+      change('how explorer', { descriptors: [harness === 'codex' ? 'claude:claude-haiku-5-5@high' : 'codex:gpt-6-luna@high'] }),
+      change('why investigators, synthesizer', { descriptors: [`${harness}:parent@high`] }),
+      change('hardest tasks', { routes: [harness === 'codex' ? 'external' : 'native'] }),
+      change('judgment and prose', { routes: [harness === 'codex' ? 'native' : 't3'] }),
+      change('bug-fix', { role: 'missing-role' }),
+      { ...report, roles: report.roles.slice(1) },
+      { ...report, roles: [...report.roles, report.roles[0]] },
+      { ...report, writerSetting: 'full-access' },
+      { ...report, writerSetting: null },
+      { ...report, writerSandbox: 'full-access' },
+    ];
+    for (const response of wrong) {
+      await writeFile(output, JSON.stringify(response));
+      await expect(c.assert(done, f)).rejects.toThrow('profile-route-mismatch');
+    }
+    await writeFile(output, JSON.stringify(report));
+    await expect(c.assert(record(harness, 'other-skill'), f)).rejects.toThrow('skill-not-loaded');
+    await writeFile(path, profile.replace(BOUNDED, FULL_ACCESS));
+    await expect(c.assert(done, f)).rejects.toThrow('profile-sheet-changed');
+  });
+
+  test(`${harness}: the correctness profile refuses source assignments outside its contract`, async () => {
+    const f = await fixture(harness), candidate = join(f.dir, 'candidate'), relative = `docs/model-routing/correctness-first-${harness}.md`;
+    await mkdir(join(candidate, 'docs/model-routing'), { recursive: true });
+    const profile = await readFile(join(workspace, relative), 'utf8');
+    const reader = harness === 'codex' ? 'codex:gpt-6-luna@high' : 'claude:claude-haiku-5-5@high';
+    for (const wrong of [profile.replaceAll('codex:gpt-6-astra@high', 'codex:gpt-6.1-sol@high'),
+      profile.replace(reader, harness === 'codex' ? 'claude:claude-haiku-5-5@high' : 'codex:gpt-6-luna@high'),
+      profile.replace(/\nbug-fix: [^\n]*/, ''), profile.replace('why investigators, synthesizer: inherit-parent', 'why investigators, synthesizer: auto'),
+      `${profile}\nbug-fix: codex:gpt-6.1-sol@high\n`]) {
+      await writeFile(join(candidate, relative), wrong);
+      const c = recipe('catalog', harness).find(c => c.id === 'consume-correctness-profile')!;
+      await expect(c.prepare!({ ...f, workspace: candidate })).rejects.toThrow('profile-assignments-mismatch');
+    }
+    for (const wrong of [profile.replace(BOUNDED, FULL_ACCESS), profile.replace(BOUNDED, ''), `${profile}\n${BOUNDED}`]) {
+      await writeFile(join(candidate, relative), wrong);
+      const c = recipe('catalog', harness).find(c => c.id === 'consume-correctness-profile')!;
+      await expect(c.prepare!({ ...f, workspace: candidate })).rejects.toThrow('profile-setting-not-bounded');
+    }
+    await rm(join(candidate, relative));
+    const c = recipe('catalog', harness).find(c => c.id === 'consume-correctness-profile')!;
+    await expect(c.prepare!({ ...f, workspace: candidate })).rejects.toThrow('ENOENT');
+  });
 }
 
 test('the kept-predecessor case requires every loaded role, the materialized role and the proposed replacement', async () => {
