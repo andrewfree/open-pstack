@@ -422,7 +422,7 @@ test('the full-access writer case quotes each browser argument for sh and encode
 });
 
 for (const harness of ['claude', 'codex'] as const) {
-  test(`${harness}: the keep-setting case requires the setting line and every role line after a rerun`, async () => {
+  test(`${harness}: the keep-setting case preserves settings, roles and ordered guidance after a rerun`, async () => {
     const f = await fixture(harness), c = recipe('setup', harness).find(c => c.id === 'keep-setting')!, installed = await readCatalog(location);
     await writeFile(join(f.dir, 'AGENTS.md'), 'mirror\n');
     await c.prepare!(f);
@@ -436,12 +436,17 @@ for (const harness of ['claude', 'codex'] as const) {
     await writeFile(path, rerun);
     if (harness === 'codex') await mirror(f, rerun);
     expect((await c.assert(record(harness, 'pstack:setup-pstack'), f)).assertions)
-      .toEqual(['skill-loaded', 'file:pstack-models.md', ...(harness === 'codex' ? ['codex-mirror'] : []), 'setting:codex writer sandbox: full-access']);
+      .toEqual(['skill-loaded', 'file:pstack-models.md', ...(harness === 'codex' ? ['codex-mirror'] : []), 'setting:codex writer sandbox: full-access', 'profile-guidance-kept']);
 
+    const first = 'Bound lightweight reads to 100000 tokens.', second = 'Escalate uncertain reading through the direct subscription route.';
     for (const [wrong, reason] of [
       [rerun.replace('codex writer sandbox: full-access\n', ''), 'setting-not-kept'],
       [rerun.replace('sandbox: full-access', 'sandbox: bounded'), 'setting-not-kept'],
       [rerun.replace(/\nbug-fix: [^\n]*/, ''), 'keep-setting-sheet-mismatch'],
+      [rerun.replace(first, ''), 'profile-guidance-not-kept'],
+      [rerun.replace(first, first.replace('100000', '200000')), 'profile-guidance-not-kept'],
+      [rerun.replace(`${first}\n\n${second}`, `${second}\n\n${first}`), 'profile-guidance-not-kept'],
+      [`${rerun}\n${first}\n`, 'profile-guidance-not-kept'],
     ]) {
       await writeFile(path, wrong!);
       await expect(c.assert(record(harness, 'pstack:setup-pstack'), f)).rejects.toThrow(reason);

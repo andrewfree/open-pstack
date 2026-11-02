@@ -43,6 +43,8 @@ The table above is the current Cursor sync point. Open Pstack 1.16.0 imported th
 
 ## Local port-patch ledger
 
+- **Profile guidance preservation**: setup's render step retains non-role guidance from an existing or explicitly supplied profile, including reading limits and escalation rules. Keep these paragraphs with the selected role assignments through reruns and parent integration readback.
+
 - **Correctness-first subscription profile**: the optional Astra family in `registry/models.ts`, complete parent-specific sheets in `docs/model-routing/`, and standalone evaluation lab in `docs/model-eval/` are local additions. Keep the generated catalog in sync with the registry. The opt-in sheets do not replace upstream-derived first-run role defaults, and private usage logs and trial receipts stay outside source control.
 
 - **#235 — Claude transcript folder encoding**: the port wrote Claude Code's per-project transcript path into `recall`, `automate-me` and the `session-pickup` playbook. Claude Code encodes each `/` and each `.` in the workspace path as `-`, so a `.claude/worktrees/` session's folder holds `--claude-worktrees-`. Keep both characters in those three lines during syncs.
