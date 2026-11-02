@@ -344,8 +344,10 @@ describe('isolated harness boundaries', () => {
     };
     const driver = new MacDriver(command, async args => {
       expect(args[0]).toBe('codex');
-      expect(args.slice(args.indexOf('--add-dir'), args.indexOf('--add-dir') + 2)).toEqual(['--add-dir', join(home, '.codex')]);
-      if (feature === 'setup-guidance') expect(args.slice(args.indexOf('--sandbox'), args.indexOf('--sandbox') + 2)).toEqual(['--sandbox', 'workspace-write']);
+      if (feature === 'setup-guidance') {
+        expect(args.slice(args.indexOf('--add-dir'), args.indexOf('--add-dir') + 2)).toEqual(['--add-dir', join(home, '.codex')]);
+        expect(args.slice(args.indexOf('--sandbox'), args.indexOf('--sandbox') + 2)).toEqual(['--sandbox', 'workspace-write']);
+      } else expect(args).not.toContain('--add-dir');
       return interrupt();
     }, [], appStub('', undefined, interrupt).app);
     await expect(driver.exercise(receipt)).rejects.toThrow(failRestore ? 'Setup restoration requires a regular file' : 'interrupted setup');

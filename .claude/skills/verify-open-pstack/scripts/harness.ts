@@ -206,7 +206,7 @@ export class MacDriver implements Driver {
               const appCase = harness === 'claude' || c.id.startsWith('app-route-');
               const app = appCase ? await this.app!.record({ harness, projectSkill: feature === 'project-skill', pluginRoot: installation.location, workspace, fixture: dir,
                 prompt: c.prompt(fixture), env, stdout, stderr, started, cliVersion: installation.cliVersion, writePolicy }) : undefined;
-              const addDirs = [...(cwd === dir ? [] : [dir]), ...(harness === 'codex' && setupFeature(feature) ? [fixture.configHome] : [])];
+              const addDirs = [...(cwd === dir ? [] : [dir]), ...(harness === 'codex' && feature === 'setup-guidance' ? [fixture.configHome] : [])];
               const exitCode = app ? 0 : await this.record(launch({ cwd, addDirs, codexSandbox: c.codexSandbox }), { cwd, env, input: c.prompt(fixture), stdout, stderr });
               evidence.push(stdout, ...(await stat(stderr)).size ? [stderr] : [], ...app?.evidence ?? []);
               let record: SessionRecord, result;

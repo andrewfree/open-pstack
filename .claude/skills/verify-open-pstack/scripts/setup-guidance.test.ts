@@ -23,6 +23,10 @@ const record = (harness: Harness, text: string[] = []): SessionRecord => ({
 });
 const preview = (profile: string) => `Complete proposed sheet:\n\`\`\`markdown\n${profile}\`\`\``;
 const caseFor = (harness: Harness, apply = false) => recipe('setup-guidance', harness)[apply ? 1 : 0]!;
+async function proposed(f: Fixture): Promise<string> {
+  const existingOnly = (await readFile(sheetPath(f), 'utf8')).split('\n').find(line => line.startsWith('Preserve this existing-only'))!;
+  return (await readFile(profilePath(f), 'utf8')).replace('## Existing guidance\n\n', `## Existing guidance\n\n${existingOnly}\n\n`);
+}
 async function save(f: Fixture, profile: string): Promise<void> {
   await writeFile(sheetPath(f), profile);
   await writeFile(integrationPath(f), f.harness === 'codex'
@@ -60,7 +64,7 @@ for (const harness of ['claude', 'codex'] as const) {
       const f = await fixture(harness), c = caseFor(harness);
       if (existing !== undefined) await writeFile(integrationPath(f), existing);
       await c.prepare!(f);
-      const evidence = await c.assert(record(harness, [preview(await readFile(profilePath(f), 'utf8'))]), f);
+      const evidence = await c.assert(record(harness, [preview(await proposed(f))]), f);
       expect(evidence.assertions).toContain('complete-assistant-preview');
       expect(evidence.assertions).toContain('configuration-unchanged');
     }
@@ -68,7 +72,7 @@ for (const harness of ['claude', 'codex'] as const) {
   test(`${harness}: rejects report claims, partial roles, altered or duplicated guidance, headings and settings`, async () => {
     const f = await fixture(harness), c = caseFor(harness);
     await c.prepare!(f);
-    const profile = await readFile(profilePath(f), 'utf8');
+    const profile = await proposed(f);
     await writeFile(join(f.dir, 'result.md'), preview(profile));
     const existing = profile.split('\n').find(line => line.startsWith('Keep the existing'))!;
     const added = profile.split('\n').find(line => line.startsWith('Escalate uncertain'))!;
@@ -84,7 +88,7 @@ for (const harness of ['claude', 'codex'] as const) {
   test(`${harness}: preview rejects configuration mutation and changed explicit source`, async () => {
     const f = await fixture(harness), c = caseFor(harness);
     await c.prepare!(f);
-    const prepared = await readFile(sheetPath(f), 'utf8'), profile = await readFile(profilePath(f), 'utf8'), r = record(harness, [preview(profile)]);
+    const prepared = await readFile(sheetPath(f), 'utf8'), profile = await proposed(f), r = record(harness, [preview(profile)]);
     await writeFile(sheetPath(f), profile);
     await expect(c.assert(r, f)).rejects.toThrow('setup-guidance-preview-sheet-changed');
     await writeFile(sheetPath(f), prepared);
@@ -98,7 +102,7 @@ for (const harness of ['claude', 'codex'] as const) {
     const f = await fixture(harness), c = caseFor(harness, true);
     await writeFile(integrationPath(f), 'Unrelated instructions.\n');
     await c.prepare!(f);
-    const profile = await readFile(profilePath(f), 'utf8');
+    const profile = await proposed(f);
     await save(f, profile);
     const evidence = await c.assert(record(harness), f);
     expect(evidence.assertions).toContain('complete-saved-sheet');
@@ -117,6 +121,20 @@ for (const harness of ['claude', 'codex'] as const) {
     await save(f, profile);
     await writeFile(profilePath(f), profile + '\n');
     await expect(c.assert(record(harness), f)).rejects.toThrow('setup-guidance-profile-source-changed');
+  });
+  test(`${harness}: copying the input profile cannot prove retention of existing-only guidance`, async () => {
+    const f = await fixture(harness), c = caseFor(harness);
+    await c.prepare!(f);
+    const original = await readFile(sheetPath(f), 'utf8'), incoming = await readFile(profilePath(f), 'utf8');
+    const existingOnly = original.split('\n').find(line => line.startsWith('Preserve this existing-only'))!;
+    expect(existingOnly).toBeTruthy();
+    expect(incoming).not.toContain(existingOnly);
+    await expect(c.assert(record(harness, [preview(incoming)]), f)).rejects.toThrow('setup-guidance-complete-preview-missing');
+    const apply = caseFor(harness, true);
+    await writeFile(integrationPath(f), 'Unrelated instructions.\n');
+    await apply.prepare!(f);
+    await save(f, await readFile(profilePath(f), 'utf8'));
+    await expect(apply.assert(record(harness), f)).rejects.toThrow('setup-guidance-paragraph-mismatch');
   });
 }
 test('native route validation fails closed against the installed catalog', async () => {
@@ -148,7 +166,7 @@ test('Claude apply replaces one existing import in place and rejects unrelated i
   const f = await fixture('claude'), c = caseFor('claude', true);
   await writeFile(integrationPath(f), 'Before.\n@~/old/pstack-models.md\nAfter.\n');
   await c.prepare!(f);
-  const profile = await readFile(profilePath(f), 'utf8');
+  const profile = await proposed(f);
   await writeFile(sheetPath(f), profile);
   await writeFile(integrationPath(f), 'Before.\n@./pstack-models.md\nAfter.\n');
   expect((await c.assert(record('claude'), f)).assertions).toContain('claude-import');
@@ -161,7 +179,7 @@ test('Codex apply preserves bytes outside the existing model mirror', async () =
   const block = (text: string) => `<!-- pstack:models:begin -->\n${text}<!-- pstack:models:end -->`;
   await writeFile(integrationPath(f), `Before.\n${block('old sheet\n')}\nAfter.\n`);
   await c.prepare!(f);
-  const profile = await readFile(profilePath(f), 'utf8');
+  const profile = await proposed(f);
   await writeFile(sheetPath(f), profile);
   await writeFile(integrationPath(f), `Before.\n${block(profile)}\nAfter.\n`);
   expect((await c.assert(record('codex'), f)).assertions).toContain('codex-mirror');
