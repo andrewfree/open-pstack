@@ -556,7 +556,7 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
 
     try:
         with source.open("rb") as stream:
-            if format == "pstack" or format == "auto" and source.suffix == ".json":
+            if format == "pstack" or (format == "auto" and source.suffix == ".json"):
                 document = read_chunk(stream, MAX_LINE_BYTES + 1)
                 digest.update(document)
                 metadata["lines_read"] = document.count(b"\n") + int(bool(document) and not document.endswith(b"\n"))
@@ -572,32 +572,29 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
                         consume(json.loads(document), 1)
                     except (ValueError, UnicodeError, RecursionError):
                         diagnostic("malformed_json_document", 1, True)
-                metadata["sha256"] = digest.hexdigest()
-                result["records"] = list(records.values())
-                metadata["records_imported"] = len(records)
-                return result
-            line = 0
-            while True:
-                chunk = read_chunk(stream, MAX_LINE_BYTES + 1, line=True)
-                if not chunk:
-                    break
-                line += 1
-                metadata["lines_read"] = line
-                digest.update(chunk)
-                if len(chunk) > MAX_LINE_BYTES:
-                    while chunk and not chunk.endswith(b"\n"):
-                        chunk = read_chunk(stream, MAX_LINE_BYTES + 1, line=True)
-                        digest.update(chunk)
-                    diagnostic("line_too_large", line, True)
-                    continue
-                if not chunk.strip():
-                    continue
-                try:
-                    obj = json.loads(chunk)
-                except (ValueError, UnicodeError, RecursionError):
-                    diagnostic("malformed_json" if chunk.endswith(b"\n") else "truncated_or_malformed_final_line", line, True)
-                    continue
-                consume(obj, line)
+            else:
+                line = 0
+                while True:
+                    chunk = read_chunk(stream, MAX_LINE_BYTES + 1, line=True)
+                    if not chunk:
+                        break
+                    line += 1
+                    metadata["lines_read"] = line
+                    digest.update(chunk)
+                    if len(chunk) > MAX_LINE_BYTES:
+                        while chunk and not chunk.endswith(b"\n"):
+                            chunk = read_chunk(stream, MAX_LINE_BYTES + 1, line=True)
+                            digest.update(chunk)
+                        diagnostic("line_too_large", line, True)
+                        continue
+                    if not chunk.strip():
+                        continue
+                    try:
+                        obj = json.loads(chunk)
+                    except (ValueError, UnicodeError, RecursionError):
+                        diagnostic("malformed_json" if chunk.endswith(b"\n") else "truncated_or_malformed_final_line", line, True)
+                        continue
+                    consume(obj, line)
         metadata["sha256"] = digest.hexdigest()
     except OSError:
         diagnostic("source_unreadable", 0, True)
