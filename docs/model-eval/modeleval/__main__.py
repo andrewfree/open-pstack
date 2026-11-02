@@ -39,7 +39,7 @@ def _finite_float(value):
 
 
 def read_json(file):
-    return json.loads(Path(file).read_text(), object_pairs_hook=_unique,
+    return json.loads(Path(file).read_text(encoding="utf-8"), object_pairs_hook=_unique,
                       parse_constant=_constant, parse_float=_finite_float)
 
 
@@ -58,7 +58,7 @@ def write(file, content, force=False):
         return
     target = Path(file)
     target.parent.mkdir(parents=True, exist_ok=True)
-    with target.open("w" if force else "x") as stream:
+    with target.open("w" if force else "x", encoding="utf-8") as stream:
         stream.write(content)
 
 
@@ -169,9 +169,9 @@ def main(argv=None):
             if args.prompts:
                 value["prompts"] = {item["id"]: prompt_for(item["id"]) for item in list_cases()}
         elif args.command == "grade":
-            value = grade_response(args.case_id, Path(args.response).read_text())
+            value = grade_response(args.case_id, Path(args.response).read_text(encoding="utf-8"))
         elif args.command == "grade-bundle":
-            value = {"trials": [grade_bundle(Path(args.response).read_text(), read_json(args.receipt))]}
+            value = {"trials": [grade_bundle(Path(args.response).read_text(encoding="utf-8"), read_json(args.receipt))]}
         elif args.command == "trials":
             value = summarize_trials([row for file in args.files for row in rows(file, "trials")], args.min_repeats)
         elif args.command == "report":
