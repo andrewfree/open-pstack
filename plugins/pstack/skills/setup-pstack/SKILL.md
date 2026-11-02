@@ -91,6 +91,8 @@ Build the new sheet in memory. Do not write it yet.
 - First run: start from the catalog's role defaults, with the step 2 role changes applied.
 - Rerun: start from the normalized complete role map from step 2, with the step 2 role changes applied, preserving each loaded row's lane order and family (or alias) per lane.
 
+Preserve loaded non-role headings and guidance paragraphs unchanged and in their original order unless the operator explicitly requests changing them. If the operator supplies a complete profile as pasted text or an explicit local file, include its non-role guidance in the proposed render, retain unrelated existing guidance, and do not duplicate paragraphs already present. Do not restore retired role rows as guidance. The sheet and parent integration readback must include this guidance as well as the role rows and setting.
+
 Keep the setting line from step 2 where the loaded sheet had it. When step 2 adds it, put it after the last role row.
 
 Rewrite every matrix-family descriptor to `provider:model@<requested effort for that family>`, using each family's model chosen in step 2. Leave `inherit-parent` and `auto` unchanged. An effort-only rerun cannot change a role's family. Changing Grok's effort updates every Grok occurrence and does not move a Sol role onto Grok. Refuse an unqualified slug, an unavailable route, a model outside the model matrix and its kept predecessors, or a provider/model mismatch.

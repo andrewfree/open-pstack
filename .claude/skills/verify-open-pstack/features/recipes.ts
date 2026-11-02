@@ -628,6 +628,7 @@ function writerRefusal(): Case {
 
 function keepSetting(): Case {
   let expected: string[] = [];
+  const guidance = ['Bound lightweight reads to 100000 tokens.', 'Escalate uncertain reading through the direct subscription route.'];
   return {
     id: 'keep-setting',
     codexSandbox: 'danger-full-access',
@@ -635,7 +636,7 @@ function keepSetting(): Case {
       const roles = [...(await readCatalog(f.location)).defaults];
       const omitted = roles.find(([, lanes]) => lanes.every(lane => !lane.includes(':')))?.[0];
       expected = roles.map(([role, lanes]) => `${role}: ${lanes.join(', ')}`).sort();
-      await writeFile(join(f.configHome, 'pstack-models.md'), sheetText(roles.filter(([role]) => role !== omitted)) + `${FULL_ACCESS_SETTING}\n`);
+      await writeFile(join(f.configHome, 'pstack-models.md'), sheetText(roles.filter(([role]) => role !== omitted)) + `${guidance.join('\n\n')}\n\n${FULL_ACCESS_SETTING}\n`);
       if (f.harness === 'codex') await rm(join(f.configHome, 'AGENTS.md'), { force: true });
     },
     prompt: f => `${invoke(f.harness, 'setup-pstack', `Use these answers and ask nothing else. Keep every role assignment and every family's current effort. I confirm every write. Write the setup report to ${join(f.dir, 'result.md')}.`)} Do not push, post, or contact GitHub.`,
@@ -644,7 +645,8 @@ function keepSetting(): Case {
       const text = await readFile(sheet, 'utf8');
       if (!Bun.deepEquals(settingLines(text), [FULL_ACCESS_SETTING])) throw new Error('setting-not-kept');
       if (!Bun.deepEquals(roleLines(text).sort(), expected)) throw new Error('keep-setting-sheet-mismatch');
-      return { assertions: [...assertions, ...await mirrored(f, sheet), `setting:${FULL_ACCESS_SETTING}`], files: [sheet] };
+      if (!text.includes(guidance.join('\n\n')) || guidance.some(paragraph => text.split(paragraph).length !== 2)) throw new Error('profile-guidance-not-kept');
+      return { assertions: [...assertions, ...await mirrored(f, sheet), `setting:${FULL_ACCESS_SETTING}`, 'profile-guidance-kept'], files: [sheet] };
     },
   };
 }

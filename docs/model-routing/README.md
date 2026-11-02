@@ -11,6 +11,12 @@ Codex writer setting. OpenAI models use Codex; Anthropic models use Claude's
 Agent route. No code-writing role depends on the Codex-parent Claude read-only
 route.
 
+The Codex profile requires an eligible T3 Claude Agent instance for its Opus
+roles. Installing the Claude CLI alone does not provide that route. If T3 is
+unavailable, setup stops without writing. Use a T3 parent with that instance, or
+explicitly reassign the affected roles to native Codex models after reviewing
+the reduced provider diversity; setup never makes that substitution itself.
+
 Sol high handles ordinary implementation and swarm workers. Astra high handles
 the hardest code tasks. The reader is Luna high on Codex or Haiku high on Claude.
 Opus high supplies judgment and critique. Fable is reserved for an explicit
@@ -21,8 +27,13 @@ provider diversity; Opus supplies the separate critique.
 ## Activate through setup
 
 Install the exact candidate only after the repository's live qualification gate.
-In each affected parent, invoke `setup-pstack` and name that parent's sheet as the
-requested assignment. Run the parent-specific route probes and behavioral smoke.
+These sheets live in this repository and are not bundled in the installed
+plugin. Open the parent-specific sheet linked above and paste its complete text
+into a `setup-pstack` request, or provide the absolute path to a local copy.
+Ask setup to apply all listed assignments, the writer setting, and the guidance
+paragraphs. There is no built-in lookup by profile name. Setup preserves that
+guidance on later reruns, including the reading limit and escalation rules.
+Run the parent-specific route probes and behavioral smoke.
 Never copy a sheet between harnesses as a substitute for those checks.
 
 Setup owns the existing destinations:
