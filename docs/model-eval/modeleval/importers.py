@@ -141,16 +141,17 @@ def _normalize(raw, dialect):
         if any(k in detail and detail[k] is not None and _counter(detail[k]) is None for k in keys):
             return None, ["invalid_usage_counter"]
     for aliases in (("input_tokens", "prompt_tokens", "inputTokens"), ("output_tokens", "completion_tokens", "outputTokens"),
-                    ("cached_input_tokens", "cachedInputTokens"), ("cache_write_input_tokens", "cache_creation_input_tokens", "cacheCreationInputTokens")):
+                    ("cached_input_tokens", "cachedInputTokens", "cache_read_input_tokens"),
+                    ("cache_write_input_tokens", "cache_creation_input_tokens", "cacheCreationInputTokens")):
         values = {_counter(raw[k]) for k in aliases if raw.get(k) is not None}
         if len(values) > 1:
             return None, ["contradictory_usage_aliases"]
     if dialect == "anthropic":
-        usage["input_uncached"] = _first(raw, "input_tokens")
-        usage["cache_read"] = _first(raw, "cache_read_input_tokens")
-        usage["output_total"] = _first(raw, "output_tokens")
+        usage["input_uncached"] = _first(raw, "input_tokens", "prompt_tokens", "inputTokens")
+        usage["cache_read"] = _first(raw, "cache_read_input_tokens", "cached_input_tokens", "cachedInputTokens")
+        usage["output_total"] = _first(raw, "output_tokens", "completion_tokens", "outputTokens")
         usage["reasoning_output"] = _first(_dict(raw.get("output_tokens_details")), "thinking_tokens", "reasoning_tokens")
-        aggregate = _first(raw, "cache_creation_input_tokens")
+        aggregate = _first(raw, "cache_creation_input_tokens", "cache_write_input_tokens", "cacheCreationInputTokens")
         usage["cache_write_30m"] = usage["cache_write_12h"] = 0
         split = _dict(raw.get("cache_creation"))
         five = _first(split, "ephemeral_5m_input_tokens")
@@ -450,11 +451,6 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
                 data["model"] = obj["reportedModel"]
             dialect = "anthropic" if provider == "anthropic" else "openai"
             receipt_usage = obj["usage"]
-            # The receipt's camelCase input means total, unlike native Anthropic input_tokens.
-            if provider == "anthropic" and "inputTokens" in obj["usage"]:
-                dialect = "openai"
-                receipt_usage = {k: v for k, v in obj["usage"].items() if k != "inputTokens"}
-                warnings.append("receipt_input_token_semantics_unknown")
             if provider not in {"openai", "anthropic", "xai"} and "inputTokens" in receipt_usage:
                 receipt_usage = {k: v for k, v in receipt_usage.items() if k != "inputTokens"}
                 warnings.append("receipt_input_token_semantics_unknown")

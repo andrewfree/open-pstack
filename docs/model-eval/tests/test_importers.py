@@ -299,15 +299,58 @@ class ImportTests(unittest.TestCase):
         self.assertIsNone(u["cache_write_12h"])
         self.assertEqual(u["input_uncached"], 40)
 
-    def test_pstack_anthropic_input_semantics_stay_unknown(self):
+    def test_pstack_anthropic_preserves_uncached_input_with_unknown_writes(self):
         file = self.root / "receipt.json"
         file.write_text(json.dumps({"schemaVersion": 1, "request_id": "req", "provider": "claude",
                                    "elapsedMs": 10, "modelVerified": False, "model": "claude-opus-5-5",
                                    "usage": {"inputTokens": 100, "cachedInputTokens": 80, "outputTokens": 5}}))
         r = import_file(file, "pstack")
-        self.assertIsNone(r["records"][0]["usage"]["input_total"])
+        usage = r["records"][0]["usage"]
+        self.assertEqual(usage["input_uncached"], 100)
+        self.assertEqual(usage["cache_read"], 80)
+        self.assertEqual(usage["output_total"], 5)
+        self.assertIsNone(usage["cache_write_unknown"])
+        self.assertIsNone(usage["input_total"])
         self.assertEqual(r["records"][0]["model"], "unknown")
-        self.assertIn("receipt_input_token_semantics_unknown", r["records"][0]["warnings"])
+        self.assertIn("receipt_model_not_verified", r["records"][0]["warnings"])
+        self.assertNotIn("receipt_input_token_semantics_unknown", r["records"][0]["warnings"])
+
+    def test_pstack_anthropic_camelcase_matches_native_usage(self):
+        for writes in (0, 20):
+            with self.subTest(writes=writes):
+                native = {"input_tokens": 100, "cache_read_input_tokens": 80,
+                          "cache_creation_input_tokens": writes, "output_tokens": 5}
+                expected = self.load([claude(native)], "claude")["records"][0]["usage"]
+                receipt = {"schemaVersion": 1, "request_id": "req", "provider": "claude",
+                           "usage": {"inputTokens": 100, "cachedInputTokens": 80,
+                                     "cacheCreationInputTokens": writes, "outputTokens": 5}}
+                file = self.root / "receipt.json"
+                file.write_text(json.dumps(receipt))
+                usage = import_file(file, "pstack")["records"][0]["usage"]
+                self.assertEqual(usage, expected)
+                self.assertEqual(usage["input_total"], 180 + writes)
+
+    def test_pstack_anthropic_rejects_invalid_and_conflicting_aliases(self):
+        pairs = (("inputTokens", "input_tokens"), ("cachedInputTokens", "cache_read_input_tokens"),
+                 ("cacheCreationInputTokens", "cache_creation_input_tokens"), ("outputTokens", "output_tokens"))
+        for camel, native in pairs:
+            for value, code in ((-1, "invalid_usage_counter"), (9, "contradictory_usage_aliases")):
+                with self.subTest(camel=camel, value=value):
+                    file = self.root / "receipt.json"
+                    file.write_text(json.dumps({"schemaVersion": 1, "request_id": "req", "provider": "claude",
+                                                "usage": {camel: value, native: 10}}))
+                    result = import_file(file, "pstack")
+                    self.assertFalse(result["records"])
+                    self.assertIn(code, self.codes(result))
+
+    def test_pstack_unknown_provider_keeps_input_semantics_unknown(self):
+        file = self.root / "receipt.json"
+        file.write_text(json.dumps({"schemaVersion": 1, "request_id": "req", "provider": "unknown",
+                                   "usage": {"inputTokens": 100, "cachedInputTokens": 80, "outputTokens": 5}}))
+        result = import_file(file, "pstack")["records"][0]
+        self.assertIsNone(result["usage"]["input_total"])
+        self.assertIsNone(result["usage"]["input_uncached"])
+        self.assertIn("receipt_input_token_semantics_unknown", result["warnings"])
 
     def test_unknown_null_counter_is_not_corrupt(self):
         r = self.load([request({"input_tokens": 10, "output_tokens": None})], "openai")
