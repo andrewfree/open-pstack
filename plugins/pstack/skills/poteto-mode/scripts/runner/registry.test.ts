@@ -51,6 +51,43 @@ function familyOf(provider: string, model: string): string | null {
 const RELEASED_BY_1_15_0 = { count: 20, sha256: "d8308fb54209a852f3be8a44a9057153776036bf72eb55142c9e5faefcca49f8" };
 
 describe("registry data", () => {
+  it("registers Astra for direct Codex routes and preserves explicit effort", () => {
+    expect(familyOf("codex", "gpt-6-astra")).toBe("astra");
+    const lane = resolveLane(request({ parent: "claude", provider: "codex", model: "gpt-6-astra", effort: "high", mode: "isolated-write" }));
+    expect(lane.model).toBe("gpt-6-astra");
+    expect(lane.effort).toBe("high");
+    expect(() => resolveLane(request({ parent: "codex", provider: "codex", model: "gpt-6-astra", effort: "high" }))).toThrow("native to parent");
+  });
+
+  it("keeps the opt-in correctness profiles complete and on valid direct routes", () => {
+    for (const parent of ["codex", "claude"] as const) {
+      const text = readFileSync(join(PLUGIN_ROOT, "../../docs/model-routing", `correctness-first-${parent}.md`), "utf8");
+      const efforts = new Map<string, string>();
+      for (const { role } of REGISTRY.roleDefaults) {
+        const rows = text.split("\n").filter((line) => line.startsWith(`${role}: `));
+        expect(rows.length).toBe(1);
+        for (const descriptor of rows[0]!.slice(role.length + 2).split(", ")) {
+          if (descriptor === "inherit-parent") continue;
+          const match = /^(codex|claude):([^@]+)@(\w+)$/.exec(descriptor);
+          expect(match).not.toBeNull();
+          const [, provider, model, effort] = match!;
+          const resolved = resolveModel(provider!, model!);
+          expect(resolved.kind).toBe("current");
+          if (resolved.kind !== "current") throw new Error(`unregistered profile descriptor ${descriptor}`);
+          expect(effortsOf(resolved.family).some((value) => value === effort)).toBe(true);
+          expect(efforts.get(resolved.family.name) ?? effort).toBe(effort);
+          efforts.set(resolved.family.name, effort!);
+          if (["feature, refactoring", "bug-fix", "perf-issue", "hillclimb", "hardest tasks", "arena runners", "architect runners", "swarm workers"].includes(role)) {
+            expect(provider).toBe("codex");
+          }
+        }
+      }
+      expect(text).toContain("codex writer sandbox: bounded");
+      expect(text).toContain("hardest tasks: codex:gpt-6-astra@high");
+      expect(text).toContain("interrogate reviewers: claude:opus@high");
+    }
+  });
+
   it("keeps every pair released by 1.15.0 in place", () => {
     const released = REGISTRY.releasedPairs.slice(0, RELEASED_BY_1_15_0.count);
     expect(createHash("sha256").update(JSON.stringify(released)).digest("hex")).toBe(RELEASED_BY_1_15_0.sha256);
@@ -89,6 +126,7 @@ describe("registry data", () => {
     expect(REGISTRY.families.map((entry) => [entry.name, entry.defaultEffort])).toEqual([
       ["fable", "max"],
       ["sol", "max"],
+      ["astra", "high"],
       ["grok", "xhigh"],
       ["opus", "max"],
       ["luna", "max"],
@@ -112,8 +150,8 @@ describe("registry data", () => {
       .map((entry) => [entry.name, entry.rolling!.revisionPrefix]))
       .toEqual([["fable", "claude-fable-"], ["opus", "claude-opus-"], ["sonnet", "claude-sonnet-"]]);
     expect(REGISTRY.families.filter((entry) => entry.provider === "codex").map((entry) => [entry.name, entry.model]))
-      .toEqual([["sol", "gpt-6.1-sol"], ["luna", "gpt-6-luna"]]);
-    expect(REGISTRY.families.filter((entry) => effortsOf(entry).includes("ultra")).map((entry) => entry.name)).toEqual(["sol"]);
+      .toEqual([["sol", "gpt-6.1-sol"], ["astra", "gpt-6-astra"], ["luna", "gpt-6-luna"]]);
+    expect(REGISTRY.families.filter((entry) => effortsOf(entry).includes("ultra")).map((entry) => entry.name)).toEqual(["sol", "astra"]);
   });
 
   it("keeps family names and (provider, model) pairs unique, and efforts ordered", () => {

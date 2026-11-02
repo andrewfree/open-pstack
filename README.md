@@ -93,6 +93,8 @@ Use pstack:setup-pstack to configure pstack.
 
 Setup checks the role assignments, shows how each model will start, and probes each assigned model before saving. The default review panel uses Opus, Sol and Grok. The [model catalog](plugins/pstack/skills/poteto-mode/references/model-catalog.md) lists every other choice.
 
+The opt-in [correctness-first subscription profiles](docs/model-routing/README.md) use Sol for ordinary work, Astra for harder reasoning, bounded lightweight readers, and Opus critique. The [local evaluation lab](docs/model-eval/README.md) imports usage metadata and grades saved answers without making model API calls. Its dated API prices are token-price references, not subscription bills or model rankings.
+
 The first run asks before saving. A rerun also asks when you name a change, or when it finds an invalid sheet or a choice only you can make. A failed probe stops setup before it saves anything. A rerun that changes nothing prints what it kept and saves without asking. After its smoke test, setup offers to generate a verification skill when the project has no way to drive the real app for proof, and a formal verification skill when it has none. A rerun that changes nothing only mentions each offer.
 
 ### 2. Use poteto-mode
