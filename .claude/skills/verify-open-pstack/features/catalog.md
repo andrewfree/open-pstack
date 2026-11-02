@@ -1,5 +1,9 @@
 # Model catalog
 
+Changes to either `docs/model-routing/correctness-first-<parent>.md` profile are catalog changes, even when no plugin file changes. Explanatory documentation keeps its existing classification.
+
+The trusted preparer records whether each profile exists in the pinned commit's Git tree. A catalog run omits only the profile case for a harness whose profile was never shipped in that candidate. It does not infer this from the mutable candidate filesystem. A declared profile that is missing or changed still fails source verification before exercise. The pre-install session count is a conservative maximum that includes optional profile cases; the same limit applies to that maximum.
+
 ## Sub-features
 
 The generated model catalog (`plugins/pstack/skills/poteto-mode/references/model-catalog.md`), the generated Claude-native `pstack-<family>-<effort>` agents, and the runner registry sources they come from (`scripts/runner/registry/**`, `scripts/runner/providers/**`): model matrix, kept predecessors and rolling aliases, routes, provider notes, and role defaults.

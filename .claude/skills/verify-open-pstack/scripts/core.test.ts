@@ -82,6 +82,15 @@ describe('registry and ownership', () => {
       expect(classify([{ filename: 'docs/moved.md', previous_filename }], registry).features).toEqual(both('catalog', 'runner', 'setup'));
     }
   });
+  test('profile-only changes reach live catalog checks while explanatory docs stay non-runtime', () => {
+    for (const filename of ['docs/model-routing/correctness-first-claude.md', 'docs/model-routing/correctness-first-codex.md']) {
+      const selection = classify([{ filename }], registry);
+      expect(selection.noRuntime).toBe(false);
+      expect(selection.features).toEqual(both('catalog', 'runner', 'setup'));
+      expect(classify([{ filename: 'docs/retired.md', previous_filename: filename }], registry).features).toEqual(selection.features);
+    }
+    expect(classify([{ filename: 'docs/model-routing/README.md' }], registry).noRuntime).toBe(true);
+  });
   test('a catalog change mixed with a shared reference or a skill keeps their checks', () => {
     const shared = classify([{ filename: CATALOG }, { filename: 'plugins/pstack/skills/poteto-mode/references/provider-dispatch.md' }], registry);
     expect(shared.skills).toEqual([...registry.skills].sort());

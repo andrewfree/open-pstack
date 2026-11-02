@@ -55,6 +55,12 @@ test('reads role defaults, kept predecessors and routes from the generated catal
 });
 
 for (const harness of ['claude', 'codex'] as const) {
+  test(`${harness}: legacy catalog selection omits only the undeclared profile case`, () => {
+    const current = recipe('catalog', harness).map(c => c.id);
+    expect(current).toContain('consume-correctness-profile');
+    expect(recipe('catalog', harness, [], undefined, false).map(c => c.id))
+      .toEqual(current.filter(id => id !== 'consume-correctness-profile'));
+  });
   test(`${harness}: the catalog case accepts the sheet's descriptors and catalog routes, and rejects a wrong route`, async () => {
     const f = await fixture(harness), [c] = recipe('catalog', harness), installed = await readCatalog(location);
     await c!.prepare!(f);

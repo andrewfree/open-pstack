@@ -127,6 +127,8 @@ export class MacDriver implements Driver {
     if (process.platform !== 'darwin') throw new Error('Live proof requires the operator Mac');
     const installs: Installation[] = [];
     for (const harness of harnesses) {
+      const profile = `docs/model-routing/correctness-first-${harness}.md`;
+      const correctnessProfile = (await trustedRun(['git', 'ls-tree', '--name-only', receipt.sha, '--', profile], { cwd: reference })).trim() === profile;
       const home = join(root, 'state', harness), workspace = join(home, 'workspace');
       await mkdir(join(home, 'tmp'), { recursive: true, mode: 0o700 });
       for (const dir of ['.codex', '.config/gh', '.cache']) await mkdir(join(home, dir), { recursive: true, mode: 0o700 });
@@ -154,7 +156,7 @@ export class MacDriver implements Driver {
       }
       const manifest = JSON.parse(await readFile(join(location, harness === 'claude' ? '.claude-plugin/plugin.json' : '.codex-plugin/plugin.json'), 'utf8'));
       if (await sourceDigest(workspace) !== pinnedSource) throw new Error('Pinned source changed during installation');
-      installs.push({ harness, sha: receipt.sha, home, location, treeHash: expected, sourceHash: pinnedSource, pluginVersion: manifest.version,
+      installs.push({ harness, sha: receipt.sha, home, location, treeHash: expected, sourceHash: pinnedSource, correctnessProfile, pluginVersion: manifest.version,
         cliVersion: (await candidateRun([harness === 'claude' ? await this.app!.claudeBinaryPath() : harness, '--version'], { env })).trim() });
     }
     return installs;
@@ -172,7 +174,7 @@ export class MacDriver implements Driver {
     assertNativeConsumers(receipt.installations.map(installation => installation.harness), this.app !== undefined);
     const plans = receipt.installations.map(installation => ({ installation,
       features: requiredFeatures(receipt, installation.harness).sort((a, b) => Number(setupFeature(a)) - Number(setupFeature(b)))
-        .map(feature => ({ feature, cases: recipe(feature, installation.harness, this.routes, this.app?.runnerRoute) })) }));
+        .map(feature => ({ feature, cases: recipe(feature, installation.harness, this.routes, this.app?.runnerRoute, installation.correctnessProfile !== false) })) }));
     const observations: Observation[] = [];
     const writePolicy = this.daily?.paths ?? dailyStatePaths(this.app?.settingsPath);
     for (const { installation, features } of plans) {
