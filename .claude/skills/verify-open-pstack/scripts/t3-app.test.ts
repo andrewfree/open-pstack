@@ -131,8 +131,21 @@ function capabilities() {
 test('binds live route selection to the coordinator before the delegated run', () => {
   expect(capabilityRoutes(request, capabilities(), started)).toEqual([{ ...request.target, efforts: ['max'] }]);
 });
+test('reuses the coordinator discovery for a later case without accepting an earlier child run', () => {
+  const first = capabilities(), later = capabilities();
+  first.capabilities.capturedAt = '2026-10-13T23:59:00Z';
+  later.capabilities = first.capabilities;
+  later.activity.recentRuns[0]!.requestedAt = '2026-10-14T00:02:01Z';
+  later.activity.recentRuns[0]!.completedAt = '2026-10-14T00:02:02Z';
+  const laterStarted = Date.parse('2026-10-14T00:02:00Z');
+  expect(capabilityRoutes(request, first, started)).toEqual(capabilityRoutes(request, later, laterStarted));
+  expect(validateAppReply(request, later, laterStarted)).toEqual({ threadId: 'child', providerId: 'candidate', runId: 'run' });
+  expect(() => capabilityRoutes(request, first, laterStarted)).toThrow();
+  expect(() => validateAppReply(request, first, laterStarted)).toThrow('predates this case');
+});
 for (const [name, mutate] of [
-  ['stale catalog', (r: any) => { r.capabilities.capturedAt = '2026-10-13T00:00:00Z'; }],
+  ['invalid catalog timestamp', (r: any) => { r.capabilities.capturedAt = 'not-a-timestamp'; }],
+  ['missing catalog timestamp', (r: any) => { delete r.capabilities.capturedAt; }],
   ['post-run catalog', (r: any) => { r.capabilities.capturedAt = '2026-10-14T00:00:02Z'; }],
   ['different coordinator', (r: any) => { r.capabilities.result.parentThreadId = 'other'; }],
   ['disabled provider', (r: any) => { r.capabilities.result.providers[0].canRunChildTask = false; }],
@@ -187,7 +200,7 @@ test('requires exactly the logged native Claude user prompt, including the app t
   }
   expect(() => validateClaudePrompt(offer(undefined), undefined)).toThrow();
 });
-test('keeps every eligible nested Claude model and effort from the fresh catalog', () => {
+test('keeps every eligible nested Claude model and effort from the coordinating catalog', () => {
   const r = capabilities();
   r.capabilities.result.providers.push({ providerInstanceId: 'child-provider', canRunChildTask: true, models: [
     { id: 'opus-current', options: [{ id: 'effort', values: ['max'], default: 'medium' }] },
@@ -294,7 +307,7 @@ test('sequential cases arm candidate launchers and restore pass-through without 
   expect(await a.app.claudeBinaryPath()).toBe('/usr/bin/true');
   let previous: string | undefined;
   for (let i = 0; i < 2; i++) {
-    const work = a.app.record({ ...a.c, stdout: join(a.root, `stdout-${i}.jsonl`), stderr: join(a.root, `stderr-${i}`) });
+    const work = a.app.record({ ...a.c, started: started + i * 750, stdout: join(a.root, `stdout-${i}.jsonl`), stderr: join(a.root, `stderr-${i}`) });
     const request = await pending(a.root, previous);
     expect(request.target.providerInstanceId).toBe('verify_claude');
     const armed = await readFile(join(a.launcherDirectory, 'claude'), 'utf8');
