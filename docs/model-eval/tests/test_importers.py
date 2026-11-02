@@ -421,6 +421,52 @@ class ImportTests(unittest.TestCase):
         self.assertFalse(r["records"])
         self.assertIn("receipt_usage_granularity_unknown", self.codes(r))
 
+    def test_auto_json_identity_records_match_jsonl(self):
+        response = {"object": "chat.completion", "id": "private-response-id", "model": "gpt-6-sol",
+                    "usage": counters(w=10), "output": "PRIVATE_RESPONSE_TEXT"}
+        for event in (response, {"type": "response.completed", "response": dict(response, object="response")}):
+            with self.subTest(event_type=event.get("type", event.get("object"))):
+                expected = self.load([event], "auto")["records"][0]
+                file = self.root / "saved-response.json"
+                data = (json.dumps(event, indent=2) + "\n").encode("utf-8")
+                file.write_bytes(data)
+                result = import_file(file, "auto")
+                self.assertEqual(len(result["records"]), 1)
+                record = result["records"][0]
+                for field in ("provider", "model", "status", "usage", "warnings"):
+                    self.assertEqual(record[field], expected[field])
+                self.assertEqual(record["usage"]["input_uncached"], 50)
+                metadata = result["source_metadata"]
+                self.assertEqual((metadata["usage_events"], metadata["records_imported"], metadata["excluded_events"]), (1, 1, 0))
+                self.assertEqual(metadata["sha256"], hashlib.sha256(data).hexdigest())
+                self.assertEqual(metadata["lines_read"], len(data.splitlines()))
+                self.assertEqual(result["diagnostics"], [])
+                self.assertNotIn("private-response-id", json.dumps(result))
+                self.assertNotIn("PRIVATE_RESPONSE_TEXT", json.dumps(result))
+
+    def test_auto_json_invalid_identity_counter_is_diagnosed(self):
+        result = self.load([request(counters(i=-1))], "auto", "invalid-response.json")
+        self.assertEqual(result["records"], [])
+        self.assertEqual(self.codes(result), ["invalid_usage_counter"])
+        self.assertEqual(result["source_metadata"]["excluded_events"], 1)
+        self.assertEqual(result["source_metadata"]["records_imported"], 0)
+
+    def test_standalone_document_errors_keep_digest(self):
+        file = self.root / "bad-document.json"
+        for mode in ("auto", "pstack"):
+            for data, code in ((b'{"PRIVATE_TEXT":', "malformed_json_document"),
+                               (b' ' * 65, "document_too_large")):
+                with self.subTest(mode=mode, code=code):
+                    file.write_bytes(data)
+                    with patch("modeleval.importers.MAX_LINE_BYTES", 32):
+                        result = import_file(file, mode)
+                    self.assertEqual(result["records"], [])
+                    self.assertEqual(self.codes(result), [code])
+                    self.assertEqual(result["source_metadata"]["sha256"], hashlib.sha256(data).hexdigest())
+                    self.assertEqual(result["source_metadata"]["records_imported"], 0)
+                    self.assertEqual(result["source_metadata"]["excluded_events"], 1)
+                    self.assertNotIn("PRIVATE_TEXT", json.dumps(result))
+
     def test_bad_lines_and_file_failure_diagnostics_are_redacted(self):
         file = self.root / "bad.jsonl"
         file.write_bytes(b'{"HISTORICAL_SECRET_SENTINEL":\n' + json.dumps(request(counters())).encode() + b'\n{"secret":')
