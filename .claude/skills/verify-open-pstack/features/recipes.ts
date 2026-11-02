@@ -567,8 +567,18 @@ function setupGuidance(harness: Harness): Case[] {
           if (error.code === 'ENOENT') return undefined;
           throw error;
         });
+        const originalIntegration = integration;
+        if (harness === 'codex' && integration !== undefined) {
+          const begins = integration.split(MIRROR_BEGIN).length - 1, ends = integration.split(MIRROR_END).length - 1;
+          if (begins || ends) {
+            const from = integration.indexOf(MIRROR_BEGIN) + MIRROR_BEGIN.length, to = integration.indexOf(MIRROR_END);
+            if (begins !== 1 || ends !== 1 || to < from) throw new Error('setup-guidance-invalid-codex-mirror');
+            integration = `${integration.slice(0, from)}\n${prepared}${integration.slice(to)}`;
+          }
+        }
         await writeFile(join(f.configHome, 'pstack-models.md'), prepared);
         await writeFile(profilePath(f), profile);
+        if (integration !== undefined && integration !== originalIntegration) await writeFile(integrationPath(f), integration);
       },
       prompt: f => `${invoke(harness, 'setup-pstack', `Use the complete explicit local profile at ${profilePath(f)}. This is a named guidance addition, so show the complete step 7 preview even though the existing roles and bounded setting are valid. Keep all role assignments and high efforts from that profile, preserve existing headings and guidance exactly, include its added guidance once, and retain codex writer sandbox: bounded. Ask nothing else. I authorize the normal real native model probes for both assigned families. All ordinary model roles use ${reading}; only arena cross-judge pool uses ${judge}. Keep inherit-parent and auto unchanged. Resolve both descriptors through the installed catalog and use only this parent's native route. No external provider family is assigned or authorized. Do not call external CLIs, model APIs, proxies, or any alternate route. Use ${judge} as the independent cross-judge from the explicit pool; a different provider is preferred when possible, not required. Do not substitute a model, shim a tool, or skip probes. ${apply
         ? 'I preconfirm both configuration writes after the complete preview. Continue through normal setup writes, readback and the real step 9 smoke with both assigned native families and a separate independent judge. Drain every probe and smoke handle before replying. Decline both optional verification-skill offers.'
