@@ -11,7 +11,7 @@ def trial(model="careful", attempt=1, task="task-a", **changes):
     result = {"trial_id": f"{model}:{task}:{attempt}", "task_id": task, "category": "correctness",
               "model": model, "provider": "example", "effort": "fixed", "config_id": "tools-cache-transport-v1",
               "source_kind": "controlled", "attempt": attempt, "status": "success", "correct": True,
-              "repeat_id": f"repeat-{attempt}",
+              "repeat_id": f"repeat-{attempt}", "model_verified": True,
               "critical_failure": False, "elapsed_seconds": 10, "api_equivalent_usd": "0.002", "token_total": 100}
     result.update(changes)
     return result
@@ -25,6 +25,41 @@ def repeats(model="careful", task="task-a", **changes):
 
 
 class EvaluationTests(unittest.TestCase):
+    def test_ranking_requires_explicit_model_verification_on_every_trial(self):
+        for verification in ({}, {"model_verified": None}, {"model_verified": False},
+                             {"model_verified": 0}, {"model_verified": 1},
+                             {"model_verified": "true"}, {"model_verified": "false"},
+                             {"model_verified": []}, {"model_verified": {}}):
+            with self.subTest(verification=verification):
+                rows = repeats(model_verified=True) + repeats("other", model_verified=True)
+                del rows[0]["model_verified"]
+                rows[0].update(verification)
+                result = summarize_trials(rows)
+                self.assertEqual(result["included_trials"], 10)
+                self.assertFalse(result["errors"])
+                self.assertEqual(result["ranking"]["verdict"], "INCONCLUSIVE")
+                self.assertEqual(result["ranking"]["winners"], [])
+                group = next(item for item in result["groups"] if item["model"] == "careful")
+                self.assertFalse(group["ranking_eligible"])
+                self.assertIn("served model identity is unverified", group["inconclusive_reasons"])
+                other = next(item for item in result["groups"] if item["model"] == "other")
+                self.assertTrue(other["ranking_eligible"])
+
+    def test_unverified_failed_attempt_blocks_ranking_after_verified_retry(self):
+        rows = repeats(model_verified=True) + repeats("other", model_verified=True)
+        rows[0]["attempt"] = 2
+        failed = dict(rows[0], trial_id="failed-first-attempt", attempt=1,
+                      status="failed", correct=False, model_verified=None)
+        result = summarize_trials(rows + [failed])
+        self.assertEqual(result["included_trials"], 11)
+        self.assertFalse(result["errors"])
+        self.assertEqual(result["ranking"]["verdict"], "INCONCLUSIVE")
+        self.assertEqual(result["ranking"]["winners"], [])
+        group = next(item for item in result["groups"] if item["model"] == "careful")
+        self.assertEqual(group["repeat_verified_passes"], 5)
+        self.assertEqual(group["timing_seconds"]["total"], 60)
+        self.assertIn("served model identity is unverified", group["inconclusive_reasons"])
+
     def test_unverified_served_model_never_qualifies_for_ranking(self):
         result = summarize_trials(repeats() + repeats('configured-only', model_verified=False))
         self.assertEqual(result['ranking']['verdict'], 'INCONCLUSIVE')

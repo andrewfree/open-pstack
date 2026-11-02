@@ -121,6 +121,12 @@ Source must be controlled; effort and configuration must match. Unknown effort,
 any unknown correctness, missing latency, corrupt trials, and contradictory IDs
 block ranking. No observations are reclassified as controlled by the scorer.
 
+Every attempt, including a failed attempt before a successful retry, must have
+`model_verified: true` to qualify for ranking. Missing, null, false, and nonboolean
+values preserve the observation but make its group ineligible with the reason
+`served model identity is unverified`. This field records the caller's assertion;
+the core does not independently attest the served model identity.
+
 Qualified comparison orders critical-failure rate first, then eventual-correct
 fraction, then total time to completion across all attempts. The latency score is
 the mean of task medians, giving every task equal weight. API-price reference cost per repeat remains descriptive. It never breaks a
