@@ -2,7 +2,7 @@
 
 Changes to either `docs/model-routing/correctness-first-<parent>.md` profile are catalog changes, even when no plugin file changes. Explanatory documentation keeps its existing classification.
 
-The trusted preparer records whether each profile exists in the pinned commit's Git tree. A catalog run omits only the profile case for a harness whose profile was never shipped in that candidate. It does not infer this from the mutable candidate filesystem. A declared profile that is missing or changed still fails source verification before exercise. The pre-install session count is a conservative maximum that includes optional profile cases; the same limit applies to that maximum.
+The trusted preparer checks both profile paths in the pinned base and candidate Git trees before installing either harness. A profile present in the base must remain at its expected path in the candidate, even when only the other harness is selected. A catalog run omits a profile case only when that path is absent from both trees. A newly added profile still runs its case. Retiring a profile requires an explicit change to this verifier contract and its consumers; deleting or renaming the file alone fails preparation. No presence decision comes from the mutable candidate filesystem. A declared profile that is missing or changed still fails source verification before exercise. The pre-install session count is a conservative maximum that includes optional profile cases; the same limit applies to that maximum.
 
 ## Sub-features
 

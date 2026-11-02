@@ -134,7 +134,12 @@ describe('isolated harness boundaries', () => {
     await expect(verifyProjectDoctor([JSON.stringify({ ...JSON.parse(text), result: 'blocked' })], workspace)).rejects.toThrow('passing child doctor');
   });
 
-  test.each([{ failInstall: false, profile: false }, { failInstall: false, profile: true }, { failInstall: true, profile: false }])('prepare pins candidate declarations and links existing Codex login (%j)', async ({ failInstall, profile }) => {
+  test.each([
+    { failInstall: false, profile: false, baseProfile: false },
+    { failInstall: false, profile: true, baseProfile: true },
+    { failInstall: false, profile: true, baseProfile: false },
+    { failInstall: true, profile: false, baseProfile: false },
+  ])('prepare pins candidate declarations and links existing Codex login (%j)', async ({ failInstall, profile, baseProfile }) => {
     const root = await fixture(), repository = join(root, 'repository'), operatorHome = join(root, 'operator-home'), calls: string[][] = [];
     const auth = await loginFixture(root);
     for (const manifest of ['.claude-plugin', '.codex-plugin']) {
@@ -145,13 +150,20 @@ describe('isolated harness boundaries', () => {
     await writeFile(join(repository, '.claude/skills/verify-open-pstack/SKILL.md'), 'pinned project skill');
     await mkdir(join(repository, '.agents/skills'), { recursive: true });
     await symlink('../../.claude/skills/verify-open-pstack', join(repository, '.agents/skills/verify-open-pstack'));
-    if (profile) {
+    if (baseProfile) {
       await mkdir(join(repository, 'docs/model-routing'), { recursive: true });
       await writeFile(join(repository, 'docs/model-routing/correctness-first-codex.md'), 'pinned Codex profile');
     }
     await command(['git', 'init', repository], { env: gitEnv });
     await command(['git', 'add', '.'], { cwd: repository, env: gitEnv });
     await command(['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com', '-c', 'commit.gpgsign=false', 'commit', '-m', 'fixture'], { cwd: repository, env: gitEnv });
+    const base = (await command(['git', 'rev-parse', 'HEAD'], { cwd: repository, env: gitEnv })).trim();
+    if (profile && !baseProfile) {
+      await mkdir(join(repository, 'docs/model-routing'), { recursive: true });
+      await writeFile(join(repository, 'docs/model-routing/correctness-first-codex.md'), 'pinned Codex profile');
+      await command(['git', 'add', '.'], { cwd: repository, env: gitEnv });
+      await command(['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com', '-c', 'commit.gpgsign=false', 'commit', '-m', 'add profile'], { cwd: repository, env: gitEnv });
+    }
     const sha = (await command(['git', 'rev-parse', 'HEAD'], { cwd: repository, env: gitEnv })).trim(), actualGit: Command = command;
     await mkdir(operatorHome, { mode: 0o700 });
     const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
@@ -209,7 +221,7 @@ describe('isolated harness boundaries', () => {
       Object.defineProperty(process, 'platform', { ...platform, value: 'darwin' });
       process.env.HOME = operatorHome; process.env.USER = 'operator-user'; process.env.LOGNAME = 'operator-login';
       process.env.CLAUDE_CONFIG_DIR = join(operatorHome, 'claude-config');
-      const receipt = newReceipt(REPO, 111, sha, sha, true, root), preparation = driver.prepare(receipt);
+      const receipt = newReceipt(REPO, 111, sha, base, true, root), preparation = driver.prepare(receipt);
       if (failInstall) await expect(preparation).rejects.toThrow('fixture installation failed');
       else {
         const installs = await preparation; receipt.installations = installs;
@@ -256,6 +268,53 @@ describe('isolated harness boundaries', () => {
       await expect(stat(join(home, '.codex'))).rejects.toThrow('ENOENT');
       await expect(stat(join(home, '.claude'))).rejects.toThrow('ENOENT');
       if (!failInstall) expect(await readFile(join(root, 'sessions', harness, 'project-skill/doctor.jsonl'), 'utf8')).toBe('retained raw native evidence');
+    }
+  });
+  test.each([
+    ['claude', 'delete'], ['claude', 'rename'], ['codex', 'delete'], ['codex', 'rename'],
+  ] as const)('prepare rejects %s profile %s before installing either harness', async (harness, change) => {
+    const root = await fixture(), repository = join(root, 'repository');
+    await loginFixture(root);
+    process.env.HOME = join(root, 'operator-home');
+    process.env.CLAUDE_CONFIG_DIR = join(root, 'daily-claude');
+    for (const dir of ['plugins/pstack', '.claude/skills/verify-open-pstack', '.agents/skills', 'docs/model-routing']) {
+      await mkdir(join(repository, dir), { recursive: true });
+    }
+    await writeFile(join(repository, 'plugins/pstack/SKILL.md'), 'candidate plugin');
+    for (const manifest of ['.claude-plugin', '.codex-plugin']) {
+      const dir = join(repository, 'plugins/pstack', manifest); await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, 'plugin.json'), JSON.stringify({ version: 'test' }));
+    }
+    await writeFile(join(repository, '.claude/skills/verify-open-pstack/SKILL.md'), 'candidate verifier');
+    await symlink('../../.claude/skills/verify-open-pstack', join(repository, '.agents/skills/verify-open-pstack'));
+    const profile = `docs/model-routing/correctness-first-${harness}.md`;
+    await writeFile(join(repository, profile), 'shipped profile');
+    await command(['git', 'init', repository], { env: gitEnv });
+    await command(['git', 'add', '.'], { cwd: repository, env: gitEnv });
+    const commit = ['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com', '-c', 'commit.gpgsign=false', 'commit', '-m'];
+    await command([...commit, 'shipped profile'], { cwd: repository, env: gitEnv });
+    const base = (await command(['git', 'rev-parse', 'HEAD'], { cwd: repository, env: gitEnv })).trim();
+    await command(change === 'delete' ? ['git', 'rm', profile] : ['git', 'mv', profile, `${profile}.renamed`], { cwd: repository, env: gitEnv });
+    await command([...commit, change], { cwd: repository, env: gitEnv });
+    const sha = (await command(['git', 'rev-parse', 'HEAD'], { cwd: repository, env: gitEnv })).trim();
+    const native: string[][] = [], run: Command = async (args, options) => {
+      if (args[0] !== 'git') { native.push(args); throw new Error('native command reached'); }
+      const local = [...args];
+      if (args[1] === 'clone') local[local.length - 2] = repository;
+      return command(local, options);
+    };
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    const driver = new MacDriver(run, undefined, [], appStub('').app);
+    try {
+      Object.defineProperty(process, 'platform', { ...platform, value: 'darwin' });
+      const receipt = newReceipt(REPO, 111, sha, base, false, root);
+      receipt.runFeatures = [`${harness === 'claude' ? 'codex' : 'claude'}:catalog`];
+      await expect(driver.prepare(receipt)).rejects.toThrow(`Pinned candidate removes required correctness profile: ${profile}`);
+      expect(native).toEqual([]);
+      await expect(stat(join(root, 'state'))).rejects.toThrow('ENOENT');
+    } finally {
+      await driver.cleanup();
+      Object.defineProperty(process, 'platform', platform);
     }
   });
   test.each([['claude', false], ['claude', true], ['codex', false], ['codex', true]] as const)('%s setup interruption restores exact bytes or forbids publication (restore failure=%s)', async (harness, failRestore) => {
