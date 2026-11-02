@@ -245,6 +245,19 @@ describe('exact-head evidence publication', () => {
     expect(f.comments[0]).toContain(`- Planned sessions: 2 (limit ${SESSION_LIMIT})`); expect(f.comments[0]).not.toContain('Wide run reason');
   });
 
+  test('guidance selection counts only its preview/apply cases plus required verifier self-tests', async () => {
+    const f = fixture(true, true);
+    f.options.github.files = async () => [{ filename: '.claude/skills/verify-open-pstack/features/recipes.ts' }];
+    f.options.publisherRevision = SHA;
+    f.options.features = ['claude:setup-guidance', 'codex:setup-guidance'];
+    const receipt = await verify(f.options);
+    expect(receipt.sessions).toBe(6);
+    expect(receipt.runFeatures).toEqual(['claude:setup-guidance', 'codex:setup-guidance', 'claude:project-skill', 'codex:project-skill']);
+    expect(receipt.observations.map(record => `${record.harness}:${record.feature}`).sort()).toEqual(receipt.runFeatures.toSorted());
+    expect(f.comments[0]).toContain('setup-guidance');
+    expect(f.comments[0]).not.toContain('setup:');
+  });
+
   test('more than the session limit is refused before preflight unless --wide gives a reason', async () => {
     const limited = (...extra: string[]) => {
       const f = fixture(true); f.options.github.files = async () => [{ filename: 'plugins/pstack/skills/poteto-mode/references/codex-tools.md' }];

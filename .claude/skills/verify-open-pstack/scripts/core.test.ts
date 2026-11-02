@@ -74,19 +74,19 @@ describe('registry and ownership', () => {
       'plugins/pstack/skills/poteto-mode/scripts/runner/registry/models.ts', 'plugins/pstack/skills/poteto-mode/scripts/runner/providers/grok.ts']) {
       const s = classify([{ filename }], registry);
       expect(s.skills).toEqual([]);
-      expect(s.features).toEqual(both('catalog', 'runner', 'setup'));
+      expect(s.features).toEqual(both('catalog', 'runner', 'setup', 'setup-guidance'));
     }
   });
   test('a renamed or deleted catalog path keeps catalog ownership', () => {
     for (const previous_filename of [CATALOG, 'plugins/pstack/agents/pstack-opus-max.md']) {
-      expect(classify([{ filename: 'docs/moved.md', previous_filename }], registry).features).toEqual(both('catalog', 'runner', 'setup'));
+      expect(classify([{ filename: 'docs/moved.md', previous_filename }], registry).features).toEqual(both('catalog', 'runner', 'setup', 'setup-guidance'));
     }
   });
   test('profile-only changes reach live catalog checks while explanatory docs stay non-runtime', () => {
     for (const filename of ['docs/model-routing/correctness-first-claude.md', 'docs/model-routing/correctness-first-codex.md']) {
       const selection = classify([{ filename }], registry);
       expect(selection.noRuntime).toBe(false);
-      expect(selection.features).toEqual(both('catalog', 'runner', 'setup'));
+      expect(selection.features).toEqual(both('catalog', 'runner', 'setup', 'setup-guidance'));
       expect(classify([{ filename: 'docs/retired.md', previous_filename: filename }], registry).features).toEqual(selection.features);
     }
     expect(classify([{ filename: 'docs/model-routing/README.md' }], registry).noRuntime).toBe(true);
@@ -96,7 +96,17 @@ describe('registry and ownership', () => {
     expect(shared.skills).toEqual([...registry.skills].sort());
     for (const feature of both('catalog', 'setup', 'runner', 'shipped-tools')) expect(shared.features).toContain(feature);
     const skill = classify([{ filename: 'plugins/pstack/agents/pstack-opus-max.md' }, { filename: 'plugins/pstack/skills/arena/SKILL.md' }], registry);
-    expect(skill.features).toEqual(both('catalog', 'runner', 'setup', 'skill-invocation:arena'));
+    expect(skill.features).toEqual(both('catalog', 'runner', 'setup', 'setup-guidance', 'skill-invocation:arena'));
+  });
+  test('setup guidance is selectable only where setup behavior is reachable', () => {
+    const selection = classify([{ filename: 'plugins/pstack/skills/setup-pstack/SKILL.md' }], registry);
+    expect(selection.features).toEqual(both('setup', 'setup-guidance', 'skill-invocation:setup-pstack'));
+    const r = receipt();
+    r.selection = selection;
+    r.runFeatures = ['codex:setup-guidance'];
+    expect(requiredFeatures(r, 'codex')).toEqual(['setup-guidance']);
+    expect(requiredHarnesses(r)).toEqual(['codex']);
+    expect(classify([{ filename: 'plugins/pstack/skills/architect/SKILL.md' }], registry).features).not.toContain('codex:setup-guidance');
   });
   test('an unlisted generated agent fails closed', () => {
     expect(() => classify([{ filename: 'plugins/pstack/agents/pstack-retired-max.md' }], registry)).toThrow('Unmapped path');
@@ -193,7 +203,7 @@ describe('registry and ownership', () => {
   });
   test('the shared recipe implementation reaches every implemented recipe and preserves project proof', () => {
     const path = '.claude/skills/verify-open-pstack/features/recipes.ts';
-    const expected = [...both('catalog', 'setup', 'runner', 'shipped-tools', 'hook:startup', 'project-skill',
+    const expected = [...both('catalog', 'setup', 'setup-guidance', 'runner', 'shipped-tools', 'hook:startup', 'project-skill',
       ...registry.skills.map(skill => `skill-invocation:${skill}`)), 'claude:agent-preload:poteto-agent'].sort();
     for (const file of [{ filename: path }, { filename: 'docs/moved.md', previous_filename: path }]) {
       const s = classify([file], registry);

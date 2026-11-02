@@ -317,7 +317,7 @@ describe('isolated harness boundaries', () => {
       Object.defineProperty(process, 'platform', platform);
     }
   });
-  test.each([['claude', false], ['claude', true], ['codex', false], ['codex', true]] as const)('%s setup interruption restores exact bytes or forbids publication (restore failure=%s)', async (harness, failRestore) => {
+  test.each(['setup', 'setup-guidance'].flatMap(feature => (['claude', 'codex'] as const).flatMap(harness => [false, true].map(failRestore => [feature, harness, failRestore] as const))))('%s %s interruption restores exact bytes or forbids publication (restore failure=%s)', async (feature, harness, failRestore) => {
     const root = await fixture(), home = join(root, 'state', harness), workspace = join(home, 'workspace');
     process.env.HOME = root;
     const config = join(root, harness === 'claude' ? 'daily-claude' : '.codex'); process.env.CLAUDE_CONFIG_DIR = join(root, 'daily-claude');
@@ -325,12 +325,15 @@ describe('isolated harness boundaries', () => {
     for (const path of ['plugins/pstack', '.claude/skills/verify-open-pstack', '.agents/skills']) await mkdir(join(workspace, path), { recursive: true });
     await symlink('../../.claude/skills/verify-open-pstack', join(workspace, '.agents/skills/verify-open-pstack'));
     await writeFile(join(workspace, 'plugins/pstack/SKILL.md'), 'candidate setup');
+    await mkdir(join(workspace, 'plugins/pstack/skills/poteto-mode/references'), { recursive: true });
+    await cp(join(import.meta.dir, '../../../../plugins/pstack/skills/poteto-mode/references/model-catalog.md'), join(workspace, 'plugins/pstack/skills/poteto-mode/references/model-catalog.md'));
+    if (harness === 'codex') await mkdir(join(home, '.codex'), { recursive: true });
     await mkdir(config);
     const original = Buffer.from([0, 13, 10, 255, 97]);
     await writeFile(join(config, instructions), original);
     if (harness === 'codex') await writeFile(join(config, 'pstack-models.md'), original);
     const receipt = newReceipt(REPO, 111, 'a'.repeat(40), 'b'.repeat(40), false, root);
-    receipt.runFeatures = [`${harness}:setup`];
+    receipt.runFeatures = [`${harness}:${feature}`];
     receipt.installations = [{ harness, home, location: join(workspace, 'plugins/pstack'), sha: receipt.sha, cliVersion: 'test', pluginVersion: 'test', treeHash: await treeHash(join(workspace, 'plugins/pstack')), sourceHash: await sourceDigest(workspace) }];
     const interrupt = async (): Promise<never> => {
       await writeFile(join(config, instructions), 'changed by setup');
@@ -339,7 +342,12 @@ describe('isolated harness boundaries', () => {
       if (failRestore) { await rm(join(config, instructions)); await mkdir(join(config, instructions)); }
       throw new Error('interrupted setup');
     };
-    const driver = new MacDriver(command, async args => { expect(args[0]).toBe('codex'); return interrupt(); }, [], appStub('', undefined, interrupt).app);
+    const driver = new MacDriver(command, async args => {
+      expect(args[0]).toBe('codex');
+      expect(args.slice(args.indexOf('--add-dir'), args.indexOf('--add-dir') + 2)).toEqual(['--add-dir', join(home, '.codex')]);
+      if (feature === 'setup-guidance') expect(args.slice(args.indexOf('--sandbox'), args.indexOf('--sandbox') + 2)).toEqual(['--sandbox', 'workspace-write']);
+      return interrupt();
+    }, [], appStub('', undefined, interrupt).app);
     await expect(driver.exercise(receipt)).rejects.toThrow(failRestore ? 'Setup restoration requires a regular file' : 'interrupted setup');
     if (failRestore) {
       await expect(driver.cleanup()).rejects.toThrow('Setup restoration requires a regular file');
@@ -436,6 +444,26 @@ function appStub(stream: string, effect?: (dir: string) => Promise<void>, reache
 }
 
 describe('headless recipes', () => {
+  test('Claude preview evidence uses only top-level assistant text', () => {
+    const message = (type: string, content: unknown[], parent_tool_use_id?: string) => ({ type, parent_tool_use_id, message: { content } });
+    const stream = [
+      message('user', [{ type: 'text', text: 'user supplied preview' }]),
+      message('assistant', [{ type: 'text', text: 'child preview' }], 'child'),
+      message('assistant', [{ type: 'text', text: 'actual preview' }, { type: 'thinking', text: 'hidden draft' }]),
+      message('user', [{ type: 'tool_result', content: 'tool preview' }]),
+    ].map(event => JSON.stringify(event)).join('\n');
+    expect(parseSession('claude', stream, 0, 0).assistantText).toEqual(['actual preview']);
+  });
+  test('Codex preview evidence excludes unfinished messages, commands and reasoning', () => {
+    const stream = [
+      { type: 'item.started', item: { type: 'agent_message', text: 'unfinished preview' } },
+      { type: 'item.completed', item: { type: 'reasoning', text: 'hidden draft' } },
+      { type: 'item.completed', item: { type: 'command_execution', command: 'cat preview.md', aggregated_output: 'tool preview', exit_code: 0 } },
+      { type: 'item.completed', item: { type: 'agent_message', text: 'actual preview' } },
+    ].map(event => JSON.stringify(event)).join('\n');
+    const rollout = JSON.stringify({ type: 'response_item', payload: { role: 'user', content: [{ type: 'text', text: 'user supplied preview' }] } });
+    expect(parseSession('codex', stream, 0, 0, rollout).assistantText).toEqual(['actual preview']);
+  });
   test('Codex completed commands keep their captured output and failure state', () => {
     const stream = [
       { type: 'item.started', item: { id: 'item_0', type: 'command_execution', command: 'pending', aggregated_output: '', exit_code: null } },
@@ -459,7 +487,7 @@ describe('headless recipes', () => {
     }
   });
 
-  test('setup runs after every other feature so later checks see the default model sheet', async () => {
+  test.each(['setup', 'setup-guidance'])('%s runs after every other feature so later checks see the default model sheet', async feature => {
     const { root, installation } = await candidate('codex');
     const prompts: string[] = [];
     const record: Session = async (_args, options) => {
@@ -467,7 +495,7 @@ describe('headless recipes', () => {
       await writeFile(options.stdout, claudeStream({ command: 'pstack:architect' })); await writeFile(options.stderr, '');
       return 1;
     };
-    await expect(new MacDriver(command, record).exercise(selected(root, installation, ['setup', 'skill-invocation:architect']))).rejects.toThrow();
+    await expect(new MacDriver(command, record).exercise(selected(root, installation, [feature, 'skill-invocation:architect']))).rejects.toThrow();
     expect(prompts[0]).toContain('$pstack:architect');
   });
 

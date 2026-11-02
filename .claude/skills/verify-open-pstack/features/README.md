@@ -11,12 +11,15 @@ The ownership table below says which features a changed path reaches. `SKILL.md`
 | `catalog` | The generated model catalog and native agents, and the registry sources: `catalog`, `setup`, and `runner`, and no skill check |
 | `assets` | Installed UI/resource surface for each actual consumer found in the pinned plugin manifests |
 | `setup` | Installed setup/model configuration with byte-exact daily Claude file restoration before publication |
+| `setup-guidance` | Representative setup preview and guidance preservation using parent-native model families, with the same setup restoration checks |
 | `runner` | Installed parent invoking real configured provider lanes |
 | `tools` | Installed parent invoking the changed shipped CLI |
 | `project` | Native discovery/invocation of this verifier in both harnesses |
 | `nonRuntime` | Explicit ordinary repository documentation, policy, non-shipped assets, and unit-test paths; no plugin harness launch |
 
 A change to `features/recipes.ts` can name any feature that has a recipe.
+
+Every path that reaches `setup` also reaches `setup-guidance`. Select the latter for changes confined to rendering and retaining guidance: it exercises a complete preview without committing, then applies the profile in a separate native session. It does not replace qualification of changed provider probes, unavailable-provider handling, or other setup branches. Selecting `setup` still runs all eight setup cases.
 
 A change to `plugins/pstack/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, or `plugins/pstack/.codex-plugin/plugin.json` is version-only when the merge base and the head hold the same regular file with the same mode, both sides parse as JSON objects, at least one version string changed (top-level `version`, or `plugins[].version` in the marketplace), and nothing else differs. A version-only change reaches only `hook:startup`: the two Claude files in Claude, the Codex manifest in Codex. `.agents/plugins/marketplace.json` has no version and always takes the shared expansion.
 
