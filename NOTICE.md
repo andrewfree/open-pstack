@@ -41,6 +41,7 @@ Summary of structural changes:
 - `plugins/pstack/agents/comment-sicko.md` is upstream's `Comment Sicko` agent, renamed to `comment-sicko` so the name works as a Claude Code `subagent_type`. The body is verbatim.
 - `plugins/pstack/agents/poteto-agent.md` keeps the upstream prompt and adds Claude Code `skills` frontmatter so the isolated subagent preloads `pstack:poteto-mode`.
 - Claude-native lanes are port-authored agent definitions. Fable, Opus and Sonnet select their rolling family alias, and the Opus 5.5 and Haiku 5.5 pins select their exact model, each with the requested effort, for every selectable Claude-native pair in the model catalog. `registry/render.ts` generates them from the runner registry.
+- The port-authored `plugins/pstack/skills/poteto-mode/references/provider-dispatch.md` documents parent-owned native, T3 app and external routing. Its conditional Kimi CLIProxy route honors an explicit operator or standing selection while keeping the Kimi CLI default and existing Claude route guards.
 - A Codex build shares the same `skills/` tree. It adds `plugins/pstack/.codex-plugin/plugin.json`, a root `.agents/plugins/marketplace.json`, and `plugins/pstack/skills/poteto-mode/references/codex-tools.md` (the Claude-to-Codex tool, model, and built-in map), plus a one-line Platform note in the skills that name a Claude primitive. The skill content itself is unchanged. See [CHANGES.md](CHANGES.md#codex-port).
 
 ## Modifications
