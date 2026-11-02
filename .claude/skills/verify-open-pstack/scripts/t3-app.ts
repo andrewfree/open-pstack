@@ -389,7 +389,7 @@ export class T3App {
     const options = call.arguments?.target?.options;
     const effort = Array.isArray(options) ? options.find(o => o?.id === 'effort')?.value : options?.effort;
     if (typeof effort !== 'string') throw new Error('Claude child request lacks effort');
-    if (!routes.some(route => route.providerInstanceId === this.config.verifyClaudeProviderId && route.model === child.model && route.efforts.includes(effort))) throw new Error('Claude child model/effort was absent from the fresh app catalog');
+    if (!routes.some(route => route.providerInstanceId === this.config.verifyClaudeProviderId && route.model === child.model && route.efforts.includes(effort))) throw new Error('Claude child model/effort was absent from the coordinating-parent catalog');
     validateClaudeLaunch(childLog.native, childLog.launches, child.model, this.launcher('claude'), effort);
     validateClaudePrompt(childLog.prompts, call.arguments?.task);
     await parseClaudeEvidence(childLog.native, { pluginRoot: c.pluginRoot, workspace: c.workspace, started: c.started, model: child.model, writePolicy: c.writePolicy });
