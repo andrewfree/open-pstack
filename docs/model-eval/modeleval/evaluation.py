@@ -136,7 +136,7 @@ def summarize_trials(trials, min_repeats=5):
             reasons.append("effort setting is unknown")
         if group["source_kind"] != "controlled":
             reasons.append("source is not controlled")
-        if any(row.get("model_verified") is False for row in rows):
+        if any(row.get("model_verified") is not True for row in rows):
             reasons.append("served model identity is unverified")
         if known_correct != len(rows):
             reasons.append("correctness outcomes are missing")

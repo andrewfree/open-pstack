@@ -24,6 +24,11 @@ accounting.validate_record(record)->list[str] errors. accounting.estimate_cost(r
 
 evaluation.summarize_trials(trials,min_repeats=5)->dict. Trial dict: trial_id, repeat_id, task_id, category, model, provider, effort, config_id (cache/tools/transport fixed), source_kind controlled|synthetic|observational, attempt, status success|failed|timeout, correct true|false|null, critical_failure bool, elapsed_seconds number|null, api_equivalent_usd decimal-string|null, token_total int|null. Group by task/category/provider/model/effort/config_id/source_kind. Report count, correctness unknown denominator, verified pass fraction, critical failures, median and range timing, cost and tokens including failures. No winner if fewer than min_repeats, any correctness unknown, heterogeneous/noncontrolled inputs, missing latency, or inconsistent task coverage. Primary objective correctness, then latency among equally correct/qualified candidates; API-price reference descriptive only, never a subscription winner tie-breaker. Preserve all failed attempts. A pilot is INCONCLUSIVE for ranking.
 
+Trial qualification also requires `model_verified` to be exactly boolean true on
+every attempt. Missing, null, false, or nonboolean values leave observations in
+the summary but block ranking with `served model identity is unverified`. This
+caller-supplied field is not independent attestation of model identity.
+
 ## Provider research output
 JSON {as_of,providers:[{provider,models:[{model,public_model_id,availability_note,prices:[{currency,unit,tier,input,cache_read,cache_write_5m,cache_write_1h,output,reasoning_rule,source_url,verified_at}],cache_rules:{...},subscription_rules:{...},unknowns:[...]}],sources:[{url,title,verified_at,claims:[...]}]}]}. Rates decimal strings or null, never invented. Use official live documentation, exact model IDs, distinguish CLI/subscription from API. Model set OpenAI Astra/Sol/Luna; Anthropic Opus/Fable/Haiku; Kimi K3.1 Pro + Highspeed; Grok 4.7; Cursor Auto subscription. Explicit missing public prices is a valid finding. No model calls.
 
