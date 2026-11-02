@@ -87,7 +87,7 @@ poteto-mode's Subagents section sets the Claude-specific default `subagent_type:
 
 ## Models and providers
 
-Do not replace every configured entry with a Codex model. `/setup-pstack` writes portable descriptors, such as the [role defaults](model-catalog.md#role-defaults). In a Codex parent, only `codex:*` is native. Route Claude descriptors through the parent-owned T3 Claude Agent route in `provider-dispatch.md`, or record a named dropout when it is unavailable. Every other provider uses the external launcher exactly as `provider-dispatch.md` specifies. Never launch headless Claude from a Codex parent. The default panel runs one model from each of three providers and contains no older GPT or Claude substitute.
+Do not replace every configured entry with a Codex model. `/setup-pstack` writes portable descriptors, such as the [role defaults](model-catalog.md#role-defaults). In a Codex parent, only `codex:*` is native. Route Claude descriptors through the parent-owned T3 Claude Agent route in `provider-dispatch.md`, or record a named dropout when it is unavailable. Kimi uses the external launcher by default; an explicitly selected existing T3 CLIProxy route follows the conditional Kimi rule in `provider-dispatch.md`. Every other provider uses the external launcher exactly as that reference specifies. Never launch headless Claude from a Codex parent. The default panel runs one model from each of three providers and contains no older GPT or Claude substitute.
 
 ## Claude built-in skills pstack references
 

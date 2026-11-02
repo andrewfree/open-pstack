@@ -5,6 +5,8 @@ This port applies the Cursor → Claude Code substitutions in skill bodies. Earl
 
 ## Unreleased
 
+- Parent dispatch honors an existing T3 Kimi CLIProxy route only when the operator or applicable standing instructions explicitly select it. The guide keeps Kimi CLI as the default, requires live instance/model/effort discovery and retained completion records, and refuses unavailable or ambiguous targets without silent substitution. The conditional route is read-only; the runner, registry, generated catalog and Claude route guards are unchanged.
+
 - The Codex Claude-route refusal fixture runs a shell check that succeeds only when the installed runner exits 78. This lets the existing successful-command parser observe the expected refusal without accepting arbitrary failed commands. Regression tests use real shell results through that parser and reject unexpected runner exit codes; receipt and guard assertions are unchanged.
 
 - The T3 dispatch guide gives an explicit lane-record JSON shape and places the concrete target ID under `model`. The verifier still rejects renamed or mismatched fields and now names those fields in its private failure reason without printing their values.
