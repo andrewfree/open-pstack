@@ -10,7 +10,7 @@ import { assertNativeConsumers } from './native-consumer.ts';
 import { sourceDigest, sourceHash } from './provenance.ts';
 import type { AppTransport } from './t3-app.ts';
 import { publishable } from './verify.ts';
-import { type Driver, type Harness, type Installation, type Observation, type Receipt, type SessionRecord } from './types.ts';
+import { HARNESSES, type Driver, type Harness, type Installation, type Observation, type Receipt, type SessionRecord } from './types.ts';
 
 const setupFeature = (feature: string): boolean => feature === 'setup' || feature === 'skill-invocation:setup-pstack';
 export function launch(options: { cwd: string; addDirs: string[]; codexSandbox?: 'danger-full-access' }): string[] {
@@ -122,13 +122,19 @@ export class MacDriver implements Driver {
     const trustedRun: Command = (args, options = {}) => this.run(args, { ...options, env: isolatedEnv(referenceHome) });
     await trustedRun(['git', 'clone', '--no-checkout', '--', `https://github.com/${receipt.repo}.git`, reference]);
     await trustedRun(['git', 'fetch', 'origin', receipt.sha], { cwd: reference });
+    if (receipt.base !== receipt.sha) await trustedRun(['git', 'fetch', 'origin', receipt.base], { cwd: reference });
     await trustedRun(['git', '-c', 'core.hooksPath=/dev/null', 'checkout', '--detach', receipt.sha], { cwd: reference });
     const pinnedSource = await sourceHash(reference, receipt.sha, trustedRun);
+    const profiles = HARNESSES.map(harness => `docs/model-routing/correctness-first-${harness}.md`);
+    const headProfiles = new Set((await trustedRun(['git', 'ls-tree', '--name-only', receipt.sha, '--', ...profiles], { cwd: reference })).trim().split('\n').filter(Boolean));
+    const baseProfiles = (await trustedRun(['git', 'ls-tree', '--name-only', receipt.base, '--', ...profiles], { cwd: reference })).trim().split('\n').filter(Boolean);
+    for (const profile of baseProfiles) {
+      if (!headProfiles.has(profile)) throw new Error(`Pinned candidate removes required correctness profile: ${profile}`);
+    }
     if (process.platform !== 'darwin') throw new Error('Live proof requires the operator Mac');
     const installs: Installation[] = [];
     for (const harness of harnesses) {
-      const profile = `docs/model-routing/correctness-first-${harness}.md`;
-      const correctnessProfile = (await trustedRun(['git', 'ls-tree', '--name-only', receipt.sha, '--', profile], { cwd: reference })).trim() === profile;
+      const correctnessProfile = headProfiles.has(`docs/model-routing/correctness-first-${harness}.md`);
       const home = join(root, 'state', harness), workspace = join(home, 'workspace');
       await mkdir(join(home, 'tmp'), { recursive: true, mode: 0o700 });
       for (const dir of ['.codex', '.config/gh', '.cache']) await mkdir(join(home, dir), { recursive: true, mode: 0o700 });
