@@ -501,7 +501,9 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
             filtered = {}
             for field, value in raw.items():
                 if field in _DETAIL_COUNTER_KEYS:
-                    filtered[field] = {k: v for k, v in _dict(value).items() if k in _DETAIL_COUNTER_KEYS[field] and v is not None}
+                    detail = {k: v for k, v in _dict(value).items() if k in _DETAIL_COUNTER_KEYS[field] and v is not None}
+                    if detail:
+                        filtered[field] = detail
                 elif field in _COUNTER_KEYS:
                     if value is not None:
                         filtered[field] = value
@@ -513,9 +515,16 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
                 return
             group["snapshots"].add(snapshot)
             for field, value in filtered.items():
-                if field in group["raw"] and group["raw"][field] != value:
-                    group["conflict"] = True
-                group["raw"][field] = value
+                if field in _DETAIL_COUNTER_KEYS:
+                    detail = group["raw"].setdefault(field, {})
+                    for key, counter in value.items():
+                        if key in detail and detail[key] != counter:
+                            group["conflict"] = True
+                        detail[key] = counter
+                else:
+                    if field in group["raw"] and group["raw"][field] != value:
+                        group["conflict"] = True
+                    group["raw"][field] = value
             current_model = _model(obj.get("model"))
             if current_model != "unknown":
                 if "model" in group["data"] and group["data"]["model"] != current_model:

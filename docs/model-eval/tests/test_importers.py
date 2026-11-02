@@ -179,6 +179,47 @@ class ImportTests(unittest.TestCase):
         self.assertFalse(r["records"])
         self.assertIn("contradictory_partial_usage", self.codes(r))
 
+    def test_partial_nested_cache_counters_merge_by_key(self):
+        for container in ("input_tokens_details", "prompt_tokens_details"):
+            first = request({"input_tokens": 100, container: {"cached_tokens": 40}}, type="usage.partial")
+            last = request({"output_tokens": 20, container: {"cache_write_tokens": 10,
+                                                            "content": "PRIVATE_TEXT"}}, type="usage.partial")
+            for events in ([first, last, last], [last, first, last]):
+                with self.subTest(container=container, events=events):
+                    result = self.load(events, "openai")
+                    self.assertEqual(len(result["records"]), 1)
+                    usage = result["records"][0]["usage"]
+                    self.assertEqual((usage["input_total"], usage["cache_read"],
+                                      usage["cache_write_unknown"], usage["input_uncached"]), (100, 40, 10, 50))
+                    self.assertEqual(result["source_metadata"]["duplicate_events"], 1)
+                    self.assertNotIn("PRIVATE_TEXT", json.dumps(result))
+
+    def test_partial_nested_unknowns_can_be_filled_in_either_order(self):
+        for container, key, target in (("input_tokens_details", "cached_tokens", "cache_read"),
+                                       ("prompt_tokens_details", "cached_tokens", "cache_read"),
+                                       ("output_tokens_details", "reasoning_tokens", "reasoning_output"),
+                                       ("completion_tokens_details", "reasoning_tokens", "reasoning_output")):
+            known = request({"input_tokens": 100, "output_tokens": 20, container: {key: 5}}, type="usage.partial")
+            for unknown in (None, {}, {key: None}):
+                empty = request({container: unknown}, type="usage.partial")
+                for events in ([empty, known], [known, empty]):
+                    with self.subTest(container=container, unknown=unknown, events=events):
+                        result = self.load(events, "openai")
+                        self.assertEqual(len(result["records"]), 1)
+                        self.assertEqual(result["records"][0]["usage"][target], 5)
+
+    def test_partial_nested_conflicting_counters_are_excluded(self):
+        for container, key in (("input_tokens_details", "cached_tokens"),
+                               ("input_tokens_details", "cache_write_tokens"),
+                               ("prompt_tokens_details", "cached_tokens"),
+                               ("output_tokens_details", "reasoning_tokens"),
+                               ("completion_tokens_details", "reasoning_tokens")):
+            with self.subTest(container=container, key=key):
+                result = self.load([request({container: {key: 0}}, type="usage.partial"),
+                                    request({container: {key: 1}}, type="usage.partial")], "openai")
+                self.assertFalse(result["records"])
+                self.assertIn("contradictory_partial_usage", self.codes(result))
+
     def test_generic_duplicate_and_native_cache_details(self):
         e = {"object": "chat.completion", "id": "secret-request-id", "model": "gpt-6-sol",
              "usage": {"prompt_tokens": 100, "completion_tokens": 15, "prompt_tokens_details": {"cached_tokens": 80},
