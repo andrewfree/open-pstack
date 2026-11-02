@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+out/
+reports/
+live/
+evidence/
+local/
+data/observations*.json
+data/*import*.json
+data/pilot-trials*.json
+data/reference-scenarios.json
+checkpoint*.json
+decisions.tsv
