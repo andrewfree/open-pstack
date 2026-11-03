@@ -64,6 +64,11 @@ choose one version.
 | OpenAI / Grok | Top-level `request.usage`, `request.completed`, `request.failed`, `response.completed`, `response.failed`, `usage`, `usage.partial`, `message_start`, `message_delta`, or native `chat.completion`/`chat.completion.chunk`/`response` object; an untyped envelope with explicit request ID and model is also accepted | Both prompt/completion and input/output counter names are supported, with cached/reasoning detail fields. Cache reads are included in input total; uncached input is calculated only when read and write counters are known. Omitted cache-write counters remain null. Explicit 30m/12h writes are supported, and unsplit writes remain unknown TTL. Generic `usage` without request identity is excluded. Session/turn/aggregate scopes are excluded. |
 | pstack | One JSON receipt with `schemaVersion` and `usage` | Whole-run receipts without explicit request scope/identity are excluded with `receipt_usage_granularity_unknown`. Per-request receipts support camelCase counters and `elapsedMs`. An unverified requested model becomes unknown; a verified `reportedModel` is preserved. Claude receipts preserve the runner producer's native Anthropic semantics: `inputTokens` is uncached input, `cachedInputTokens` is cache reads, and `cacheCreationInputTokens` is cache writes with unknown TTL. Input total requires all three. Conflicting native and camelCase aliases are excluded. Other providers with unproven camelCase input semantics retain the unknown-input warning. |
 
+An explicit non-request scope excludes a pstack receipt even when it has an ID.
+Known values in nested input/prompt and output/completion aliases must agree.
+Anthropic partial TTL counts must not exceed their aggregate. Known TTL counts
+are preserved, with any unassigned aggregate remainder kept at unknown TTL.
+
 Streaming partials merge only when an explicit request ID matches. Disjoint
 known fields merge; null fields may be filled by later observations. Repeated
 identical snapshots dedupe. Conflicting known counters, model, final status,

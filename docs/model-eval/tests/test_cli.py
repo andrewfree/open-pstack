@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from modeleval.__main__ import grade_bundle, main, read_json, write, ROOT
 from modeleval.cases import suite_sha256
+from modeleval.evaluation import summarize_trials
 from modeleval.reporting import render_html, render_markdown
 
 
@@ -71,6 +72,29 @@ class IntegrationTests(unittest.TestCase):
                 grade_bundle('{}', self.receipt() | patch)
         configured = self.receipt() | {'model_verified':False,'configured_model':'toy-exact'}
         self.assertFalse(grade_bundle('{}', configured)['model_verified'])
+
+    def test_bundle_preserves_noncontrolled_provenance_and_cannot_rank_it(self):
+        from test_cases import SAMPLES
+
+        for kind in ('synthetic', 'observational'):
+            trials = []
+            for model, latency in (('a', 1), ('b', 2)):
+                for repeat in range(5):
+                    receipt = self.receipt() | {
+                        'trial_id': f'{model}:{repeat}', 'repeat_id': str(repeat),
+                        'model': model, 'source_kind': kind, 'elapsed_seconds': latency,
+                    }
+                    trial = grade_bundle(json.dumps(SAMPLES), receipt)
+                    self.assertEqual(trial['source_kind'], kind)
+                    trials.append(trial)
+            result = summarize_trials(trials)
+            self.assertEqual(result['ranking']['verdict'], 'INCONCLUSIVE')
+            self.assertEqual(result['ranking']['winners'], [])
+
+    def test_bundle_rejects_invalid_provenance(self):
+        for kind in (None, 'invented', [], True):
+            with self.subTest(kind=kind), self.assertRaises(ValueError):
+                grade_bundle('{}', self.receipt() | {'source_kind': kind})
 
     def test_cli_import_summary_report_chain_and_no_implicit_overwrite(self):
         with tempfile.TemporaryDirectory() as scratch:

@@ -79,6 +79,9 @@ def grade_bundle(response_text, receipt):
         receipt.get("model_verified") is False and receipt.get("configured_model")
     ):
         raise ValueError("receipt must identify verified or explicitly configured model provenance")
+    source_kind = receipt.get("source_kind", "controlled")
+    if source_kind not in ("controlled", "synthetic", "observational"):
+        raise ValueError("receipt has invalid source provenance")
     error, response = None, {}
     try:
         response = json.loads(response_text, object_pairs_hook=_unique,
@@ -95,7 +98,7 @@ def grade_bundle(response_text, receipt):
         grades[case["id"]] = grade_response(case["id"], json_text(answer))
     trial = {key: receipt.get(key) for key in required}
     trial.update({"task_id": "correctness-bundle-v1", "category": "mixed_microtasks",
-                  "source_kind": "controlled", "attempt": receipt.get("attempt", 1),
+                  "source_kind": source_kind, "attempt": receipt.get("attempt", 1),
                   "status": receipt.get("status", "success"),
                   "correct": receipt.get("status", "success") == "success" and error is None and all(g["correct"] for g in grades.values()),
                   "critical_failure": any(g["critical_failure"] for g in grades.values()),

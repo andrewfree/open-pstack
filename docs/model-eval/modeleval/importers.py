@@ -146,6 +146,15 @@ def _normalize(raw, dialect):
         values = {_counter(raw[k]) for k in aliases if raw.get(k) is not None}
         if len(values) > 1:
             return None, ["contradictory_usage_aliases"]
+    for containers, keys in (
+        (("input_tokens_details", "prompt_tokens_details"), ("cached_tokens", "cache_write_tokens")),
+        (("output_tokens_details", "completion_tokens_details"), ("reasoning_tokens",)),
+    ):
+        for key in keys:
+            values = {_counter(_dict(raw.get(container))[key]) for container in containers
+                      if _dict(raw.get(container)).get(key) is not None}
+            if len(values) > 1:
+                return None, ["contradictory_usage_aliases"]
     if dialect == "anthropic":
         usage["input_uncached"] = _first(raw, "input_tokens", "inputTokens")
         usage["cache_read"] = _first(raw, "cache_read_input_tokens", "cached_input_tokens", "cachedInputTokens")
@@ -156,6 +165,9 @@ def _normalize(raw, dialect):
         split = _dict(raw.get("cache_creation"))
         five = _first(split, "ephemeral_5m_input_tokens")
         hour = _first(split, "ephemeral_1h_input_tokens")
+        known_writes = sum(value for value in (five, hour) if value is not None)
+        if aggregate is not None and known_writes > aggregate:
+            return None, ["cache_creation_breakdown_mismatch"]
         if five is not None and hour is not None:
             if aggregate is not None and aggregate != five + hour:
                 return None, ["cache_creation_breakdown_mismatch"]
@@ -163,7 +175,12 @@ def _normalize(raw, dialect):
             aggregate = five + hour
         else:
             _writes(usage, aggregate)
-            if aggregate:
+            for field, value in (("cache_write_5m", five), ("cache_write_1h", hour)):
+                if value is not None:
+                    usage[field] = value
+            if aggregate is not None:
+                usage["cache_write_unknown"] = aggregate - known_writes
+            if usage["cache_write_unknown"]:
                 warnings.append("cache_creation_ttl_unknown")
         parts = (usage["input_uncached"], usage["cache_read"], aggregate)
         if all(p is not None for p in parts):
@@ -391,6 +408,7 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
                 warnings.append("model_changed_at_usage_boundary")
             delta = {k: v - baseline[k] for k, v in total.items() if baseline and v is not None and baseline.get(k) is not None}
             previous, previous_model, previous_last = total or None, model, last
+            previous_record_id = None
             if not last:
                 diagnostic("cumulative_without_request_usage", line, True)
                 return
@@ -439,7 +457,8 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
                 return
             metadata["usage_events"] += 1
             provider = _provider(obj.get("provider"))
-            if not _id(obj) and obj.get("usage_scope", obj.get("usageScope")) != "request":
+            scopes = (obj.get("usage_scope"), obj.get("usageScope"))
+            if any(scope not in (None, "request") for scope in scopes) or not _id(obj) and "request" not in scopes:
                 diagnostic("receipt_usage_granularity_unknown", line, True)
                 return
             data = {k: obj[k] for k in ("model", "status", "elapsedMs", "startedAt", "completedAt", "costUsd") if k in obj}
