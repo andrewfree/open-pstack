@@ -54,6 +54,18 @@ event might describe multiple uncounted requests. Contradictory repeated request
 IDs remove the previously accepted row as well, so arithmetic cannot silently
 choose one version.
 
+Request identities are local to the resolved source file and, when present,
+Codex `session_meta` identity. Reused IDs in separate files or sessions do not
+collide. Reimporting the same unchanged file produces the same record IDs.
+Events without a request ID retain their source-and-line identity. A new Codex
+session resets cumulative counters and model context; buffered partials keep
+the session in which they were read. Repeated metadata for the same session
+does not reset its counters.
+
+Select each logical log once. Copies at different paths are separate sources,
+not deduplicated requests. Regenerate previously saved imports before combining
+them with imports using this source-scoped identity format.
+
 ## Adapter semantics
 
 | Format | Recognized metadata envelope | Handling |

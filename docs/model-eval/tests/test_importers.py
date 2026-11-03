@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from modeleval.accounting import summarize
 from modeleval.importers import USAGE_FIELDS, import_file
 
 
@@ -41,6 +42,72 @@ class ImportTests(unittest.TestCase):
 
     def codes(self, result):
         return [d["code"] for d in result["diagnostics"]]
+
+    def test_reused_request_ids_across_sources_remain_in_combined_summary(self):
+        session = {"type": "session_meta", "payload": {"id": "session-private"}}
+        fixtures = (
+            ("claude", [claude({"input_tokens": 60, "cache_read_input_tokens": 40,
+                                "cache_creation_input_tokens": 0, "output_tokens": 20})]),
+            ("kimi", [{"type": "usage.record", "request_id": "req-private",
+                       "model": "kimi-code/k3.1-pro", "usageScope": "request",
+                       "usage": {"inputOther": 60, "inputCacheRead": 40,
+                                 "inputCacheCreation": 0, "output": 20}}]),
+            ("pstack", [{"schemaVersion": 1, "request_id": "req-private", "provider": "codex",
+                         "model": "gpt-6-sol", "modelVerified": True, "usage": counters()}]),
+            ("openai", [request(counters())]),
+            ("grok", [request(counters())]),
+            ("codex", [session, {"type": "turn.completed", "request_id": "req-private",
+                                 "model": "gpt-6-sol", "usage": counters()}]),
+            ("codex", [session, {"type": "turn_context", "payload": {"model": "gpt-6-sol"}},
+                       codex(counters())]),
+        )
+        for mode, events in fixtures:
+            with self.subTest(mode=mode, kind=events[-1].get("type")):
+                first = self.load(events, mode, "first.jsonl")["records"]
+                second = self.load(events, mode, "second.jsonl")["records"]
+                repeated = import_file(self.root / "first.jsonl", mode)["records"]
+                report = summarize(first + second + repeated, {"models": []})
+                self.assertEqual(report["included_records"], 2)
+                self.assertEqual(report["identical_duplicates_removed"], 1)
+                self.assertFalse(report["errors"])
+                self.assertEqual(report["groups"][0]["token_coverage"]["input_total"]["total"], 200)
+                self.assertEqual(report["groups"][0]["weighted_cache_read_token_fraction"], "0.4")
+                self.assertNotIn("req-private", json.dumps(first + second))
+                self.assertNotIn("session-private", json.dumps(first + second))
+
+    def test_codex_request_ids_are_local_to_the_session(self):
+        events = []
+        for session, amount in (("first-session", 100), ("second-session", 200)):
+            events.extend([{"type": "session_meta", "payload": {"id": session}},
+                           {"type": "turn.completed", "request_id": "reused",
+                            "model": "gpt-6-sol", "usage": counters(amount)}])
+        result = self.load(events)
+        report = summarize(result["records"], {"models": []})
+        self.assertEqual(report["included_records"], 2)
+        self.assertFalse(result["diagnostics"])
+        self.assertEqual(report["groups"][0]["token_coverage"]["input_total"]["total"], 300)
+
+    def test_codex_cumulative_state_resets_only_on_a_new_session(self):
+        events = []
+        for session in ("first-session", "first-session", "second-session"):
+            events.extend([{"type": "session_meta", "payload": {"id": session}},
+                           {"type": "turn_context", "payload": {"model": "gpt-6-sol"}},
+                           codex(counters())])
+        result = self.load(events)
+        self.assertEqual(len(result["records"]), 2)
+        self.assertEqual(result["source_metadata"]["duplicate_events"], 1)
+        self.assertFalse(result["diagnostics"])
+
+    def test_buffered_partials_keep_the_session_they_were_read_in(self):
+        events = []
+        for session, amount in (("first-session", 100), ("second-session", 200)):
+            events.extend([{"type": "session_meta", "payload": {"id": session}},
+                           request({"input_tokens": amount}, type="usage.partial"),
+                           request({"output_tokens": 20}, type="usage.partial")])
+        result = self.load(events, "auto")
+        self.assertFalse(result["diagnostics"])
+        self.assertEqual(sorted(row["usage"]["input_total"] for row in result["records"]), [100, 200])
+        self.assertEqual(len({row["record_id"] for row in result["records"]}), 2)
 
     def test_codex_cumulative_delta_and_duplicate(self):
         r = self.load([{"type": "turn_context", "payload": {"model": "gpt-6-sol"}},
