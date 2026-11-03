@@ -7,11 +7,11 @@ The ownership table below says which features a changed path reaches. `SKILL.md`
 | Ownership | Surfaces a change can affect |
 | --- | --- |
 | `skills` | One `skill-invocation:<name>` exercise per selected skill, in both harnesses |
-| `shared` | All listed skills, setup, runner, shipped tools, and `hook:startup` in both harnesses, and Claude's `agent-preload:poteto-agent`; a version-only manifest change reaches less, as described below |
-| `catalog` | The generated model catalog and native agents, and the registry sources: `catalog`, `setup`, and `runner`, and no skill check |
+| `shared` | All listed skills, setup, runner, `runner:t3-kimi-cliproxy`, shipped tools, and `hook:startup` in both harnesses, and Claude's `agent-preload:poteto-agent`; a version-only manifest change reaches less, as described below |
+| `catalog` | The generated model catalog and native agents, and the registry sources: `catalog`, `setup`, `runner`, and `runner:t3-kimi-cliproxy`, and no skill check |
 | `assets` | Installed UI/resource surface for each actual consumer found in the pinned plugin manifests |
 | `setup` | Installed setup/model configuration with byte-exact daily Claude file restoration before publication |
-| `runner` | Installed parent invoking real configured provider lanes |
+| `runner` | Installed parent invoking real configured provider lanes; `runner:t3-kimi-cliproxy` independently exercises the selected Kimi proxy route |
 | `tools` | Installed parent invoking the changed shipped CLI |
 | `project` | Native discovery/invocation of this verifier in both harnesses |
 | `nonRuntime` | Explicit ordinary repository documentation, policy, non-shipped assets, and unit-test paths; no plugin harness launch |
@@ -24,7 +24,7 @@ Asset ownership is consumer-driven, not blanket shared ownership. Inspect the ex
 
 `bootstrap.ts` belongs to `tools`; exercise its actual consumers, `orch` and `watch-pr`, including dependency bootstrapping rather than the unrelated external runner.
 
-Catalog paths take precedence over `shared` and over the skill match, so `references/model-catalog.md` and the generated agents select only `catalog`, `setup`, and `runner`. Each generated agent is listed by exact path; a new one is unmapped until it is added to `catalog`. Skill-owned `SKILL.md`, `references/**`, and `playbooks/**` select their skill. poteto-mode's `SKILL.md` also reaches Claude's `agent-preload:poteto-agent`, because poteto-agent preloads it. Additional executable paths must be registered explicitly. `core.ts` assigns the Codex transcript resolver, `poteto-mode/scripts/resolve-codex-transcript.ts`, and its launcher, `poteto-mode/scripts/resolve-codex-transcript`, to `reflect` by their exact paths, so a change to it selects `skill-invocation:reflect` rather than the unrelated shipped-tool recipe. Shared consumed mappings select every dependent skill conservatively. The coverage test inventories tracked plugin files; new unmapped files block CI and runs. Deleted skill surfaces cannot silently disappear from evidence: choose a surviving documented entry point demonstrating the intended removal, or report blocked.
+Catalog paths take precedence over `shared` and over the skill match, so `references/model-catalog.md` and the generated agents select only `catalog`, `setup`, `runner`, and `runner:t3-kimi-cliproxy`. Each generated agent is listed by exact path; a new one is unmapped until it is added to `catalog`. Skill-owned `SKILL.md`, `references/**`, and `playbooks/**` select their skill. poteto-mode's `SKILL.md` also reaches Claude's `agent-preload:poteto-agent`, because poteto-agent preloads it. Additional executable paths must be registered explicitly. `core.ts` assigns the Codex transcript resolver, `poteto-mode/scripts/resolve-codex-transcript.ts`, and its launcher, `poteto-mode/scripts/resolve-codex-transcript`, to `reflect` by their exact paths, so a change to it selects `skill-invocation:reflect` rather than the unrelated shipped-tool recipe. Shared consumed mappings select every dependent skill conservatively. The coverage test inventories tracked plugin files; new unmapped files block CI and runs. Deleted skill surfaces cannot silently disappear from evidence: choose a surviving documented entry point demonstrating the intended removal, or report blocked.
 
 The feature documents below define sub-features, user entry points, driving instructions, and gotchas. Review each changed sub-feature in the diff. Record all changed sub-feature actions in the feature's transcript and artifact. Do not run destructive application work in the maintainer checkout.
 

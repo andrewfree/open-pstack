@@ -702,6 +702,17 @@ test('Kimi child collection isolates the exact bounded prompt on a concurrently 
   await expect(nativeMessages(k.logsDirectory, { providerId: 'codex_cliproxy', threadId: 'kimi-thread', nativePrompt: kimiPongTask(k.c.fixture) }, started, 'codex')).rejects.toThrow('exactly one provider thread');
 });
 
+test('Kimi child collection rejects malformed shared-profile records without retaining unattributed bytes', async () => {
+  const k = await kimiApp();
+  await writeKimiNative(k);
+  const marker = 'UNATTRIBUTED_OTHER_THREAD_CONTENT';
+  await writeFile(join(k.logsDirectory, 'events.malformed.log'), `[2026-10-14T00:00:04Z] NTIVE: {"providerSessionId":"provider-session:provider-instance:codex_cliproxy:shared","other":"${marker}",BROKEN\n`);
+  const retain = { native: join(k.logsDirectory, 'retained.native'), raw: join(k.logsDirectory, 'retained.raw') };
+  await expect(nativeMessages(k.logsDirectory, { providerId: 'codex_cliproxy', threadId: 'kimi-thread', nativePrompt: kimiPongTask(k.c.fixture) }, started, 'codex', retain)).rejects.toThrow('malformed matching records');
+  expect(await readFile(retain.raw, 'utf8')).not.toContain(marker);
+  expect(await readFile(retain.native, 'utf8')).toContain(kimiNativeId);
+});
+
 test('Kimi child collection rejects app-marked truncated records even when decoded payload remains parseable', async () => {
   const k = await kimiApp();
   await writeKimiNative(k);
