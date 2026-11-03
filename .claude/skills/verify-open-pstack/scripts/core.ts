@@ -1,4 +1,4 @@
-import { HARNESSES, type ChangedFile, type Harness, type Receipt, type Registry, type Selection } from './types.ts';
+import { HARNESSES, KIMI_ROUTE_FEATURE, type ChangedFile, type Harness, type Receipt, type Registry, type Selection } from './types.ts';
 
 export function validateRegistry(value: unknown): Registry {
   if (!value || typeof value !== 'object') throw new Error('Invalid feature registry');
@@ -58,6 +58,7 @@ export function classify(files: ChangedFile[], registry: Registry): Selection {
     }
     if (!covered && !registry.nonRuntime.some(p => matches(path, p))) throw new Error(`Unmapped path: ${path}`);
   }
+  for (const harness of HARNESSES) if (features.has(`${harness}:runner`)) features.add(`${harness}:${KIMI_ROUTE_FEATURE}`);
   skills.forEach(s => both(`skill-invocation:${s}`));
   return { paths, skills: [...skills].sort(), features: [...features].sort(), noRuntime: !features.size };
 }

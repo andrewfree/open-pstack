@@ -1,4 +1,5 @@
 export const HARNESSES = ['claude', 'codex'] as const;
+export const KIMI_ROUTE_FEATURE = 'runner:t3-kimi-cliproxy';
 export type Harness = typeof HARNESSES[number];
 export type Phase = 'resolve' | 'classify' | 'prepare' | 'exercise' | 'publish' | 'failed' | 'head-moved';
 export interface Pull {
@@ -51,9 +52,12 @@ export interface SessionRecord {
   commands: string[];
   tools: { name: string; id: string; input: Record<string, any>; parent: string | null; result?: string; failed: boolean }[];
   context: string[];
-  appTools?: { tool: string; arguments: Record<string, unknown>; result: Record<string, unknown> }[];
-  appRoutes?: { providerInstanceId: string; model: string; efforts: string[] }[];
+  appTools?: { tool: string; arguments: Record<string, unknown>; result: Record<string, unknown>; callIndex?: number; resultIndex?: number }[];
+  appRoutes?: { providerInstanceId: string; model: string; efforts: string[]; serviceTiers?: string[] }[];
+  appKimiChild?: { taskId: string; threadId: string; runId: string; providerInstanceId: string; model: string; task: string; output: string };
 }
+/** The operator's explicit selection of an existing T3 Kimi CLIProxy instance; the verifier never arms or edits it. */
+export interface SelectedKimiRoute { providerInstanceId: string; model: string; descriptor: string; serviceTier: string }
 export interface Driver {
   preflight(receipt: Receipt): Promise<void>;
   prepare(receipt: Receipt): Promise<Installation[]>;

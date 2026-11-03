@@ -11,7 +11,7 @@ export interface CodexAppEvidenceOptions {
   writePolicy?: NativeWritePolicy;
 }
 /** Failed and unstructured native attempts retain their arguments with an empty result. */
-export interface CodexAppTool { tool: string; arguments: ObjectValue; result: ObjectValue }
+export type CodexAppTool = NonNullable<SessionRecord['appTools']>[number];
 export interface CodexAppEvidence {
   session: SessionRecord; sessionId: string; turnId: string; rolloutPath: string; rollout: string; raw: string;
   skills: { name: string; path: string; sha256: string }[];
@@ -133,6 +133,7 @@ export async function parseCodexAppEvidence(text: string, expected: CodexAppEvid
   }
   if (!mcpStarting || !mcpReady) throw new Error('Missing Codex MCP startup inventory');
   const items: ObjectValue[] = [], itemIds = new Set<string>(), pending = new Map<string, ObjectValue>();
+  const callPositions = new Map<string, number>(), resultPositions = new Map<string, number>();
   for (const [index, event] of events.entries()) {
     if (event.params !== undefined) {
       const params = object(event.params);
@@ -169,12 +170,12 @@ export async function parseCodexAppEvidence(text: string, expected: CodexAppEvid
         if (itemIds.has(id)) throw new Error('Duplicate Codex completed item');
         if (event.method === 'item/started') {
           if (pending.has(id)) throw new Error('Duplicate Codex item start');
-          pending.set(id, item); continue;
+          pending.set(id, item); callPositions.set(id, index); continue;
         }
         const prior = pending.get(id);
         if (prior && (prior.type !== item.type || prior.type === 'mcpToolCall' && (prior.server !== item.server || prior.tool !== item.tool || !isDeepStrictEqual(prior.arguments, item.arguments)))) throw new Error('Codex native tool changed between start and completion');
         pending.delete(id);
-        itemIds.add(id); items.push(item);
+        itemIds.add(id); items.push(item); resultPositions.set(id, index);
       }
     }
     if (event.result !== undefined) {
@@ -244,7 +245,9 @@ export async function parseCodexAppEvidence(text: string, expected: CodexAppEvid
   const toolCalls: CodexAppTool[] = [];
   for (const item of items) {
     if (item.type !== 'mcpToolCall' || item.server !== 't3-code') continue;
-    toolCalls.push({ tool: string(item.tool, 'MCP tool name'), arguments: object(item.arguments), result: nativeToolResult(item) ?? {} });
+    const id = string(item.id, 'MCP tool id');
+    toolCalls.push({ tool: string(item.tool, 'MCP tool name'), arguments: object(item.arguments), result: nativeToolResult(item) ?? {},
+      ...(callPositions.has(id) ? { callIndex: callPositions.get(id) } : {}), resultIndex: resultPositions.get(id) });
   }
   const commands = items.filter(item => item.type === 'commandExecution' && typeof item.command === 'string');
   const context = rows.map(row => object(row.payload)).filter(payload => payload.type === 'message' && payload.role === 'developer' && Array.isArray(payload.content))
