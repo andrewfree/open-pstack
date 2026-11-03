@@ -68,6 +68,16 @@ class ImportTests(unittest.TestCase):
         self.assertFalse(r["records"])
         self.assertIn("cumulative_without_request_usage", self.codes(r))
 
+    def test_excluded_cumulative_snapshot_cannot_remove_earlier_request(self):
+        first = counters(100, 0, 20, 0)
+        second = counters(200, 0, 40, 0)
+        for excluded_last in ({}, counters(99, 0, 20, 0)):
+            with self.subTest(excluded_last=excluded_last):
+                r = self.load([codex(first), codex(second, excluded_last), codex(second, first)])
+                self.assertEqual(len(r['records']), 1)
+                self.assertEqual(r['records'][0]['usage']['input_total'], 100)
+                self.assertIn('contradictory_duplicate_cumulative_usage', self.codes(r))
+
     def test_codex_reset_and_model_change(self):
         r = self.load([{"type": "turn_context", "payload": {"model": "gpt-6-sol"}}, codex(counters(100)),
                        {"type": "turn_context", "payload": {"model": "gpt-6-astra"}}, codex(counters(50, 20))])
@@ -136,6 +146,61 @@ class ImportTests(unittest.TestCase):
         r = self.load([claude(u)], "claude")
         self.assertFalse(r["records"])
         self.assertIn("cache_creation_breakdown_mismatch", self.codes(r))
+
+    def test_anthropic_partial_breakdown_must_not_exceed_aggregate(self):
+        for field in ('ephemeral_5m_input_tokens', 'ephemeral_1h_input_tokens'):
+            for aggregate, partial in ((0, 1), (20, 25)):
+                with self.subTest(field=field, aggregate=aggregate):
+                    usage = {'input_tokens': 10, 'output_tokens': 1,
+                             'cache_read_input_tokens': 0,
+                             'cache_creation_input_tokens': aggregate,
+                             'cache_creation': {field: partial}}
+                    r = self.load([claude(usage)], 'claude')
+                    self.assertFalse(r['records'])
+                    self.assertIn('cache_creation_breakdown_mismatch', self.codes(r))
+
+    def test_anthropic_partial_breakdown_keeps_known_ttl_and_unknown_remainder(self):
+        for field, target in (('ephemeral_5m_input_tokens', 'cache_write_5m'),
+                              ('ephemeral_1h_input_tokens', 'cache_write_1h')):
+            for aggregate in (None, 20):
+                with self.subTest(field=field, aggregate=aggregate):
+                    raw = {'input_tokens': 10, 'output_tokens': 1,
+                           'cache_read_input_tokens': 0,
+                           'cache_creation_input_tokens': aggregate,
+                           'cache_creation': {field: 5}}
+                    result = self.load([claude(raw)], 'claude')
+                    usage = result['records'][0]['usage']
+                    self.assertEqual(usage[target], 5)
+                    self.assertEqual(usage['cache_write_unknown'], None if aggregate is None else 15)
+                    self.assertEqual(usage['input_total'], None if aggregate is None else 30)
+
+    def test_nested_counter_aliases_must_agree(self):
+        for left, right, field in (
+            ('input_tokens_details', 'prompt_tokens_details', 'cached_tokens'),
+            ('input_tokens_details', 'prompt_tokens_details', 'cache_write_tokens'),
+            ('output_tokens_details', 'completion_tokens_details', 'reasoning_tokens'),
+        ):
+            with self.subTest(field=field):
+                usage = {'input_tokens': 100, 'output_tokens': 20,
+                         left: {field: 8}, right: {field: 2}}
+                result = self.load([request(usage)], 'openai')
+                self.assertFalse(result['records'])
+                self.assertIn('contradictory_usage_aliases', self.codes(result))
+                usage[right][field] = 8
+                self.assertEqual(len(self.load([request(usage)], 'openai')['records']), 1)
+
+    def test_pstack_explicit_aggregate_scope_is_rejected_even_with_identity(self):
+        for scope in ('usage_scope', 'usageScope'):
+            for value in ('turn', 'session', 'aggregate'):
+                with self.subTest(scope=scope, value=value):
+                    receipt = {'schemaVersion': 1, 'request_id': 'run-r', scope: value,
+                               'provider': 'codex', 'elapsedMs': 10000, 'model': 'gpt-6-astra',
+                               'modelVerified': True, 'usage': counters()}
+                    result = self.load([receipt], 'pstack')
+                    self.assertFalse(result['records'])
+                    self.assertIn('receipt_usage_granularity_unknown', self.codes(result))
+                    receipt['usageScope' if scope == 'usage_scope' else 'usage_scope'] = 'request'
+                    self.assertFalse(self.load([receipt], 'pstack')['records'])
 
     def test_anthropic_missing_identity_excluded(self):
         e = claude({"input_tokens": 1})

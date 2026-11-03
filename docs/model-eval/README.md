@@ -80,6 +80,11 @@ launches a model. The grader interprets a restricted Python AST for its repair
 case; submitted code is never executed with `exec`, `eval`, or subprocesses.
 Keep the public grader and answer keys unavailable to candidates during capture.
 
+`grade-bundle` preserves an explicit `source_kind` of `synthetic`,
+`observational`, or `controlled`. Noncontrolled receipts remain ineligible for
+ranking. Receipts without this field retain the command's controlled-pilot
+default; this default is a caller assertion, not independent provenance proof.
+
 Unit tests, invented records, and generated example reports are synthetic
 verification. Local usage imports are observational and cannot rank model
 ability. Controlled comparisons require separately authorized capture, immutable
