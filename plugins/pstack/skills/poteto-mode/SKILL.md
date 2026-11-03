@@ -9,7 +9,7 @@ Bundled skills live at `../<name>/SKILL.md` from this file, so put this file's a
 
 ## Platform Adaptation
 
-These skills share one tree across Claude Code and Codex. Read [`references/provider-dispatch.md`](references/provider-dispatch.md) whenever a configured role launches. It defines the provider-qualified model descriptors, native, T3 Claude Agent, and external route table, launcher, isolation, receipts, and dropout policy. Children never choose routes. When a skill names a Claude tool or built-in skill (`run`, `verify`, `plugin-dev:skill-development`), read [`references/codex-tools.md`](references/codex-tools.md) for the Codex equivalent. On Claude Code, read its [Waits on Claude Code](references/codex-tools.md#waits-on-claude-code) section before any wait.
+These skills share one tree across Claude Code and Codex. Read [`references/provider-dispatch.md`](references/provider-dispatch.md) whenever a configured role launches. It defines the provider-qualified model descriptors, native, T3 Claude Agent, and external route table, launcher, isolation, receipts, and dropout policy. Read the optional `t3 claude instance` setting from that same sheet on every Codex-parent Claude fan-out and invoke the shared route validator before delegation or setup probing. Children never choose routes. When a skill names a Claude tool or built-in skill (`run`, `verify`, `plugin-dev:skill-development`), read [`references/codex-tools.md`](references/codex-tools.md) for the Codex equivalent. On Claude Code, read its [Waits on Claude Code](references/codex-tools.md#waits-on-claude-code) section before any wait.
 
 ## Non-negotiables
 

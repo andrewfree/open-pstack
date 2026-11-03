@@ -5,6 +5,8 @@ This port applies the Cursor → Claude Code substitutions in skill bodies. Earl
 
 ## Unreleased
 
+- Codex-parent Claude routing reads an optional `t3 claude instance` setting from the existing model sheet and no longer prefers the literal direct-login instance ID. Setup preserves or explicitly selects that default, probes it and mirrors it through the existing atomic write/readback boundary. A deterministic validator is mandatory in shared dispatch and setup instructions; it checks the real Claude Agent driver, runnable constraints, exact model/effort and complete rolling-family catalog without inferring quota or switching accounts/hosts. Pool launchers on the real Claude Agent driver remain eligible. Unit coverage exercises direct, named and pool choices, stale settings, partial catalogs, quota uncertainty and fail-closed requests. No release version changes.
+
 - The Codex Claude-route refusal fixture runs a shell check that succeeds only when the installed runner exits 78. This lets the existing successful-command parser observe the expected refusal without accepting arbitrary failed commands. Regression tests use real shell results through that parser and reject unexpected runner exit codes; receipt and guard assertions are unchanged.
 
 - The T3 dispatch guide gives an explicit lane-record JSON shape and places the concrete target ID under `model`. The verifier still rejects renamed or mismatched fields and now names those fields in its private failure reason without printing their values.
