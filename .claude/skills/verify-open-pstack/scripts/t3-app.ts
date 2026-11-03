@@ -201,7 +201,8 @@ export async function nativeMessages(logs: string, identity: { threadId: string;
   }
   const selected = records.filter(r => r.selected && (identity.nativePrompt === undefined ? !(caseThread && r.thread && r.thread !== caseThread) : r.thread === caseThread));
   const native = selected.filter(r => r.incoming).map(r => JSON.stringify(r.message)).join('\n') + '\n';
-  const raw = [...(identity.nativePrompt === undefined ? records : selected).map(r => r.raw), ...malformed, ...truncated].join('\n') + '\n';
+  const retainedRaw = identity.nativePrompt === undefined ? [...records.map(r => r.raw), ...malformed, ...truncated] : selected.map(r => r.raw);
+  const raw = retainedRaw.join('\n') + '\n';
   if (retain) {
     await writeFile(retain.raw, raw, { flag: 'wx', mode: 0o600 });
     await writeFile(retain.native, native, { flag: 'wx', mode: 0o600 });
