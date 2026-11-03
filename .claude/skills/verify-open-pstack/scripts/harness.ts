@@ -10,7 +10,7 @@ import { assertNativeConsumers } from './native-consumer.ts';
 import { sourceDigest, sourceHash } from './provenance.ts';
 import type { AppTransport } from './t3-app.ts';
 import { publishable } from './verify.ts';
-import { type Driver, type Harness, type Installation, type Observation, type Receipt, type SessionRecord } from './types.ts';
+import { KIMI_ROUTE_FEATURE, type Driver, type Harness, type Installation, type Observation, type Receipt, type SessionRecord } from './types.ts';
 
 const setupFeature = (feature: string): boolean => feature === 'setup' || feature === 'skill-invocation:setup-pstack';
 export function launch(options: { cwd: string; addDirs: string[]; codexSandbox?: 'danger-full-access' }): string[] {
@@ -107,6 +107,7 @@ export class MacDriver implements Driver {
     const harnesses = requiredHarnesses(receipt);
     assertNativeConsumers(harnesses, this.app !== undefined);
     if (!this.app && requiredFeatures(receipt, 'codex').includes('runner')) throw new Error('unsupported-native-consumer:claude-app: the Codex runner feature verifies the T3 Claude Agent route and needs --t3-app');
+    if (!this.app?.kimiRoute && harnesses.some(harness => requiredFeatures(receipt, harness).includes(KIMI_ROUTE_FEATURE))) throw new Error('unsupported-native-consumer:kimi-cliproxy: the selected T3 Kimi CLIProxy feature needs --t3-app with an operator-selected kimiRoute');
     await doctor(receipt.artifactRoot, this.run, process.platform, false, harnesses, harnesses.includes('claude') ? await this.app!.claudeBinaryPath() : undefined);
   }
   async prepare(receipt: Receipt): Promise<Installation[]> {
@@ -172,7 +173,7 @@ export class MacDriver implements Driver {
     assertNativeConsumers(receipt.installations.map(installation => installation.harness), this.app !== undefined);
     const plans = receipt.installations.map(installation => ({ installation,
       features: requiredFeatures(receipt, installation.harness).sort((a, b) => Number(setupFeature(a)) - Number(setupFeature(b)))
-        .map(feature => ({ feature, cases: recipe(feature, installation.harness, this.routes, this.app?.runnerRoute) })) }));
+        .map(feature => ({ feature, cases: recipe(feature, installation.harness, this.routes, this.app?.runnerRoute, this.app?.kimiRoute) })) }));
     const observations: Observation[] = [];
     const writePolicy = this.daily?.paths ?? dailyStatePaths(this.app?.settingsPath);
     for (const { installation, features } of plans) {
@@ -192,8 +193,8 @@ export class MacDriver implements Driver {
               await c.prepare?.(fixture);
               const stdout = join(records, `${c.id}.jsonl`), stderr = join(records, `${c.id}.stderr`), cwd = c.cwd === 'workspace' ? workspace : dir;
               const rolloutCopy = join(records, `${c.id}.rollout.jsonl`), started = Date.now();
-              const appCase = harness === 'claude' || c.id.startsWith('app-route-');
-              const app = appCase ? await this.app!.record({ harness, projectSkill: feature === 'project-skill', pluginRoot: installation.location, workspace, fixture: dir,
+              const appCase = harness === 'claude' || c.id.startsWith('app-route-') || c.t3Child !== undefined;
+              const app = appCase ? await this.app!.record({ harness, ...(c.t3Child ? { childRoute: c.t3Child } : {}), projectSkill: feature === 'project-skill', pluginRoot: installation.location, workspace, fixture: dir,
                 prompt: c.prompt(fixture), env, stdout, stderr, started, cliVersion: installation.cliVersion, writePolicy }) : undefined;
               const exitCode = app ? 0 : await this.record(launch({ cwd, addDirs: cwd === dir ? [] : [dir], codexSandbox: c.codexSandbox }), { cwd, env, input: c.prompt(fixture), stdout, stderr });
               evidence.push(stdout, ...(await stat(stderr)).size ? [stderr] : [], ...app?.evidence ?? []);
@@ -225,6 +226,7 @@ export class MacDriver implements Driver {
         observations.push({ harness, feature, reviewer: 'recipe', assertions,
           surface: harness === 'claude' ? 'T3 Claude app child with the exact candidate plugin and native session evidence'
             : cases.some(c => c.id.startsWith('app-route-')) ? 'T3 Codex app parent with the run-owned candidate installation and native Claude dispatch'
+            : cases.some(c => c.t3Child === 'selected-kimi') ? 'T3 Codex app parent with the run-owned candidate installation and the selected T3 Kimi CLIProxy dispatch'
             : 'codex exec --json with the run-owned candidate installation',
           action: `recipe ${feature}: ${cases.map(c => c.id).join(', ')}`,
           observed: publishable(passed) ? passed : `passed ${assertions.length} assertions; ids retained privately`,

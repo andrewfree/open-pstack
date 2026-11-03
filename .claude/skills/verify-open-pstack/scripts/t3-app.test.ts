@@ -3,7 +3,8 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeF
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { save } from './io.ts';
-import { capabilityRoutes, launcherScript, nativeMessages, T3App, t3Config, validateAppReply, validateAppTerminalReply, validateClaudeLaunch, validateClaudePrompt, type AppCase } from './t3-app.ts';
+import { kimiPongTask } from './kimi-child-evidence.ts';
+import { capabilityRoutes, completionNotifications, launcherScript, nativeMessages, T3App, t3Config, validateAppReply, validateAppTerminalReply, validateClaudeLaunch, validateClaudePrompt, type AppCase } from './t3-app.ts';
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -260,7 +261,7 @@ async function spawnLauncher(a: Awaited<ReturnType<typeof fakeApp>>, driver: 'cl
   expect(await Bun.spawn([join(a.launcherDirectory, driver), '--version'], { stdout: 'ignore', stderr: 'ignore' }).exited).toBe(0);
 }
 async function answerCase(a: Awaited<ReturnType<typeof fakeApp>>, { terminal = 'completed', validLaunch = true, launched = ['claude'] as ('claude' | 'codex')[], previousId = undefined as string | undefined,
-  codexEvent = { id: 'codex-native-result' } as object, runnerCatalog = false } = {}) {
+  codexEvent = { id: 'codex-native-result' } as object, runnerCatalog = false, extraProviders = [] as object[] } = {}) {
   const request = await pending(a.root, previousId);
   for (const driver of launched) await spawnLauncher(a, driver);
   const r = reply(); r.requestId = request.id;
@@ -278,6 +279,7 @@ async function answerCase(a: Awaited<ReturnType<typeof fakeApp>>, { terminal = '
   await save(request.responsePath, { ...r, capabilities: { capturedAt: '2026-10-14T00:00:00.500Z', result: { parentThreadId: 'parent', providers: [
     { providerInstanceId: request.target.providerInstanceId, canRunChildTask: true, models: [{ id: request.target.model, options: [] }] },
     ...runnerCatalog ? [{ providerInstanceId: 'verify_claude', canRunChildTask: true, models: [{ id: 'opus', options: [{ id: 'effort', values: ['max'], default: 'medium' }] }] }] : [],
+    ...extraProviders,
   ] } } });
   return request;
 }
@@ -450,4 +452,260 @@ test('a case whose launcher cannot be armed reports that failure, not a pending 
   const cleanup = await a.app.cleanup().catch(error => error);
   expect(cleanup.message).toContain('not a pstack verification launcher');
   expect(cleanup.message).not.toContain('no validated terminal receipt');
+});
+
+const kimiRoute = { providerInstanceId: 'codex_cliproxy', model: 'kimi-k3.1-pro', descriptor: 'kimi:kimi-code/k3@high', serviceTier: 'default' };
+const kimiProvider = { providerInstanceId: 'codex_cliproxy', driverKind: 'codex', canRunChildTask: true, canRunCrossProviderChildTask: true, constraints: [],
+  models: [{ id: 'kimi-k3.1-pro', options: [{ id: 'reasoningEffort', values: ['low', 'medium', 'high'] }, { id: 'serviceTier', values: ['default', 'flex'] }] }] };
+test('accepts an explicit operator Kimi CLIProxy selection and rejects incomplete, implicit or colliding ones', () => {
+  const config = { parentThreadId: 'parent', baseProviderId: 'claude', model: 'haiku', codexProviderId: 'codex', codexModel: 'luna', runnerClaudeModel: 'opus',
+    verifyClaudeProviderId: 'verify-claude', verifyCodexProviderId: 'verify-codex', launcherDirectory: '/state/launchers', settingsPath: '/app/settings.json', logsDirectory: '/app/logs' };
+  expect(t3Config({ ...config, kimiRoute })).toEqual({ ...config, kimiRoute });
+  expect(t3Config(config).kimiRoute).toBeUndefined();
+  for (const bad of [null, [], 'codex_cliproxy', { ...kimiRoute, model: '' }, { ...kimiRoute, serviceTier: undefined }, { ...kimiRoute, descriptor: 'claude:opus@high' },
+    { ...kimiRoute, descriptor: 'kimi:kimi-code/k3@default' }, { ...kimiRoute, descriptor: 'kimi:kimi-code/k3' }, { ...kimiRoute, providerInstanceId: 'codex' }, { ...kimiRoute, providerInstanceId: 'verify-codex' }]) {
+    expect(() => t3Config({ ...config, kimiRoute: bad })).toThrow();
+  }
+});
+test('reads Codex-driver reasoning efforts and service tiers for the selected Kimi child without changing Claude routes', () => {
+  const r = capabilities();
+  r.capabilities.result.providers.push(kimiProvider as any);
+  expect(capabilityRoutes({ ...request, runnerTarget: { providerInstanceId: 'codex_cliproxy', model: 'kimi-k3.1-pro' } }, r, started)).toEqual([
+    { ...request.target, efforts: ['max'] },
+    { providerInstanceId: 'codex_cliproxy', model: 'kimi-k3.1-pro', efforts: ['low', 'medium', 'high'], serviceTiers: ['default', 'flex'] },
+  ]);
+});
+const kimiActivity = (fixture: string) => ({ hasMore: false, thread: { threadId: 'kimi-thread', parentThreadId: 'child', relationshipToParent: 'subagent', runCount: 1, activeRunId: null, status: 'completed', latestRunId: 'kimi-run', providerInstanceId: 'codex_cliproxy', model: 'kimi-k3.1-pro', pendingRequestCount: 0 },
+  recentRuns: [{ runId: 'kimi-run', status: 'completed', providerInstanceId: 'codex_cliproxy', model: 'kimi-k3.1-pro', requestedAt: '2026-10-14T00:00:01.500Z', completedAt: '2026-10-14T00:00:03Z' }],
+  items: [{ type: 'user_message', runId: 'kimi-run', sourceThreadId: 'kimi-thread', status: 'completed', textTruncated: false, text: kimiPongTask(fixture) },
+    { type: 'assistant_message', runId: 'kimi-run', sourceThreadId: 'kimi-thread', status: 'completed', textTruncated: false, text: 'PONG' }] });
+const kimiTools = (fixture = '/fixture') => [
+  { tool: 'orchestrator_capabilities', arguments: { search: 'codex_cliproxy' } as Record<string, any>, result: { parentThreadId: 'child', providers: [kimiProvider] } as Record<string, any> },
+  { tool: 'delegate_task', arguments: { mode: 'async', interactionMode: 'plan', role: 'test', task: kimiPongTask(fixture), clientRequestId: 'kimi-lane-r1', title: 'Kimi PONG lane',
+    target: { providerInstanceId: 'codex_cliproxy', model: 'kimi-k3.1-pro', options: { reasoningEffort: 'high', serviceTier: 'default' } } } as Record<string, any>,
+    result: { taskId: 'kimi-task', childThreadId: 'kimi-thread', childRunId: 'kimi-run', providerInstanceId: 'codex_cliproxy', model: 'kimi-k3.1-pro', status: 'running' } as Record<string, any> },
+  { tool: 'task_status', arguments: { taskId: 'kimi-task' } as Record<string, any>, result: { taskId: 'kimi-task', childThreadId: 'kimi-thread', childRunId: 'kimi-run', providerInstanceId: 'codex_cliproxy',
+    model: 'kimi-k3.1-pro', status: 'completed', workState: 'result_available', hasPendingChildRuns: false, hasPendingQuestion: false, pendingApproval: null,
+    latestTerminalRunId: 'kimi-run', latestTerminalStatus: 'completed', options: [{ id: 'reasoningEffort', value: 'high' }, { id: 'serviceTier', value: 'default' }], summary: 'PONG' } as Record<string, any> },
+  { tool: 't3_thread_read', arguments: { threadId: 'kimi-thread' } as Record<string, any>, result: kimiActivity(fixture) as Record<string, any> },
+];
+const kimiCompletion = 'Delegated task kimi-task (Kimi PONG lane) [completed]:\nPONG';
+const kimiNativeId = '01a13964-c4a5-71d2-8fd3-fde0382ef425', kimiNativeTurn = 'native-kimi-turn';
+function kimiNativeEvents(fixture: string): Record<string, any>[] {
+  return [
+    { method: 'thread/started', params: { thread: { id: kimiNativeId, sessionId: kimiNativeId, model: 'kimi-k3.1-pro', originator: 'T3 Code', forkedFromId: null, parentThreadId: null, turns: [], createdAt: started / 1000 + 1.5 } } },
+    { method: 'turn/started', params: { threadId: kimiNativeId, turn: { id: kimiNativeTurn, rootTurnId: kimiNativeTurn, status: 'inProgress', error: null } } },
+    { method: 'item/completed', params: { threadId: kimiNativeId, turnId: kimiNativeTurn, item: { id: 'kimi-prompt', type: 'userMessage', content: [{ type: 'text', text: kimiPongTask(fixture) }] } } },
+    { method: 'item/completed', params: { threadId: kimiNativeId, turnId: kimiNativeTurn, item: { id: 'kimi-answer', type: 'agentMessage', text: 'PONG' } } },
+    { method: 'turn/completed', params: { threadId: kimiNativeId, turn: { id: kimiNativeTurn, rootTurnId: kimiNativeTurn, status: 'completed', error: null } } },
+  ];
+}
+async function writeKimiNative(k: Awaited<ReturnType<typeof kimiApp>>, events = kimiNativeEvents(k.c.fixture)) {
+  await writeFile(join(k.logsDirectory, 'events.kimi-child.log'), events.map(event => native('codex_cliproxy', 'kimi-thread', '2026-10-14T00:00:03Z', event, 'codex')).join(''));
+}
+const kimiOffer = (text: unknown) => [{ type: 'prompt.offer', message: { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: text } } }];
+test('later Claude prompts pass only as T3 completions bound to the session\'s own completed async dispatch', () => {
+  const tools = kimiTools();
+  expect(completionNotifications(tools)).toEqual([kimiCompletion]);
+  expect(() => validateClaudePrompt([...kimiOffer(request.task), ...kimiOffer(kimiCompletion)], request.task, completionNotifications(tools))).not.toThrow();
+  expect(() => validateClaudePrompt([...kimiOffer(request.task), ...kimiOffer([{ type: 'text', text: kimiCompletion }])], request.task, [kimiCompletion])).not.toThrow();
+  for (const offers of [[...kimiOffer(request.task), ...kimiOffer(kimiCompletion), ...kimiOffer(kimiCompletion)], [...kimiOffer(request.task), ...kimiOffer('Delegated task kimi-task (Kimi PONG lane) [completed]:\nDONE')],
+    [...kimiOffer(kimiCompletion), ...kimiOffer(request.task)], [...kimiOffer(request.task), ...kimiOffer('Continue with another task.')]]) {
+    expect(() => validateClaudePrompt(offers, request.task, completionNotifications(tools))).toThrow('exact case');
+  }
+  expect(() => validateClaudePrompt([...kimiOffer(request.task), ...kimiOffer(kimiCompletion)], request.task)).toThrow('exact case');
+  for (const change of [(t: ReturnType<typeof kimiTools>) => { t[2]!.result.hasPendingQuestion = true; }, t => { t[2]!.result.pendingApproval = { kind: 'plan' }; },
+    t => { t[2]!.result.status = 'running'; }, t => { t[2]!.result.hasPendingChildRuns = true; }, t => { t[2]!.result.latestTerminalRunId = 'later-run'; },
+    t => { t[2]!.result.childThreadId = 'other-thread'; }, t => { t[2]!.result.providerInstanceId = 'other-instance'; }, t => { t[2]!.arguments.taskId = 'other-task'; },
+    t => { t[1]!.arguments.mode = 'wait'; }, t => { [t[1], t[2]] = [t[2]!, t[1]!]; }] as ((t: ReturnType<typeof kimiTools>) => void)[]) {
+    const tools = kimiTools(); change(tools); expect(completionNotifications(tools)).toEqual([]);
+  }
+});
+async function kimiApp(selection: object | null = kimiRoute, instance: object = { driver: 'codex', enabled: true, config: { binaryPath: '/usr/bin/true', homePath: '' }, environment: [] }) {
+  const a = await fakeApp(), settings = await json(a.settingsPath);
+  settings.providerInstances.codex_cliproxy = instance;
+  await writeFile(a.settingsPath, JSON.stringify(settings));
+  const app = new T3App({ ...a.config, ...(selection ? { kimiRoute: selection as typeof kimiRoute } : {}) }, a.root);
+  await app.prepare();
+  return { ...a, app };
+}
+test('the selected Kimi case refuses a missing selection or an unusable selected instance before any launcher is armed', async () => {
+  for (const [selection, instance, reason] of [[null, undefined, 'unsupported-native-consumer:kimi-cliproxy'],
+    [kimiRoute, { driver: 'claudeAgent', enabled: true, config: {}, environment: [] }, 'must be an enabled codex provider'],
+    [kimiRoute, { driver: 'codex', enabled: false, config: {}, environment: [] }, 'must be an enabled codex provider']] as const) {
+    const k = await kimiApp(selection, instance);
+    for (const harness of ['claude', 'codex'] as const) {
+      await expect(k.app.record({ ...k.c, harness, childRoute: 'selected-kimi' })).rejects.toThrow(reason);
+      expect(await readdir(join(k.root, 't3-app')).catch(() => [])).not.toContain('pending.json');
+      expect(await idle(k)).toEqual(passThrough);
+    }
+    await k.app.cleanup();
+  }
+});
+test('a Codex parent on the selected Kimi route leaves the Claude launcher pass-through and never binds a Claude child', async () => {
+  const k = await kimiApp(); k.c.harness = 'codex';
+  const work = k.app.record({ ...k.c, childRoute: 'selected-kimi' }).catch(error => error);
+  const pendingRequest = await pending(k.root);
+  expect(pendingRequest.target.providerInstanceId).toBe('verify_codex');
+  expect(pendingRequest.runnerTarget).toEqual({ providerInstanceId: 'codex_cliproxy', model: 'kimi-k3.1-pro' });
+  expect(await readFile(join(k.launcherDirectory, 'claude'), 'utf8')).toBe(launcherScript({ real: '/usr/bin/true' }));
+  expect(await readFile(join(k.launcherDirectory, 'codex'), 'utf8')).toContain(`'${pendingRequest.id} codex'`);
+  await answerCase(k, { launched: ['codex'], codexEvent: { method: 'item/completed', params: { threadId: 'codex-thread' } }, extraProviders: [kimiProvider] });
+  const error = await work;
+  expect(error.message).toContain('native thread start');
+  expect(error.message).not.toContain('Claude');
+  expect(await idle(k)).toEqual(passThrough);
+  await k.app.cleanup();
+});
+test('a Codex parent on the selected Kimi route still needs the selected child in the coordinator catalog', async () => {
+  const k = await kimiApp(); k.c.harness = 'codex';
+  const work = k.app.record({ ...k.c, childRoute: 'selected-kimi' }).catch(error => error);
+  await answerCase(k, { launched: ['codex'], codexEvent: { method: 'item/completed', params: { threadId: 'codex-thread' } } });
+  expect((await work).message).toContain('absent from the live capability catalog');
+});
+async function answerKimiClaude(k: Awaited<ReturnType<typeof kimiApp>>, prompts: (task: string) => string[], tools = kimiTools(k.c.fixture), names = ['mcp__t3-code__orchestrator_capabilities', 'mcp__t3-code__delegate_task', 'mcp__t3-code__task_status', 'mcp__t3-code__t3_thread_read'], nativeChild = true) {
+  const request = await pending(k.root);
+  await spawnLauncher(k, 'claude');
+  const r = reply(); r.requestId = request.id;
+  Object.assign(r.status, { providerInstanceId: request.target.providerInstanceId, model: request.target.model });
+  Object.assign(r.activity.thread, { providerInstanceId: request.target.providerInstanceId, model: request.target.model });
+  r.activity.items[0]!.text = request.task;
+  const outgoing = (payload: object) => `[2026-10-14T00:00:01Z] NTIVE: ${JSON.stringify({ provider: 'claudeAgent', protocol: 'claude-agent-sdk.query',
+    providerSessionId: `provider-session:provider-instance:${request.target.providerInstanceId}:thread:child:sdk`, event: { direction: 'outgoing', stage: 'decoded', payload } })}\n`;
+  const session: Record<string, any>[] = candidateSession(k.c.pluginRoot, request.target.model);
+  session[2] = { ...session[2], tools: ['Bash', 'Read', 'Write', 'Skill', ...names] };
+  session.splice(3, 0, ...tools.flatMap(({ arguments: input, result }, index) => [
+    { session_id: 'sdk-session', type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'tool_use', id: `t3-${index}`, name: names[index], input }] } },
+    { session_id: 'sdk-session', type: 'user', parent_tool_use_id: null, tool_use_result: [{ type: 'text', text: JSON.stringify(result) }],
+      message: { content: [{ type: 'tool_result', tool_use_id: `t3-${index}`, content: [{ type: 'text', text: JSON.stringify(result) }] }] } },
+  ]));
+  await writeFile(join(k.logsDirectory, 'events.case.log'), outgoing({ type: 'query.open', options: { ...launch()[0]!.options, pathToClaudeCodeExecutable: join(k.launcherDirectory, 'claude'), model: request.target.model } })
+    + prompts(request.task).map(text => outgoing({ type: 'prompt.offer', message: { type: 'user', parent_tool_use_id: null, message: { role: 'user', content: text } } })).join('')
+    + session.map(event => native(request.target.providerInstanceId, 'child', '2026-10-14T00:00:02Z', event)).join(''));
+  if (nativeChild) await writeKimiNative(k);
+  await save(request.responsePath, { ...r, capabilities: { capturedAt: '2026-10-14T00:00:00.500Z', result: { parentThreadId: 'parent', providers: [
+    { providerInstanceId: request.target.providerInstanceId, canRunChildTask: true, models: [{ id: request.target.model, options: [] }] }, kimiProvider] } } });
+  return request;
+}
+test('a Claude parent on the selected Kimi route returns its own native T3 calls and the coordinator routes, with the completion bound', async () => {
+  const k = await kimiApp();
+  const work = k.app.record({ ...k.c, childRoute: 'selected-kimi' });
+  const request = await pending(k.root);
+  expect(request.target.providerInstanceId).toBe('verify_claude');
+  expect(request.runnerTarget).toEqual({ providerInstanceId: 'codex_cliproxy', model: 'kimi-k3.1-pro' });
+  expect(await readFile(join(k.launcherDirectory, 'claude'), 'utf8')).toContain(`'--plugin-dir' '${k.c.pluginRoot}' '--strict-mcp-config'`);
+  expect(await readFile(join(k.launcherDirectory, 'codex'), 'utf8')).toBe(launcherScript({ real: '/usr/bin/true' }));
+  await answerKimiClaude(k, task => [task, kimiCompletion]);
+  const result = await work;
+  expect(result.record.appTools?.map(({ tool, arguments: args, result }) => ({ tool, arguments: args, result }))).toEqual(kimiTools(k.c.fixture));
+  expect(result.record.appKimiChild).toEqual({ taskId: 'kimi-task', threadId: 'kimi-thread', runId: 'kimi-run', providerInstanceId: 'codex_cliproxy', model: 'kimi-k3.1-pro', task: kimiPongTask(k.c.fixture), output: 'PONG' });
+  expect(result.evidence.filter(path => path.includes('.kimi-child.'))).toHaveLength(3);
+  expect(result.record.appRoutes).toContainEqual({ providerInstanceId: 'codex_cliproxy', model: 'kimi-k3.1-pro', efforts: ['low', 'medium', 'high'], serviceTiers: ['default', 'flex'] });
+  expect(await idle(k)).toEqual(passThrough);
+  await k.app.cleanup();
+});
+for (const [label, prompts, tools, names, reason] of [
+  ['an unbound later prompt', (task: string) => [task, 'Delegated task kimi-task (Kimi PONG lane) [completed]:\nnot this child'], undefined, undefined, 'exact case request'],
+  ['a completion for a child with a pending question', (task: string) => [task, kimiCompletion], (() => { const t = kimiTools(); t[2]!.result.hasPendingQuestion = true; return t; })(), undefined, 'exact case request'],
+  ['a tool from another MCP server', (task: string) => [task], undefined, ['mcp__t3-code__orchestrator_capabilities', 'mcp__t3-code__delegate_task', 'mcp__other__task_status'], 'Forbidden MCP tool'],
+] as const) test(`a Claude parent on the selected Kimi route rejects ${label}`, async () => {
+  const k = await kimiApp();
+  const work = k.app.record({ ...k.c, childRoute: 'selected-kimi' }).catch(error => error);
+  await answerKimiClaude(k, prompts, tools ?? kimiTools(), names ? [...names] : undefined);
+  expect((await work).message).toContain(reason);
+  expect(await idle(k)).toEqual(passThrough);
+});
+
+async function answerKimiCodex(k: Awaited<ReturnType<typeof kimiApp>>, nativeChild = true) {
+  const request = await pending(k.root), home = join(k.root, 'codex');
+  await spawnLauncher(k, 'codex');
+  const sessionId = '01a13964-c4a5-71d2-8fd3-fde0382ef426', turnId = 'parent-native-turn';
+  const path = join(home, 'sessions', `rollout-2026-10-14-${sessionId}.jsonl`);
+  const skillPath = join(k.c.pluginRoot, 'skills/poteto-mode/SKILL.md'), body = '---\nname: poteto-mode\n---\n\n# Candidate skill\n';
+  await mkdir(join(skillPath, '..'), { recursive: true }); await writeFile(skillPath, body);
+  await mkdir(join(path, '..'), { recursive: true });
+  const message = (text: string, kind: string) => ({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }],
+    internal_chat_message_metadata_passthrough: { turn_id: turnId, content_item_kinds: [kind] } } });
+  const rows = [
+    { type: 'session_meta', payload: { id: sessionId, session_id: sessionId, originator: 'T3 Code', timestamp: '2026-10-14T00:00:01Z' } },
+    { type: 'event_msg', payload: { type: 'task_started', turn_id: turnId, root_turn_id: turnId } },
+    message(request.task, 'user.text'),
+    message(`<skill>\n<name>pstack:poteto-mode</name>\n<path>${skillPath}</path>\n${body}\n</skill>`, 'skills.selected_skill_instructions'),
+    message(kimiCompletion, 'user.text'),
+    { type: 'event_msg', payload: { type: 'task_complete', turn_id: turnId, root_turn_id: turnId } },
+  ];
+  await writeFile(path, rows.map(row => JSON.stringify(row)).join('\n') + '\n');
+  const item = (stage: string, value: object) => ({ method: `item/${stage}`, params: { threadId: sessionId, turnId, item: value } });
+  const events: Record<string, any>[] = [
+    { method: 'thread/started', params: { thread: { id: sessionId, sessionId, model: request.target.model, originator: 'T3 Code', forkedFromId: null, parentThreadId: null,
+      turns: [], createdAt: started / 1000 + 1, cwd: k.c.workspace, path } } },
+    ...['starting', 'ready'].map(status => ({ method: 'mcpServer/startupStatus/updated', params: { threadId: sessionId, name: 't3-code', status, error: null, failureReason: null } })),
+    { method: 'turn/started', params: { threadId: sessionId, turn: { id: turnId, rootTurnId: turnId, status: 'inProgress', error: null } } },
+    item('completed', { id: 'parent-request', type: 'userMessage', content: [{ type: 'text', text: request.task }] }),
+  ];
+  for (const [index, tool] of kimiTools(k.c.fixture).entries()) {
+    const call = { id: `t3-${index}`, type: 'mcpToolCall', server: 't3-code', tool: tool.tool, arguments: tool.arguments };
+    events.push(item('started', { ...call, status: 'inProgress', error: null, result: null }), item('completed', { ...call, status: 'completed', error: null, result: { structuredContent: tool.result } }));
+    if (tool.tool === 'delegate_task') events.push(item('completed', { id: 'notification', type: 'userMessage', content: [{ type: 'text', text: kimiCompletion }] }));
+  }
+  events.push({ method: 'turn/completed', params: { threadId: sessionId, turn: { id: turnId, rootTurnId: turnId, status: 'completed', error: null } } });
+  await writeFile(join(k.logsDirectory, 'events.case.log'), events.map(event => native(request.target.providerInstanceId, 'child', '2026-10-14T00:00:02Z', event, 'codex')).join(''));
+  if (nativeChild) await writeKimiNative(k);
+  const r = reply(); r.requestId = request.id;
+  Object.assign(r.status, { providerInstanceId: request.target.providerInstanceId, model: request.target.model });
+  Object.assign(r.activity.thread, { providerInstanceId: request.target.providerInstanceId, model: request.target.model });
+  r.activity.items[0]!.text = request.task;
+  await save(request.responsePath, { ...r, capabilities: { capturedAt: '2026-10-14T00:00:00.500Z', result: { parentThreadId: 'parent', providers: [
+    { providerInstanceId: request.target.providerInstanceId, canRunChildTask: true, models: [{ id: request.target.model, options: [] }] }, kimiProvider] } } });
+}
+
+test('a Codex parent binds its installed candidate and the ordinary Kimi native child separately', async () => {
+  const k = await kimiApp();
+  k.c.harness = 'codex';
+  const pluginRoot = join(k.root, 'codex/plugins/cache/pstack/candidate');
+  await mkdir(pluginRoot, { recursive: true }); k.c.pluginRoot = await realpath(pluginRoot);
+  const work = k.app.record({ ...k.c, childRoute: 'selected-kimi' });
+  await answerKimiCodex(k);
+  const result = await work;
+  expect(result.record.skills).toEqual(['pstack:poteto-mode']);
+  expect(result.record.appKimiChild).toEqual({ taskId: 'kimi-task', threadId: 'kimi-thread', runId: 'kimi-run', providerInstanceId: 'codex_cliproxy',
+    model: 'kimi-k3.1-pro', task: kimiPongTask(k.c.fixture), output: 'PONG' });
+  expect(result.record.appTools?.every(call => Number.isInteger(call.callIndex) && Number.isInteger(call.resultIndex) && call.callIndex! < call.resultIndex!)).toBe(true);
+  expect(result.evidence.filter(path => path.includes('.kimi-child.'))).toHaveLength(3);
+  expect(await idle(k)).toEqual(passThrough);
+  await k.app.cleanup();
+});
+
+for (const harness of ['claude', 'codex'] as const) test(`a ${harness} parent cannot qualify Kimi from parent status alone`, async () => {
+  const k = await kimiApp(); k.c.harness = harness;
+  if (harness === 'codex') {
+    const pluginRoot = join(k.root, 'codex/plugins/cache/pstack/candidate'); await mkdir(pluginRoot, { recursive: true }); k.c.pluginRoot = await realpath(pluginRoot);
+  }
+  const work = k.app.record({ ...k.c, childRoute: 'selected-kimi' }).catch(error => error);
+  if (harness === 'claude') await answerKimiClaude(k, task => [task, kimiCompletion], undefined, undefined, false);
+  else await answerKimiCodex(k, false);
+  expect((await work).message).toContain('Kimi native child prompt');
+  expect(await idle(k)).toEqual(passThrough);
+  await k.app.cleanup();
+});
+
+test('Kimi child collection isolates the exact bounded prompt on a concurrently used shared provider', async () => {
+  const k = await kimiApp();
+  await writeKimiNative(k);
+  const other = kimiNativeEvents('/unrelated-fixture').map(event => JSON.parse(JSON.stringify(event).replaceAll(kimiNativeId, '01a13964-c4a5-71d2-8fd3-fde0382ef427')));
+  await writeFile(join(k.logsDirectory, 'events.other.log'), other.map(event => native('codex_cliproxy', 'other-app-child', '2026-10-14T00:00:03Z', event, 'codex')).join(''));
+  const found = await nativeMessages(k.logsDirectory, { providerId: 'codex_cliproxy', threadId: 'kimi-thread', nativePrompt: kimiPongTask(k.c.fixture) }, started, 'codex');
+  expect(found.native).toContain(kimiNativeId);
+  expect(found.raw).not.toContain('/unrelated-fixture');
+  const duplicate = other.map(event => JSON.parse(JSON.stringify(event).replaceAll('/unrelated-fixture', k.c.fixture)));
+  await writeFile(join(k.logsDirectory, 'events.other.log'), duplicate.map(event => native('codex_cliproxy', 'other-app-child', '2026-10-14T00:00:03Z', event, 'codex')).join(''));
+  await expect(nativeMessages(k.logsDirectory, { providerId: 'codex_cliproxy', threadId: 'kimi-thread', nativePrompt: kimiPongTask(k.c.fixture) }, started, 'codex')).rejects.toThrow('exactly one provider thread');
+});
+
+test('Kimi child collection rejects app-marked truncated records even when decoded payload remains parseable', async () => {
+  const k = await kimiApp();
+  await writeKimiNative(k);
+  const file = join(k.logsDirectory, 'events.kimi-child.log');
+  await writeFile(file, (await readFile(file, 'utf8')).replaceAll('"event":', '"truncated":true,"event":'));
+  await expect(nativeMessages(k.logsDirectory, { providerId: 'codex_cliproxy', threadId: 'kimi-thread', nativePrompt: kimiPongTask(k.c.fixture) }, started, 'codex')).rejects.toThrow('Truncated Kimi native child');
 });

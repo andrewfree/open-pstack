@@ -11,7 +11,7 @@ import { newReceipt } from './core.ts';
 import { sourceDigest } from './provenance.ts';
 import { evidence, verify } from './verify.ts';
 import { command, freshRoot, isolatedEnv, retainedFile, treeHash, type Command, type Session } from './io.ts';
-import { type Harness, type Installation, type Receipt } from './types.ts';
+import { KIMI_ROUTE_FEATURE, type Harness, type Installation, type Receipt } from './types.ts';
 const REPO = 'ericlitman/open-pstack';
 const roots: string[] = [];
 const gitEnv = { PATH: process.env.PATH ?? '', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
@@ -498,5 +498,28 @@ describe('headless recipes', () => {
     expect(statuses).toEqual(['failure']);
     expect(comments.join('\n')).not.toContain('Observation');
     expect(comments.join('\n')).toContain('FAILED');
+  });
+});
+
+describe('selected T3 Kimi CLIProxy feature', () => {
+  const kimiRoute = { providerInstanceId: 'codex_cliproxy', model: 'kimi-k3.1-pro', descriptor: 'kimi:kimi-code/k3@high', serviceTier: 'default' };
+  test('refuses before any command without the app transport or an operator selection', async () => {
+    for (const harness of ['claude', 'codex'] as const) {
+      const { root, installation } = await candidate(harness), receipt = selected(root, installation, [KIMI_ROUTE_FEATURE]);
+      const calls: string[][] = [], run: Command = async args => { calls.push(args); return ''; };
+      if (harness === 'codex') await expect(new MacDriver(run, noSession).preflight(receipt)).rejects.toThrow('unsupported-native-consumer:kimi-cliproxy');
+      await expect(new MacDriver(run, noSession, [], appStub('').app).preflight(receipt)).rejects.toThrow('unsupported-native-consumer:kimi-cliproxy');
+      expect(calls).toEqual([]);
+    }
+  });
+  test('a Codex parent case runs through the T3 app with the selected-Kimi discriminator, never codex exec', async () => {
+    const { root, installation } = await candidate('codex'), references = join(installation.location, 'skills/poteto-mode/references');
+    await mkdir(references, { recursive: true });
+    await writeFile(join(references, 'model-catalog.md'), await readFile(join(import.meta.dir, '../../../../plugins/pstack/skills/poteto-mode/references/model-catalog.md'), 'utf8'));
+    const ready = { ...installation, treeHash: await treeHash(installation.location), sourceHash: await sourceDigest(join(installation.home, 'workspace')) };
+    const stub = appStub(claudeStream({ skill: 'pstack:poteto-mode' }));
+    await expect(new MacDriver(command, noSession, [], { ...stub.app, kimiRoute }).exercise(selected(root, ready, [KIMI_ROUTE_FEATURE]))).rejects.toThrow('kimi-route-requires-one-native-dispatch');
+    expect(stub.cases.map(c => [c.harness, c.childRoute])).toEqual([['codex', 'selected-kimi']]);
+    expect(stub.cases[0]!.prompt.startsWith('$pstack:poteto-mode ')).toBe(true);
   });
 });
