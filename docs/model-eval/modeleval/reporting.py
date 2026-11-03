@@ -43,7 +43,8 @@ def render_markdown(usage, trials=None):
                 "The bundled microtasks check the evaluation workflow. One repeat does not establish broad quality or comparative speed. Dispatch-to-completion time includes host overhead; different routes have different prompts and tools.", "",
                 "| Model | Repeats | First-pass correct | Critical failures |", "|---|---:|---:|---:|"]
         for group in trials["groups"]:
-            out.append(f"| {_label(group)} | {group['repeat_count']} | {group['repeat_first_passes']} | {group['repeat_critical_failures']} |")
+            label = _label(group).replace('|', '/')
+            out.append(f"| {label} | {group['repeat_count']} | {group['repeat_first_passes']} | {group['repeat_critical_failures']} |")
         out += ["", "Qualification reasons: " + "; ".join(trials["ranking"]["reasons"]), ""]
         for group in trials["groups"]:
             out.append("- " + _label(group) + ": " + "; ".join(group.get("inconclusive_reasons", [])))

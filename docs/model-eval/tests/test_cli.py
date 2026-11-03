@@ -138,6 +138,18 @@ class IntegrationTests(unittest.TestCase):
             self.assertIn('fixturehash',text)
             self.assertIn('served model identity is unverified',text)
 
+    def test_markdown_trial_labels_cannot_add_table_columns(self):
+        usage = {'groups': [], 'input_records': 0, 'included_records': 0,
+                 'identical_duplicates_removed': 0, 'errors': []}
+        trials = {'groups': [{'provider': 'provider|injected', 'model': 'model|injected',
+                              'repeat_count': 5, 'repeat_first_passes': 4,
+                              'repeat_critical_failures': 0}],
+                  'ranking': {'verdict': 'INCONCLUSIVE', 'reasons': []}}
+        row = next(line for line in render_markdown(usage, trials).splitlines()
+                   if line.startswith('| provider'))
+        self.assertEqual(row.count('|'), 5)
+        self.assertIn('provider/injected / model/injected', row)
+
     def test_receipt_requires_frozen_suite_subscription_and_verified_model(self):
         for patch in ({"billing_basis": "api"}, {"model_verified": False}, {"suite_sha256": "bad"}, {"model": None}):
             with self.assertRaises(ValueError):
