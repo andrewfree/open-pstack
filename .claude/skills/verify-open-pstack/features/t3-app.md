@@ -22,6 +22,35 @@ Pass `--t3-app <absolute-config-path>` to `verify.sh run`, and to the parent `ve
 
 Use the live T3 thread, provider ids, settings path, and log directory. Do not guess them or put secrets in this file. Keep it private with the run evidence. The selected daily Claude and Codex provider entries must be enabled, use the expected drivers, and have explicit binaries; the launchers execute those binaries. Providers with account-specific secret environment entries are rejected; use the normal app login arrangement without reading or copying credentials.
 
+An optional `claudePoolProviderId` selects an existing T3 shared Claude pool as
+the runtime route while `baseProviderId` remains the direct Claude provider.
+The doctor checks the direct binary's flags, version and existing login. Those
+checks do not authenticate the pool; successful native cases must prove that.
+
+Pool mode requires a separately provisioned permanent Claude verification
+profile. Its binary remains the verification launcher and its launch arguments
+remain empty. T3 must supply exactly the shared pool's eight environment entries:
+`CLIPROXY_CLAUDE_ROUTE`, `CLIPROXY_ACCOUNT_PREFIX`, `CLIPROXY_BASE_URL`,
+`CLIPROXY_CLAUDE_BINARY`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+`CLAUDE_CODE_OAUTH_TOKEN`, and `DO_NOT_TRACK`. The route is `shared-pool`, the
+account prefix and OAuth overrides are empty, and tracking is disabled. The
+client key must be T3-managed, sensitive and redacted, with an empty stored
+value. The other entries must be nonsensitive. The origin must match the source
+pool, and both underlying CLI paths must resolve to the direct provider binary.
+The verifier rejects extra entries, endpoint drift and plaintext credentials.
+Codex verification profiles remain environment-free.
+
+Provisioning happens through the operator's normal T3 secret-store workflow
+before verification. The verifier never provisions profiles, reads keys or
+copies credentials. Redacted entries alone do not transfer an existing secret
+between provider IDs. Native case environments and generated launchers never
+contain the client key; T3 injects it when starting the dedicated profile. The
+generated launcher then invokes the existing pool account launcher with the
+exact candidate arguments. Cases cannot override the T3-managed pool routing or
+authentication variables. Route metadata is checked before and after each
+case and retained without environment entries. These checks establish shared
+pool routing, not which upstream subscription served the request.
+
 The coordinator's normal `HOME`, `USER`, and `LOGNAME` remain intact. Verification runs never edit T3 settings. Claude cases use the existing app login, and the armed launcher adds the arguments that load the exact candidate plugin. Plugin cases use `--setting-sources "" --plugin-dir <candidate-plugin> --strict-mcp-config`. Their fixture paths are absolute; these cases do not redirect T3's inherited starting directory. Run the bounded ordinary-plugin fixture probe after updating the transport and retain its native launch and fixture effects before claiming live readiness. The `project-skill` case alone uses `--setting-sources project --project-config-root <candidate-checkout> --add-dir <candidate-checkout> --strict-mcp-config` so candidate project instructions can load without inheriting the daily workspace's project settings. Probe the explicit binary from the selected Claude provider, rather than a different `claude` on `PATH`. Require the native session's CLI version to match that exact binary and validate native initialization, hooks, MCP inventory, and the candidate Skill root. Unexpected entries or missing native evidence fail closed; the version match alone does not establish compatibility.
 
 For Codex, the T3 app is used only for the runner's `app-route-1` case. Its armed launcher sets the run-owned `CODEX_HOME`, whose config disables analytics, Apps, and the Data Analytics plugin's `data` MCP server. Disabling the remote catalog or the Data plugin itself does not stop that server on Codex 0.166.0; the run config uses `plugins."data-analytics@openai-curated-remote".mcp_servers.data.enabled = false`. The native Codex MCP inventory must still contain only healthy `t3-code`; built-in connector servers are not exempt from that check. The app-route fixture reads installed reference files separately in byte ranges of at most 8192 bytes per shell command. The command must bound stdout itself; the tool output-token limit does not limit the native command record. This avoids T3 truncating a combined guide/catalog read while preserving the rejection of truncated command evidence. Other Codex recipes use `codex exec --json` from the exact-candidate checkout with the run-owned installation. The `app-route-1` case has the Codex parent dispatch the first T3 lane of the candidate's `judgment and prose` role default, or the `claude:` route given with `--runner-route`, to the Claude verification instance, which carries the same candidate arguments. `runnerClaudeModel` is the required baseline capability. The parent resolves the requested Claude family and effort from its own `orchestrator_capabilities` lookup, filtered to that instance so T3 does not truncate the result; the verifier checks the child's actual model and effort against the coordinator's retained catalog.
