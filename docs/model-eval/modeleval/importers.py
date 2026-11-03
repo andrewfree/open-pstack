@@ -146,15 +146,19 @@ def _normalize(raw, dialect):
         values = {_counter(raw[k]) for k in aliases if raw.get(k) is not None}
         if len(values) > 1:
             return None, ["contradictory_usage_aliases"]
-    for containers, keys in (
-        (("input_tokens_details", "prompt_tokens_details"), ("cached_tokens", "cache_write_tokens")),
-        (("output_tokens_details", "completion_tokens_details"), ("reasoning_tokens",)),
+    for aliases, containers, key in (
+        (("cached_input_tokens", "cachedInputTokens", "cache_read_input_tokens"),
+         ("input_tokens_details", "prompt_tokens_details"), "cached_tokens"),
+        (("cache_write_input_tokens", "cache_creation_input_tokens", "cacheCreationInputTokens"),
+         ("input_tokens_details", "prompt_tokens_details"), "cache_write_tokens"),
+        (("reasoning_output_tokens", "reasoningTokens"),
+         ("output_tokens_details", "completion_tokens_details"), "reasoning_tokens"),
     ):
-        for key in keys:
-            values = {_counter(_dict(raw.get(container))[key]) for container in containers
-                      if _dict(raw.get(container)).get(key) is not None}
-            if len(values) > 1:
-                return None, ["contradictory_usage_aliases"]
+        values = {_counter(raw[name]) for name in aliases if raw.get(name) is not None}
+        values.update(_counter(_dict(raw.get(container))[key]) for container in containers
+                      if _dict(raw.get(container)).get(key) is not None)
+        if len(values) > 1:
+            return None, ["contradictory_usage_aliases"]
     if dialect == "anthropic":
         usage["input_uncached"] = _first(raw, "input_tokens", "inputTokens")
         usage["cache_read"] = _first(raw, "cache_read_input_tokens", "cached_input_tokens", "cachedInputTokens")
@@ -199,17 +203,15 @@ def _normalize(raw, dialect):
     else:
         usage["input_total"] = _first(raw, "input_tokens", "prompt_tokens", "inputTokens")
         usage["cache_read"] = _first(raw, "cached_input_tokens", "cachedInputTokens")
-        details = _dict(raw.get("input_tokens_details", raw.get("prompt_tokens_details")))
+        details = {key: value for container in ("input_tokens_details", "prompt_tokens_details")
+                   for key, value in _dict(raw.get(container)).items()
+                   if key in ("cached_tokens", "cache_write_tokens") and value is not None}
         if usage["cache_read"] is None:
             usage["cache_read"] = _first(details, "cached_tokens")
-        elif _first(details, "cached_tokens") is not None and usage["cache_read"] != _first(details, "cached_tokens"):
-            return None, ["contradictory_usage_aliases"]
         aggregate = _first(raw, "cache_write_input_tokens", "cache_creation_input_tokens", "cacheCreationInputTokens")
         detail_write = _first(details, "cache_write_tokens")
         if aggregate is None:
             aggregate = detail_write
-        elif detail_write is not None and aggregate != detail_write:
-            return None, ["contradictory_usage_aliases"]
         _writes(usage, aggregate)
         for field, key in (("cache_write_30m", "cache_write_30m_input_tokens"), ("cache_write_12h", "cache_write_12h_input_tokens")):
             if key in raw:
@@ -233,7 +235,9 @@ def _normalize(raw, dialect):
         usage["output_total"] = _first(raw, "output_tokens", "completion_tokens", "outputTokens")
         usage["reasoning_output"] = _first(raw, "reasoning_output_tokens", "reasoningTokens")
         if usage["reasoning_output"] is None:
-            usage["reasoning_output"] = _first(_dict(raw.get("output_tokens_details", raw.get("completion_tokens_details"))), "reasoning_tokens")
+            usage["reasoning_output"] = _first(_dict(raw.get("output_tokens_details")), "reasoning_tokens")
+        if usage["reasoning_output"] is None:
+            usage["reasoning_output"] = _first(_dict(raw.get("completion_tokens_details")), "reasoning_tokens")
         if aggregate is None:
             warnings.append("cache_write_counters_missing")
         elif usage["cache_write_unknown"]:

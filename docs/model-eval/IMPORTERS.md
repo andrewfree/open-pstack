@@ -65,7 +65,8 @@ choose one version.
 | pstack | One JSON receipt with `schemaVersion` and `usage` | Whole-run receipts without explicit request scope/identity are excluded with `receipt_usage_granularity_unknown`. Per-request receipts support camelCase counters and `elapsedMs`. An unverified requested model becomes unknown; a verified `reportedModel` is preserved. Claude receipts preserve the runner producer's native Anthropic semantics: `inputTokens` is uncached input, `cachedInputTokens` is cache reads, and `cacheCreationInputTokens` is cache writes with unknown TTL. Input total requires all three. Conflicting native and camelCase aliases are excluded. Other providers with unproven camelCase input semantics retain the unknown-input warning. |
 
 An explicit non-request scope excludes a pstack receipt even when it has an ID.
-Known values in nested input/prompt and output/completion aliases must agree.
+Known values across top-level and nested input/prompt and output/completion
+aliases must agree. Disjoint known fields in both nested containers are retained.
 Anthropic partial TTL counts must not exceed their aggregate. Known TTL counts
 are preserved, with any unassigned aggregate remainder kept at unknown TTL.
 
