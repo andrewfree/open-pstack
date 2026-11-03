@@ -578,6 +578,50 @@ test('one run at a time holds the launchers, and a stale lock is taken over', as
   await writeFile(join(a.launcherDirectory, 'lock.json'), '');
   await expect(other.prepare()).rejects.toThrow('lock.json is unreadable');
 });
+for (const stage of ['claudeBinaryPath', 'prepare'] as const) {
+  test(`stale candidate launchers are disabled before invalid pool ${stage} fails`, async () => {
+    const a = await poolApp(); await a.app.prepare();
+    const armed = launcherScript({ real: '/usr/bin/true', args: ['--plugin-dir', '/old-candidate'], env: { OLD_CASE_ENV: 'old-case-value' } });
+    for (const driver of ['claude', 'codex']) await writeFile(join(a.launcherDirectory, driver), armed, { mode: 0o700 });
+    await writeFile(join(a.launcherDirectory, 'lock.json'), JSON.stringify({ pid: 2 ** 22 + 12345, root: a.root }));
+    const settings = await json(a.settingsPath);
+    settings.providerInstances.pool.environment[1].value = 'pinned-old-account';
+    const before = JSON.stringify(settings); await writeFile(a.settingsPath, before);
+    const next = new T3App(a.config, join(a.root, 'recovery'));
+    await expect(next[stage]()).rejects.toThrow('Claude pool');
+    for (const driver of ['claude', 'codex']) {
+      const script = await readFile(join(a.launcherDirectory, driver), 'utf8');
+      expect(script).not.toContain('/old-candidate');
+      expect(script).not.toContain('OLD_CASE_ENV');
+      const child = Bun.spawn([join(a.launcherDirectory, driver)], { stdout: 'pipe', stderr: 'pipe' });
+      expect(await child.exited).toBe(78);
+      expect(await new Response(child.stderr).text()).toContain('preflight');
+    }
+    expect(await readFile(a.settingsPath, 'utf8')).toBe(before);
+    await next.cleanup();
+    expect(await readdir(a.launcherDirectory)).not.toContain('lock.json');
+    settings.providerInstances.pool.environment[1].value = '';
+    await writeFile(a.settingsPath, JSON.stringify(settings));
+    await next.prepare();
+    expect((await idle(a))[0]).toBe(launcherScript({ real: await realpath(a.wrapper) }));
+    expect((await idle(a))[1]).toBe(passThrough[1]);
+    await next.cleanup();
+  });
+}
+test('invalid pool recovery never changes launchers held by another active run', async () => {
+  const a = await poolApp(); await a.app.prepare();
+  const armed = launcherScript({ real: '/usr/bin/true', args: ['--plugin-dir', '/active-candidate'] });
+  for (const driver of ['claude', 'codex']) await writeFile(join(a.launcherDirectory, driver), armed, { mode: 0o700 });
+  const settings = await json(a.settingsPath); settings.providerInstances.verify_claude.environment = [];
+  await writeFile(a.settingsPath, JSON.stringify(settings));
+  const next = new T3App(a.config, join(a.root, 'other-run'));
+  await expect(next.claudeBinaryPath()).rejects.toThrow('holds the launchers');
+  await expect(next.prepare()).rejects.toThrow('holds the launchers');
+  expect(await idle(a)).toEqual([armed, armed]);
+  await next.cleanup();
+  expect((await json(join(a.launcherDirectory, 'lock.json'))).root).toBe(a.root);
+  await a.app.cleanup();
+});
 test('a Codex app-server still running from a run keeps the next run out, and its kept home is removed once it exits', async () => {
   const a = await preparedApp(), saved = process.env.CODEX_HOME;
   const root = await realpath(a.root), daily = join(root, 'daily-codex'), home = join(root, 'run-home');
