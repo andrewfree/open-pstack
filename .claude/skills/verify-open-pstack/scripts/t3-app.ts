@@ -254,7 +254,8 @@ export class T3App {
       const id = driver === 'claude' ? this.config.verifyClaudeProviderId : this.config.verifyCodexProviderId, entry = providers[id];
       const kind = driver === 'claude' ? 'claudeAgent' : 'codex';
       if (entry?.driver !== kind || entry.enabled !== true || entry.config?.binaryPath !== this.launcher(driver) || entry.config?.launchArgs || (!(driver === 'claude' && this.pool) && (entry.environment ?? []).length)) {
-        throw new Error(`Add T3 provider instance ${id} once in T3 Settings: driver ${kind}, enabled, binary ${this.launcher(driver)}, no launch arguments, no environment entries. Verification runs never edit T3 settings.`);
+        const environmentRule = driver === 'claude' && this.pool ? 'only the validated T3-managed shared-pool environment entries' : 'no environment entries';
+        throw new Error(`Add T3 provider instance ${id} once in T3 Settings: driver ${kind}, enabled, binary ${this.launcher(driver)}, no launch arguments, ${environmentRule}. Verification runs never edit T3 settings.`);
       }
     }
   }

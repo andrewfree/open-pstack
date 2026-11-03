@@ -357,7 +357,8 @@ test('pool source, endpoint, binary and managed credential metadata must agree b
     ['named account', (s: any) => { s.providerInstances.pool.environment[1].value = 't3-gmail'; }],
     ['endpoint drift', (s: any) => { s.providerInstances.verify_claude.environment[2].value = 'http://other-host:8317'; }],
     ['embedded URL credential', (s: any) => { s.providerInstances.pool.environment[2].value = 'http://user:password@localhost:8317'; }],
-    ['OAuth override', (s: any) => { s.providerInstances.verify_claude.environment[5].value = 'synthetic-token'; }],
+    ['auth token override', (s: any) => { s.providerInstances.verify_claude.environment[5].value = 'synthetic-token'; }],
+    ['OAuth override', (s: any) => { s.providerInstances.verify_claude.environment[6].value = 'synthetic-token'; }],
     ['different real binary', (s: any) => { s.providerInstances.pool.environment[3].value = '/usr/bin/false'; }],
     ['duplicate entry', (s: any) => { s.providerInstances.pool.environment.push(s.providerInstances.pool.environment[0]); }],
   ] as const) {
