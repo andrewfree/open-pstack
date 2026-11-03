@@ -10,7 +10,7 @@ from pathlib import Path
 import sys
 
 from .accounting import summarize
-from .cases import grade_response, list_cases, prompt_for, suite_sha256
+from .cases import _SUITE_PATH, grade_response, list_cases, prompt_for, suite_sha256
 from .evaluation import summarize_trials
 from .importers import FORMATS, import_file
 from .reporting import render_html, render_markdown
@@ -52,11 +52,17 @@ def rows(file, field):
     return value
 
 
-def write(file, content, force=False):
+def write(file, content, force=False, protected=()):
     if file is None:
         print(content, end="" if content.endswith("\n") else "\n")
         return
     target = Path(file)
+    for source in protected:
+        for candidate in (Path(source), Path(source).expanduser()):
+            if target.resolve() == candidate.resolve() or (
+                target.exists() and candidate.exists() and target.samefile(candidate)
+            ):
+                raise ValueError("output names a protected input or suite")
     target.parent.mkdir(parents=True, exist_ok=True)
     with target.open("w" if force else "x", encoding="utf-8") as stream:
         stream.write(content)
@@ -147,6 +153,11 @@ def main(argv=None):
         child.add_argument("--force", action="store_true", help="explicitly replace the output artifact")
     args = parser.parse_args(argv)
     try:
+        protected = [_SUITE_PATH]
+        for name in ("files", "catalog", "response", "receipt", "usage", "trials"):
+            value = getattr(args, name, None)
+            if value is not None:
+                protected.extend(value if isinstance(value, list) else [value])
         if args.command == "import":
             results = [import_file(file, args.format, args.billing_basis) for file in args.files]
             value = {"schema_version": 1, "created_at": datetime.now(timezone.utc).isoformat(),
@@ -181,9 +192,9 @@ def main(argv=None):
             usage = read_json(args.usage)
             trials = read_json(args.trials) if args.trials else None
             renderer = render_html if args.format == "html" else render_markdown
-            write(args.output, renderer(usage, trials), args.force)
+            write(args.output, renderer(usage, trials), args.force, protected)
             return 0
-        write(args.output, json_text(value), args.force)
+        write(args.output, json_text(value), args.force, protected)
         return 0
     except (OSError, ValueError, KeyError, TypeError) as error:
         print("Evaluation input/output error: " + type(error).__name__, file=sys.stderr)
