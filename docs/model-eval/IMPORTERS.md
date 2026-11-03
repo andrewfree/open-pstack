@@ -63,20 +63,32 @@ the session in which they were read. Repeated metadata for the same session
 does not reset its counters.
 
 Select each logical log once. Copies at different paths are separate sources,
-not deduplicated requests. Regenerate previously saved imports before combining
+not deduplicated requests. A resumed-session file containing copied earlier
+requests also overlaps its original file; select a nonoverlapping source set.
+Regenerate previously saved imports before combining
 them with imports using this source-scoped identity format.
 
 ## Adapter semantics
 
 | Format | Recognized metadata envelope | Handling |
 | --- | --- | --- |
-| Codex | `event_msg.payload.type=token_count`, `payload.info.total_token_usage` and `last_token_usage`; or `turn.completed.usage` | Only last-request counters produce rows. Cumulative counters establish/check deltas. Repeated cumulative snapshots dedupe; contradictory repeats remove their row. A delta/last mismatch is excluded. Counter resets and model boundaries are warned. A first cumulative snapshot larger than its last request imports only that last request with a missing-baseline warning. A cumulative-only snapshot is excluded. Mixing token-count and turn-completed schemas in one file excludes the second schema to prevent double counting. |
+| Codex | `event_msg.payload.type=token_count`, `payload.info.total_token_usage` and `last_token_usage`; `turn.completed.usage` is recognized as aggregate-only | Only last-request counters produce rows. Cumulative counters establish/check deltas. Repeated cumulative snapshots dedupe; contradictory repeats remove their row. A delta/last mismatch is excluded. Counter resets and model boundaries are warned. A first cumulative snapshot larger than its last request imports only that last request with a missing-baseline warning. Cumulative-only snapshots and whole-turn `turn.completed` usage are excluded. A turn ID or request-scope label does not establish individual request boundaries. An aggregate event never suppresses valid token-count request rows before or after it. |
 | Claude | `type=assistant`, `message.usage`, `message.model`, explicit `requestId`/`request_id` or `message.id` | Repeated transcript content blocks dedupe by hashed request ID. Native `input_tokens` excludes cache reads and writes. Input total is calculated only with all three components known. The 5m/1h split must be explicit and consistent with its aggregate. Unsplit cache creation goes to the unknown-TTL field. Anthropic 30m/12h categories are zero because they are outside this native schema. Missing 5m/1h counters remain null unless an explicit aggregate zero proves zero writes. |
 | Kimi | `type=usage.record`, `usageScope=request` or explicit request ID without an aggregate scope | `inputOther` is uncached input; `inputCacheRead`, `inputCacheCreation`, and `output` remain separate. Creation without a TTL goes to the unknown bucket. A `usageScope=turn` event is an aggregate and is excluded, even if other metadata is available. |
 | OpenAI / Grok | Top-level `request.usage`, `request.completed`, `request.failed`, `response.completed`, `response.failed`, `usage`, `usage.partial`, `message_start`, `message_delta`, or native `chat.completion`/`chat.completion.chunk`/`response` object; an untyped envelope with explicit request ID and model is also accepted | Both prompt/completion and input/output counter names are supported, with cached/reasoning detail fields. Cache reads are included in input total; uncached input is calculated only when read and write counters are known. Omitted cache-write counters remain null. Explicit 30m/12h writes are supported, and unsplit writes remain unknown TTL. Generic `usage` without request identity is excluded. Session/turn/aggregate scopes are excluded. |
 | pstack | One JSON receipt with `schemaVersion` and `usage` | Whole-run receipts without explicit request scope/identity are excluded with `receipt_usage_granularity_unknown`. Per-request receipts support camelCase counters and `elapsedMs`. An unverified requested model becomes unknown; a verified `reportedModel` is preserved. Claude receipts preserve the runner producer's native Anthropic semantics: `inputTokens` is uncached input, `cachedInputTokens` is cache reads, and `cacheCreationInputTokens` is cache writes with unknown TTL. Input total requires all three. Conflicting native and camelCase aliases are excluded. Other providers with unproven camelCase input semantics retain the unknown-input warning. |
 
 An explicit non-request scope excludes a pstack receipt even when it has an ID.
+Codex's [event contract](https://github.com/openai/codex/blob/main/sdk/typescript/src/events.ts)
+defines `turn.completed.usage` over the agent turn. It cannot establish request
+counts, request cache-hit frequency, or the context tier of individual calls.
+The importer excludes it with `aggregate_codex_turn_usage` rather than pricing
+the sum as a single request.
+
+Repeated Anthropic request observations may fill an unknown status with an
+observed final status. Conflicting known statuses or usage still exclude the
+request, regardless of event order.
+
 Known values across top-level and nested input/prompt and output/completion
 aliases must agree. Disjoint known fields in both nested containers are retained.
 Anthropic partial TTL counts must not exceed their aggregate. Known TTL counts

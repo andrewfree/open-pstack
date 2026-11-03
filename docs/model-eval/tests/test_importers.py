@@ -56,8 +56,6 @@ class ImportTests(unittest.TestCase):
                          "model": "gpt-6-sol", "modelVerified": True, "usage": counters()}]),
             ("openai", [request(counters())]),
             ("grok", [request(counters())]),
-            ("codex", [session, {"type": "turn.completed", "request_id": "req-private",
-                                 "model": "gpt-6-sol", "usage": counters()}]),
             ("codex", [session, {"type": "turn_context", "payload": {"model": "gpt-6-sol"}},
                        codex(counters())]),
         )
@@ -75,12 +73,12 @@ class ImportTests(unittest.TestCase):
                 self.assertNotIn("req-private", json.dumps(first + second))
                 self.assertNotIn("session-private", json.dumps(first + second))
 
-    def test_codex_request_ids_are_local_to_the_session(self):
+    def test_codex_request_usage_is_local_to_the_session(self):
         events = []
         for session, amount in (("first-session", 100), ("second-session", 200)):
             events.extend([{"type": "session_meta", "payload": {"id": session}},
-                           {"type": "turn.completed", "request_id": "reused",
-                            "model": "gpt-6-sol", "usage": counters(amount)}])
+                           {"type": "turn_context", "payload": {"model": "gpt-6-sol"}},
+                           codex(counters(amount))])
         result = self.load(events)
         report = summarize(result["records"], {"models": []})
         self.assertEqual(report["included_records"], 2)
@@ -91,8 +89,8 @@ class ImportTests(unittest.TestCase):
         events = []
         for session in ("\ud800", "\\ud800", "\udfff", "ordinary-session"):
             events.extend([{"type": "session_meta", "payload": {"id": session}},
-                           {"type": "turn.completed", "request_id": "reused",
-                            "model": "gpt-6-sol", "usage": counters()}])
+                           {"type": "turn_context", "payload": {"model": "gpt-6-sol"}},
+                           codex(counters())])
         for mode in ("codex", "auto"):
             with self.subTest(mode=mode):
                 result = self.load(events, mode)
@@ -176,14 +174,34 @@ class ImportTests(unittest.TestCase):
         self.assertFalse(r["records"])
         self.assertIn("contradictory_duplicate_cumulative_usage", self.codes(r))
 
-    def test_codex_turn_completed_and_mixed_schema_guard(self):
-        r = self.load([{"type": "turn.completed", "usage": counters(), "model": "gpt-6-luna"}, codex(counters())])
-        self.assertEqual(len(r["records"]), 1)
-        self.assertEqual(r["records"][0]["status"], "success")
-        self.assertIn("mixed_codex_usage_schemas", self.codes(r))
+    def test_codex_turn_aggregate_cannot_become_a_priced_request(self):
+        for mode in ("codex", "auto"):
+            for extra in ({}, {"request_id": "turn-with-id", "usage_scope": "request"}):
+                with self.subTest(mode=mode, extra=extra):
+                    event = {"type": "turn.completed", "model": "gpt-6-astra",
+                             "usage": counters(300000, 250000, 1000), **extra}
+                    result = self.load([event], mode)
+                    self.assertEqual(result["records"], [])
+                    self.assertEqual(self.codes(result), ["aggregate_codex_turn_usage"])
+                    self.assertEqual(result["source_metadata"]["excluded_events"], 1)
+                    report = summarize(result["records"], {"models": []})
+                    self.assertEqual(report["included_records"], 0)
+                    self.assertEqual(report["groups"], [])
+
+    def test_codex_turn_aggregate_does_not_discard_request_usage(self):
+        aggregate = {"type": "turn.completed", "usage": counters(300), "model": "gpt-6-luna"}
+        for mode in ("codex", "auto"):
+            for events in ([aggregate, codex(counters())], [codex(counters()), aggregate]):
+                with self.subTest(mode=mode, first=events[0]["type"]):
+                    r = self.load(events, mode)
+                    self.assertEqual(len(r["records"]), 1)
+                    self.assertEqual(r["records"][0]["usage"]["input_total"], 100)
+                    self.assertEqual(r["source_metadata"]["usage_events"], 2)
+                    self.assertEqual(r["source_metadata"]["excluded_events"], 1)
+                    self.assertEqual(self.codes(r), ["aggregate_codex_turn_usage"])
 
     def test_missing_cache_fields_never_zero_fill(self):
-        r = self.load([{"type": "turn.completed", "usage": {"input_tokens": 100, "output_tokens": 10}}])
+        r = self.load([codex({"input_tokens": 100, "output_tokens": 10})])
         u = r["records"][0]["usage"]
         self.assertIsNone(u["cache_read"])
         self.assertIsNone(u["cache_write_unknown"])
@@ -220,6 +238,34 @@ class ImportTests(unittest.TestCase):
                        claude({"input_tokens": 2, "output_tokens": 4})], "claude")
         self.assertFalse(r["records"])
         self.assertIn("contradictory_duplicate_id", self.codes(r))
+
+    def test_anthropic_request_status_fills_unknown_without_losing_usage(self):
+        usage = {"input_tokens": 10, "cache_read_input_tokens": 30,
+                 "cache_creation_input_tokens": 0, "output_tokens": 12}
+        for status, stop_reason in (("success", "tool_use"), ("failed", None)):
+            partial, terminal = claude(usage), claude(usage)
+            partial["message"]["stop_reason"] = None
+            terminal["message"]["stop_reason"] = stop_reason
+            terminal["status"] = status
+            for events in ([partial, terminal], [terminal, partial]):
+                with self.subTest(status=status, first_stop=events[0]["message"]["stop_reason"]):
+                    result = self.load(events, "claude")
+                    self.assertFalse(result["diagnostics"])
+                    self.assertEqual(len(result["records"]), 1)
+                    self.assertEqual(result["records"][0]["status"], status)
+                    self.assertEqual(result["records"][0]["usage"]["input_total"], 40)
+                    self.assertEqual(result["source_metadata"]["duplicate_events"], 1)
+
+    def test_anthropic_conflicting_final_statuses_are_still_excluded(self):
+        usage = {"input_tokens": 10, "output_tokens": 12}
+        success, failed = claude(usage), claude(usage)
+        failed["message"]["stop_reason"] = None
+        failed["status"] = "failed"
+        for events in ([success, failed], [failed, success]):
+            with self.subTest(first_status=events[0].get("status")):
+                result = self.load(events, "claude")
+                self.assertFalse(result["records"])
+                self.assertIn("contradictory_duplicate_id", self.codes(result))
 
     def test_anthropic_breakdown_mismatch_excluded(self):
         u = {"input_tokens": 1, "output_tokens": 2, "cache_creation_input_tokens": 8,

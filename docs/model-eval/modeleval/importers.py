@@ -279,7 +279,6 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
     previous = None
     previous_model = None
     previous_last = None
-    codex_mode = None
     epoch = 0
     previous_record_id = None
     digest = sha256()
@@ -323,8 +322,11 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
         elif record_id in records:
             old = records[record_id]
             # Transcript blocks may repeat one request at different timestamps.
-            comparable = ("provider", "model", "billing_basis", "usage", "status", "elapsed_seconds", "provider_reported_cost_reference_usd")
-            if all(old.get(k) == record.get(k) for k in comparable):
+            comparable = ("provider", "model", "billing_basis", "usage", "elapsed_seconds", "provider_reported_cost_reference_usd")
+            statuses = {old["status"], record["status"]} - {"unknown"}
+            status_agrees = old["status"] == record["status"] or dialect == "anthropic" and len(statuses) == 1
+            if status_agrees and all(old.get(k) == record.get(k) for k in comparable):
+                old["status"] = next(iter(statuses), "unknown")
                 metadata["duplicate_events"] += 1
             else:
                 del records[record_id]
@@ -335,7 +337,7 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
         return record_id
 
     def consume(obj, line):
-        nonlocal model, session, previous, previous_model, previous_last, codex_mode, epoch, previous_record_id
+        nonlocal model, session, previous, previous_model, previous_last, epoch, previous_record_id
         if not isinstance(obj, dict):
             diagnostic("json_object_required", line, True)
             return
@@ -361,7 +363,7 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
                 if isinstance(payload.get("id"), str):
                     next_session = _hash(json.dumps(payload["id"], ensure_ascii=True))
                     if next_session != session:
-                        model, codex_mode, epoch = "unknown", None, 0
+                        model, epoch = "unknown", 0
                         previous = previous_model = previous_last = previous_record_id = None
                         session = next_session
                 return
@@ -370,13 +372,7 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
                 return
             if kind == "turn.completed" and isinstance(obj.get("usage"), dict):
                 metadata["usage_events"] += 1
-                if codex_mode == "token_count":
-                    diagnostic("mixed_codex_usage_schemas", line, True)
-                    return
-                codex_mode = "turn.completed"
-                data = {k: obj[k] for k in ("type", "model", "timestamp", "elapsed_seconds", "status") if k in obj}
-                data.setdefault("model", model)
-                emit(data, obj["usage"], "openai", "openai", line, _id(obj))
+                diagnostic("aggregate_codex_turn_usage", line, True)
                 return
             if kind != "event_msg" or payload.get("type") != "token_count":
                 metadata["ignored_lines"] += 1
@@ -386,10 +382,6 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
                 metadata["ignored_lines"] += 1
                 return
             metadata["usage_events"] += 1
-            if codex_mode == "turn.completed":
-                diagnostic("mixed_codex_usage_schemas", line, True)
-                return
-            codex_mode = "token_count"
             total = _dict(info.get("total_token_usage"))
             last = _dict(info.get("last_token_usage"))
             fields = ("input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens")
