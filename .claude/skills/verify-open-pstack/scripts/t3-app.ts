@@ -1,3 +1,4 @@
+import { validatePoolBinding, type PoolPolicy } from './pool-profile.ts';
 import { randomUUID } from 'node:crypto';
 import { createReadStream, readFileSync } from 'node:fs';
 import { lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
@@ -12,6 +13,7 @@ import type { NativeWritePolicy } from './command-policy.ts';
 import type { SessionRecord } from './types.ts';
 
 export interface T3Config {
+  providerRouting?: { directProviderId: string; fallbackProviderId: string };
   parentThreadId: string;
   baseProviderId: string;
   model: string;
@@ -27,6 +29,7 @@ export interface T3Config {
 export interface AppCase {
   harness: 'claude' | 'codex';
   projectSkill?: boolean;
+  childResult?: string;
   pluginRoot: string;
   workspace: string;
   fixture: string;
@@ -59,6 +62,12 @@ export function t3Config(value: unknown): T3Config {
   for (const key of ['launcherDirectory', 'settingsPath', 'logsDirectory']) if (!isAbsolute(config[key] as string)) throw new Error(`T3 ${key} must be absolute`);
   const ids = [config.baseProviderId, config.codexProviderId, config.verifyClaudeProviderId, config.verifyCodexProviderId];
   if (new Set(ids).size !== ids.length) throw new Error('T3 verification instances must differ from the daily providers and from each other');
+  if (config.providerRouting !== undefined) {
+    const policy = config.providerRouting;
+    if (!policy || typeof policy !== 'object' || !('directProviderId' in policy) || !('fallbackProviderId' in policy)
+      || typeof policy.directProviderId !== 'string' || !policy.directProviderId || typeof policy.fallbackProviderId !== 'string' || !policy.fallbackProviderId
+      || new Set([...ids, policy.directProviderId, policy.fallbackProviderId]).size !== ids.length + 2) throw new Error('T3 provider-routing needs distinct primary, direct, fallback and verification instances');
+  }
   return config as unknown as T3Config;
 }
 
@@ -207,7 +216,17 @@ export function validateClaudeLaunch(native: string, launches: JsonObject[], mod
   if (launches.length !== 1 || init.length !== 1 || !options || options.sessionId !== init[0].session_id || options.cwd !== init[0].cwd
     || options.model !== model || options.pathToClaudeCodeExecutable !== binary || options.tools?.preset !== 'claude_code'
     || options.hasEnvironment !== true || options.hasMcpServers !== true) throw new Error('Claude query launch does not match the native candidate session');
-  if (effort !== undefined && options.effort !== effort) throw new Error('Claude child query effort differs from requested route');
+  if (effort !== undefined && options.effort !== (effort === 'default' ? undefined : effort)) throw new Error('Claude child query effort differs from requested route');
+}
+
+export function validateClaudeChildEffort(options: unknown, routes: AppRouteEvidence[], provider: string, model: string): string {
+  if (Array.isArray(options) && options.filter(o => o?.id === 'effort').length > 1) throw new Error('Claude child request has duplicate effort');
+  const effort = Array.isArray(options) ? options.find(o => o?.id === 'effort')?.value
+    : options && typeof options === 'object' && 'effort' in options ? options.effort : undefined;
+  if (effort !== undefined && (typeof effort !== 'string' || effort === 'default')) throw new Error('Claude child request has invalid effort');
+  const requested = effort ?? 'default';
+  if (!routes.some(route => route.providerInstanceId === provider && route.model === model && (requested === 'default' || route.efforts.includes(requested)))) throw new Error('Claude child model/effort was absent from the fresh app catalog');
+  return requested;
 }
 
 /** Agent-driven rendezvous: only the T3 delegate_task tool launches Claude. */
@@ -217,8 +236,9 @@ export class T3App {
   private locked = false;
   private passThrough?: Record<Driver, string>;
   constructor(private config: T3Config, private root: string) {}
-  get runnerRoute(): { providerInstanceId: string; model: string } {
-    return { providerInstanceId: this.config.verifyClaudeProviderId, model: this.config.runnerClaudeModel };
+  get runnerRoute(): { providerInstanceId: string; model: string; policy?: PoolPolicy } {
+    return { providerInstanceId: this.config.verifyClaudeProviderId, model: this.config.runnerClaudeModel,
+      ...(this.config.providerRouting ? { policy: { primary: this.config.baseProviderId, direct: this.config.providerRouting.directProviderId, fallback: this.config.providerRouting.fallbackProviderId } } : {}) };
   }
 
   get settingsPath(): string { return this.config.settingsPath; }
@@ -237,7 +257,10 @@ export class T3App {
   private dailyBinary(providers: JsonObject, driver: Driver): string {
     const base = providers[driver === 'claude' ? this.config.baseProviderId : this.config.codexProviderId];
     if (base?.driver !== (driver === 'claude' ? 'claudeAgent' : 'codex') || base.enabled !== true || typeof base.config?.binaryPath !== 'string' || !base.config.binaryPath) throw new Error('Select an enabled native app provider with an explicit binary');
-    if (accountEnvironment(base)) throw new Error('This provider requires account-specific environment; use its normal app lane without copying credentials');
+    if (driver === 'claude' && this.config.providerRouting) {
+      validatePoolBinding(base.environment, providers[this.config.verifyClaudeProviderId]?.environment);
+      if (base.config.launchArgs) throw new Error('Pool daily launcher must not have launch arguments');
+    } else if (accountEnvironment(base)) throw new Error('This provider requires account-specific environment; use its normal app lane without copying credentials');
     if (!isAbsolute(base.config.binaryPath)) throw new Error('The daily provider binary must be an absolute path');
     return base.config.binaryPath;
   }
@@ -246,14 +269,22 @@ export class T3App {
     for (const driver of ['claude', 'codex'] as const) {
       const id = driver === 'claude' ? this.config.verifyClaudeProviderId : this.config.verifyCodexProviderId, entry = providers[id];
       const kind = driver === 'claude' ? 'claudeAgent' : 'codex';
-      if (entry?.driver !== kind || entry.enabled !== true || entry.config?.binaryPath !== this.launcher(driver) || entry.config?.launchArgs || (entry.environment ?? []).length) {
-        throw new Error(`Add T3 provider instance ${id} once in T3 Settings: driver ${kind}, enabled, binary ${this.launcher(driver)}, no launch arguments, no environment entries. Verification runs never edit T3 settings.`);
+      const pool = driver === 'claude' && this.config.providerRouting;
+      if (pool) validatePoolBinding(providers[this.config.baseProviderId]?.environment, entry?.environment);
+      if (entry?.driver !== kind || entry.enabled !== true || entry.config?.binaryPath !== this.launcher(driver) || entry.config?.launchArgs || (!pool && (entry.environment ?? []).length)) {
+        throw new Error(`Add T3 provider instance ${id} once in T3 Settings: driver ${kind}, enabled, binary ${this.launcher(driver)}, no launch arguments, ${pool ? 'identical reference-bound pool environment' : 'no environment entries'}. Verification runs never edit T3 settings.`);
       }
     }
   }
 
   async claudeBinaryPath(): Promise<string> {
-    return this.dailyBinary(await this.providers(), 'claude');
+    const providers = await this.providers();
+    const binary = this.dailyBinary(providers, 'claude');
+    if (!this.config.providerRouting) return binary;
+    const real = validatePoolBinding(providers[this.config.baseProviderId].environment, providers[this.config.verifyClaudeProviderId]?.environment);
+    const resolved = await realpath(real), launchers = await realpath(this.config.launcherDirectory).catch(() => this.config.launcherDirectory);
+    if (resolved === launchers || resolved.startsWith(launchers + sep)) throw new Error('Pool real Claude binary resolves into the launcher directory');
+    return real;
   }
 
   private async passThroughTargets(providers: JsonObject): Promise<Record<Driver, string>> {
@@ -264,7 +295,8 @@ export class T3App {
     for (const driver of ['claude', 'codex'] as const) await this.assertLauncherSlot(driver);
     const resolvedDirectory = await realpath(directory);
     const targets = { claude: this.dailyBinary(providers, 'claude'), codex: this.dailyBinary(providers, 'codex') };
-    for (const target of Object.values(targets)) {
+    const binaries = [...Object.values(targets), ...this.config.providerRouting ? [await this.claudeBinaryPath()] : []];
+    for (const target of binaries) {
       const resolved = await realpath(target).catch(() => { throw new Error(`Daily provider binary ${target} does not exist`); });
       if (resolved === resolvedDirectory || resolved.startsWith(resolvedDirectory + sep)) throw new Error(`Daily provider binary ${target} resolves into the launcher directory`);
     }
@@ -386,14 +418,12 @@ export class T3App {
     const childPath = c.stdout + '.claude-child.jsonl', childRaw = childPath + '.t3-native.log';
     const childLog = await nativeMessages(this.config.logsDirectory, { threadId: child.childThreadId, providerId: this.config.verifyClaudeProviderId }, c.started, 'claude', { native: childPath, raw: childRaw });
     const options = call.arguments?.target?.options;
-    const effort = Array.isArray(options) ? options.find(o => o?.id === 'effort')?.value : options?.effort;
-    if (typeof effort !== 'string') throw new Error('Claude child request lacks effort');
-    if (!routes.some(route => route.providerInstanceId === this.config.verifyClaudeProviderId && route.model === child.model && route.efforts.includes(effort))) throw new Error('Claude child model/effort was absent from the fresh app catalog');
-    validateClaudeLaunch(childLog.native, childLog.launches, child.model, this.launcher('claude'), effort);
+    const requestedEffort = validateClaudeChildEffort(options, routes, this.config.verifyClaudeProviderId, child.model);
+    validateClaudeLaunch(childLog.native, childLog.launches, child.model, this.launcher('claude'), requestedEffort);
     validateClaudePrompt(childLog.prompts, call.arguments?.task);
     await parseClaudeEvidence(childLog.native, { pluginRoot: c.pluginRoot, workspace: c.workspace, started: c.started, model: child.model, writePolicy: c.writePolicy });
     const terminal = childLog.native.trim().split('\n').map(line => JSON.parse(line)).find(e => e.type === 'result');
-    if (terminal?.result?.trim() !== 'PONG') throw new Error('Claude native child did not return PONG');
+    if (terminal?.result?.trim() !== (c.childResult ?? 'PONG')) throw new Error('Claude native child did not return the case result');
     return [childPath, childRaw];
   }
 
@@ -464,7 +494,8 @@ export class T3App {
       if (!error.message.includes('escaped isolated candidate')) throw error;
       throw new Error(`${error.message}; T3 may still be serving the Codex verification instance from an app-server started outside this run, so wait for its idle release or restart T3`);
     });
-    return { evidence, rolloutPath: native.rolloutPath, record: { ...native.session, appTools: native.toolCalls, appRoutes: routes } };
+    return { evidence, rolloutPath: native.rolloutPath, record: { ...native.session, appTools: native.toolCalls, appOrder: { commands: Object.fromEntries(native.items.flatMap((item, index) => item.type === 'commandExecution' ? [[String(item.id), index]] : [])),
+      tools: native.items.flatMap((item, index) => item.type === 'mcpToolCall' && item.server === 't3-code' ? [index] : []) }, appRoutes: routes } };
   }
 }
 

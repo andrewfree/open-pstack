@@ -11,6 +11,7 @@ The ownership table below says which features a changed path reaches. `SKILL.md`
 | `catalog` | The generated model catalog and native agents, and the registry sources: `catalog`, `setup`, and `runner`, and no skill check |
 | `assets` | Installed UI/resource surface for each actual consumer found in the pinned plugin manifests |
 | `setup` | Installed setup/model configuration with byte-exact daily Claude file restoration before publication |
+| `routing` | Policy-driven installed routing, saved-pool selection, explicit-pin and refusal fixtures, and one real Codex app to Claude child |
 | `runner` | Installed parent invoking real configured provider lanes |
 | `tools` | Installed parent invoking the changed shipped CLI |
 | `project` | Native discovery/invocation of this verifier in both harnesses |
@@ -31,6 +32,7 @@ The feature documents below define sub-features, user entry points, driving inst
 - `skill-invocation.md`: installed native skills, principle leaves, and project-skill self-test.
 - `setup.md`: setup/routing/model configuration and byte-exact restoration.
 - `isolation.md`: existing native logins, verification launchers, Codex auth symlink, and private run state.
+- `provider-routing.md`: the compact policy exercise, unchanged helper target, reference-bound pool preparation, and one real nested Claude child.
 - `runner.md`: parent-to-child provider dispatch and receipts.
 - `t3-app.md`: T3 app configuration, request rendezvous, candidate loading, native log binding, and cleanup.
 - `catalog.md`: the generated model catalog and native agents, read by a parent resolving roles from a model sheet.

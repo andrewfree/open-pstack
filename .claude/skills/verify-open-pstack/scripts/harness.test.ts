@@ -486,7 +486,7 @@ describe('headless recipes', () => {
     const mac = new MacDriver(command, noSession, [], appStub(claudeStream({ command: 'pstack:architect' })).app);
     const comments: string[] = [], statuses: string[] = [], sha = 'a'.repeat(40), base = 'b'.repeat(40);
     await expect(verify({ repo: REPO, pr: 111, selfTest: false, features: ['claude:skill-invocation:architect'], root, publisherRevision: 'c'.repeat(40), persist: async () => {},
-      registry: { skills: ['architect'], shared: [], catalog: [], assets: [], setup: [], runner: [], tools: [], project: [], nonRuntime: [] },
+      registry: { skills: ['architect'], shared: [], catalog: [], assets: [], setup: [], routing: [], runner: [], tools: [], project: [], nonRuntime: [] },
       github: {
         async pull() { return { number: 111, head: { sha }, base: { sha: base }, state: 'open', headRepo: REPO }; },
         async files() { return [{ filename: 'plugins/pstack/skills/architect/SKILL.md' }]; },
