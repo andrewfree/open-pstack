@@ -3,7 +3,8 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeF
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { save } from './io.ts';
-import { capabilityRoutes, launcherScript, nativeMessages, T3App, t3Config, validateAppReply, validateAppTerminalReply, validateClaudeLaunch, validateClaudePrompt, type AppCase } from './t3-app.ts';
+import { syntheticPoolEnvironment } from './pool-profile.test.ts';
+import { validateClaudeChildEffort, capabilityRoutes, launcherScript, nativeMessages, T3App, t3Config, validateAppReply, validateAppTerminalReply, validateClaudeLaunch, validateClaudePrompt, type AppCase } from './t3-app.ts';
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -450,4 +451,49 @@ test('a case whose launcher cannot be armed reports that failure, not a pending 
   const cleanup = await a.app.cleanup().catch(error => error);
   expect(cleanup.message).toContain('not a pstack verification launcher');
   expect(cleanup.message).not.toContain('no validated terminal receipt');
+});
+
+test('native child effort validation accepts catalog-supported omission only for default', () => {
+  const routes = [{ providerInstanceId: 'verify', model: 'opus', efforts: ['high', 'default'] }];
+  for (const options of [undefined, {}, []]) expect(validateClaudeChildEffort(options, routes, 'verify', 'opus')).toBe('default');
+  for (const options of [{ effort: 'high' }, [{ id: 'effort', value: 'high' }]]) expect(validateClaudeChildEffort(options, routes, 'verify', 'opus')).toBe('high');
+  for (const options of [{ effort: 'default' }, { effort: 'low' }, { effort: 1 }]) expect(() => validateClaudeChildEffort(options, routes, 'verify', 'opus')).toThrow();
+  expect(validateClaudeChildEffort({}, [{ ...routes[0]!, efforts: [] }], 'verify', 'opus')).toBe('default');
+  expect(() => validateClaudeChildEffort({}, [], 'verify', 'opus')).toThrow('absent from the fresh app catalog');
+  expect(() => validateClaudeChildEffort({ effort: 'high' }, routes, 'daily', 'opus')).toThrow();
+  const launches = launch();
+  expect(() => validateClaudeLaunch(init, launches, 'haiku', '/bin/claude', 'default')).not.toThrow();
+  const explicit = launches.map(item => ({ ...item, options: { ...item.options, effort: 'high' } }));
+  expect(() => validateClaudeLaunch(init, explicit, 'haiku', '/bin/claude', 'default')).toThrow('effort differs');
+  expect(() => validateClaudeLaunch(init, explicit, 'haiku', '/bin/claude', 'max')).toThrow('effort differs');
+});
+
+test('a reference-bound pool passes through T3 environment and probes its real binary without serializing auth', async () => {
+  const a = await fakeApp(), settings = await json(a.settingsPath);
+  const environment = syntheticPoolEnvironment(); environment[3]!.value = '/usr/bin/true';
+  settings.providerInstances.claude.environment = environment;
+  settings.providerInstances.verify_claude.environment = structuredClone(environment);
+  await writeFile(a.settingsPath, JSON.stringify(settings));
+  const app = new T3App({ ...a.config, providerRouting: { directProviderId: 'direct', fallbackProviderId: 'manual_mac' } }, a.root);
+  expect(await app.claudeBinaryPath()).toBe('/usr/bin/true');
+  await app.prepare();
+  expect(await idle(a)).toEqual(passThrough);
+  for (const script of await idle(a)) { expect(script).not.toContain('ANTHROPIC'); expect(script).not.toContain('op://'); expect(script).not.toContain('pool.example'); }
+  expect(app.runnerRoute).toEqual({ providerInstanceId: 'verify_claude', model: 'opus', policy: { primary: 'claude', direct: 'direct', fallback: 'manual_mac' } });
+  settings.providerInstances.verify_claude.environment[2].value = 'https://manual.example.invalid';
+  await writeFile(a.settingsPath, JSON.stringify(settings));
+  await expect(app.record(a.c)).rejects.toThrow('pool-verification-unprepared');
+  expect(await idle(a)).toEqual(passThrough);
+  await app.cleanup();
+});
+
+test('the configured pool does not accept T3-local redacted secrets as proof of credential equivalence', async () => {
+  const a = await fakeApp(), settings = await json(a.settingsPath), environment = syntheticPoolEnvironment();
+  delete environment[4]!.secret;
+  settings.providerInstances.claude.environment = environment;
+  settings.providerInstances.verify_claude.environment = structuredClone(environment);
+  await writeFile(a.settingsPath, JSON.stringify(settings));
+  const app = new T3App({ ...a.config, providerRouting: { directProviderId: 'direct', fallbackProviderId: 'manual_mac' } }, a.root);
+  await expect(app.claudeBinaryPath()).rejects.toThrow('pool-verification-unprepared');
+  await expect(app.prepare()).rejects.toThrow('pool-verification-unprepared');
 });

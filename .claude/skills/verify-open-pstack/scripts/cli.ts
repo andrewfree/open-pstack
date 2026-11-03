@@ -57,7 +57,7 @@ async function main(): Promise<void> {
     const options = parse(process.argv.slice(2)), repository = resolve(import.meta.dir, '../../../..');
     root = await freshRoot(options.output, repository);
     const app = options.t3App ? new T3App(t3Config(JSON.parse(await readFile(options.t3App, 'utf8'))), root) : undefined;
-    if (options.mode === 'doctor') await doctor(root, undefined, undefined, options.candidate, undefined, await app?.claudeBinaryPath());
+    if (options.mode === 'doctor') await doctor(root, undefined, undefined, options.candidate, undefined, await app?.claudeBinaryPath(), Boolean(app?.runnerRoute.policy));
     else {
       const publisherRevision = (await command(['git', 'rev-parse', 'HEAD'], { cwd: repository })).trim();
       const registry = validateRegistry(JSON.parse(await readFile(join(import.meta.dir, '../features/registry.json'), 'utf8')));

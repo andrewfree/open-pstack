@@ -8,7 +8,7 @@ import { HARNESSES, type Harness } from './types.ts';
 export class LoginRequired extends Error {}
 const CLAUDE_FIX = 'run `claude auth login` from a shell on this Mac, not over SSH', CODEX_FIX = 'run `codex login` on this Mac';
 
-export async function doctor(root: string, run: Command = command, platform = process.platform, candidate = false, harnesses: readonly Harness[] = HARNESSES, claudeBinary?: string): Promise<void> {
+export async function doctor(root: string, run: Command = command, platform = process.platform, candidate = false, harnesses: readonly Harness[] = HARNESSES, claudeBinary?: string, claudePool = false): Promise<void> {
   const report: Record<string, unknown> = { platform, candidate, date: new Date().toISOString(), skill: await realpath(join(import.meta.dir, '..')), checks: {} };
   const checks = report.checks as Record<string, string>;
   try {
@@ -29,12 +29,13 @@ export async function doctor(root: string, run: Command = command, platform = pr
       if (args.includes('marketplace') && !/local path|local or Git|local marketplace/i.test(help)) throw new Error('Codex local marketplace interface unavailable');
       checks[args.join(' ')] = help;
     }
-    if (!candidate && harnesses.includes('claude')) {
+    if (!candidate && harnesses.includes('claude') && !claudePool) {
       let loggedIn: unknown;
       try { loggedIn = JSON.parse(await run([claude, 'auth', 'status'], { env })).loggedIn; } catch {}
       if (loggedIn !== true) throw new LoginRequired(`Claude login check failed: \`claude auth status\` did not report "loggedIn": true; ${CLAUDE_FIX}`);
       checks['claude login'] = 'logged in';
     }
+    if (!candidate && claudePool) checks['claude authentication'] = 'T3-owned pool reference binding; authentication remains unproved until native pool execution';
     if (!candidate && harnesses.includes('codex')) {
       let linked = false;
       try { await linkCodexAuth(home); linked = true; await run(['codex', 'login', 'status'], { env }); checks['codex login'] = 'logged in'; }

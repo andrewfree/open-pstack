@@ -36,7 +36,7 @@ describe('registry and ownership', () => {
     for (const filename of paths) expect(() => classify([{ filename }], registry)).not.toThrow();
   });
   test('validates external registry shape', () => {
-    for (const value of [null, {}, { ...registry, skills: ['../bad'] }, { ...registry, tools: ['x', 'x'] }, { ...registry, shared: [3] }, { ...registry, assets: undefined }, { ...registry, assets: ['../asset'] }, { ...registry, assets: ['x', 'x'] }, { ...registry, catalog: undefined }]) {
+    for (const value of [null, {}, { ...registry, skills: ['../bad'] }, { ...registry, tools: ['x', 'x'] }, { ...registry, shared: [3] }, { ...registry, assets: undefined }, { ...registry, assets: ['../asset'] }, { ...registry, assets: ['x', 'x'] }, { ...registry, catalog: undefined }, { ...registry, routing: undefined }]) {
       expect(() => validateRegistry(value)).toThrow();
     }
   });
@@ -65,7 +65,7 @@ describe('registry and ownership', () => {
   });
   test('poteto-mode SKILL.md also reaches the Claude agent that preloads it', () => {
     const s = classify([{ filename: 'plugins/pstack/skills/poteto-mode/SKILL.md' }], registry);
-    expect(s.features).toEqual([...both('skill-invocation:poteto-mode'), 'claude:agent-preload:poteto-agent'].sort());
+    expect(s.features).toEqual([...both('skill-invocation:poteto-mode', 'provider-routing'), 'claude:agent-preload:poteto-agent'].sort());
   });
   const CATALOG = 'plugins/pstack/skills/poteto-mode/references/model-catalog.md';
   test('catalog-only changes select catalog, setup and runner and no skill check', () => {
@@ -184,7 +184,7 @@ describe('registry and ownership', () => {
   });
   test('the shared recipe implementation reaches every implemented recipe and preserves project proof', () => {
     const path = '.claude/skills/verify-open-pstack/features/recipes.ts';
-    const expected = [...both('catalog', 'setup', 'runner', 'shipped-tools', 'hook:startup', 'project-skill',
+    const expected = [...both('catalog', 'setup', 'provider-routing', 'runner', 'shipped-tools', 'hook:startup', 'project-skill',
       ...registry.skills.map(skill => `skill-invocation:${skill}`)), 'claude:agent-preload:poteto-agent'].sort();
     for (const file of [{ filename: path }, { filename: 'docs/moved.md', previous_filename: path }]) {
       const s = classify([file], registry);

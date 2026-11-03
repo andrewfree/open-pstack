@@ -104,3 +104,29 @@ test('the T3 case refuses to run without the app transport', async () => {
   const f = await fixture(), c = recipe('runner', 'codex').find(c => c.id === 'app-route-1')!;
   await expect(c.prepare!(f)).rejects.toThrow('unsupported-native-consumer:claude-app');
 });
+
+test('default effort is omitted for both option representations while explicit efforts remain exact', async () => {
+  const r = record(), f = await fixture(r), c = await appCase(f, ['claude:opus@default']);
+  r.appRoutes = r.appRoutes!.map(route => ({ ...route, efforts: ['max', 'default'] }));
+  const provider = (r.appTools![0]!.result.providers as any)[0];
+  for (const model of provider.models) model.options[0].values.push('default');
+  const path = join(f.dir, 'app-lane.json'), lane = JSON.parse(await readFile(path, 'utf8'));
+  lane.descriptor = 'claude:opus@default'; lane.effort = 'default'; await writeFile(path, JSON.stringify(lane));
+  const target = r.appTools![1]!.arguments.target as any;
+  for (const options of [undefined, {}, [], [{ id: 'fastMode', value: false }]]) {
+    target.options = options;
+    expect((await c.assert(r, f)).assertions).toContain('matching-child-run');
+  }
+  for (const options of [{ effort: 'default' }, { effort: 'max' }, [{ id: 'effort', value: 'default' }], [{ id: 'effort', value: 'max' }]]) {
+    target.options = options;
+    await expect(c.assert(r, f)).rejects.toThrow('app-route-effort-mismatch');
+  }
+  target.options = undefined;
+  for (const route of r.appRoutes!) route.efforts = [];
+  for (const model of provider.models) model.options = [];
+  expect((await c.assert(r, f)).assertions).toContain('matching-child-run');
+  for (const route of r.appRoutes!) route.efforts = ['max'];
+  for (const model of provider.models) model.options = [effortOption(['max'])];
+  const exact = await appCase(f, ['claude:opus@max']);
+  await expect(exact.assert(r, f)).rejects.toThrow('app-route-effort-mismatch');
+});

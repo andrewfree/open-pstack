@@ -106,8 +106,8 @@ export class MacDriver implements Driver {
   async preflight(receipt: Receipt): Promise<void> {
     const harnesses = requiredHarnesses(receipt);
     assertNativeConsumers(harnesses, this.app !== undefined);
-    if (!this.app && requiredFeatures(receipt, 'codex').includes('runner')) throw new Error('unsupported-native-consumer:claude-app: the Codex runner feature verifies the T3 Claude Agent route and needs --t3-app');
-    await doctor(receipt.artifactRoot, this.run, process.platform, false, harnesses, harnesses.includes('claude') ? await this.app!.claudeBinaryPath() : undefined);
+    if (!this.app && requiredFeatures(receipt, 'codex').some(feature => ['runner', 'provider-routing'].includes(feature))) throw new Error('unsupported-native-consumer:claude-app: the Codex runner feature verifies the T3 Claude Agent route and needs --t3-app');
+    await doctor(receipt.artifactRoot, this.run, process.platform, false, harnesses, harnesses.includes('claude') ? await this.app!.claudeBinaryPath() : undefined, Boolean(this.app?.runnerRoute.policy));
   }
   async prepare(receipt: Receipt): Promise<Installation[]> {
     const harnesses = requiredHarnesses(receipt);
@@ -192,9 +192,9 @@ export class MacDriver implements Driver {
               await c.prepare?.(fixture);
               const stdout = join(records, `${c.id}.jsonl`), stderr = join(records, `${c.id}.stderr`), cwd = c.cwd === 'workspace' ? workspace : dir;
               const rolloutCopy = join(records, `${c.id}.rollout.jsonl`), started = Date.now();
-              const appCase = harness === 'claude' || c.id.startsWith('app-route-');
+              const appCase = harness === 'claude' || c.app !== undefined || c.id.startsWith('app-route-');
               const app = appCase ? await this.app!.record({ harness, projectSkill: feature === 'project-skill', pluginRoot: installation.location, workspace, fixture: dir,
-                prompt: c.prompt(fixture), env, stdout, stderr, started, cliVersion: installation.cliVersion, writePolicy }) : undefined;
+                prompt: c.prompt(fixture), childResult: c.app?.result?.(fixture), env, stdout, stderr, started, cliVersion: installation.cliVersion, writePolicy }) : undefined;
               const exitCode = app ? 0 : await this.record(launch({ cwd, addDirs: cwd === dir ? [] : [dir], codexSandbox: c.codexSandbox }), { cwd, env, input: c.prompt(fixture), stdout, stderr });
               evidence.push(stdout, ...(await stat(stderr)).size ? [stderr] : [], ...app?.evidence ?? []);
               let record: SessionRecord, result;
@@ -224,7 +224,7 @@ export class MacDriver implements Driver {
         const passed = `passed: ${assertions.join(' ')}`;
         observations.push({ harness, feature, reviewer: 'recipe', assertions,
           surface: harness === 'claude' ? 'T3 Claude app child with the exact candidate plugin and native session evidence'
-            : cases.some(c => c.id.startsWith('app-route-')) ? 'T3 Codex app parent with the run-owned candidate installation and native Claude dispatch'
+            : cases.some(c => c.app !== undefined || c.id.startsWith('app-route-')) ? 'T3 Codex app parent with the run-owned candidate installation and native Claude dispatch'
             : 'codex exec --json with the run-owned candidate installation',
           action: `recipe ${feature}: ${cases.map(c => c.id).join(', ')}`,
           observed: publishable(passed) ? passed : `passed ${assertions.length} assertions; ids retained privately`,

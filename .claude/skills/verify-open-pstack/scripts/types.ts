@@ -15,6 +15,7 @@ export interface Registry {
   catalog: string[];
   assets: string[];
   setup: string[];
+  routing: string[];
   runner: string[];
   tools: string[];
   project: string[];
@@ -52,6 +53,7 @@ export interface SessionRecord {
   tools: { name: string; id: string; input: Record<string, any>; parent: string | null; result?: string; failed: boolean }[];
   context: string[];
   appTools?: { tool: string; arguments: Record<string, unknown>; result: Record<string, unknown> }[];
+  appOrder?: { commands: Record<string, number>; tools: number[] };
   appRoutes?: { providerInstanceId: string; model: string; efforts: string[] }[];
 }
 export interface Driver {
