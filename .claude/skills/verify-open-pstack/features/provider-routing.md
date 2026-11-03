@@ -10,7 +10,7 @@ The installed `resolve-t3-claude-route` helper must run after the native catalog
 
 The child task must complete with this run's unique `PONG <nonce>`. Match native catalog, delegate/task/thread/run identities, async plan interaction, terminal result, actual Claude Agent SDK launch and init, candidate plugin path, skill source/body, healthy T3-only MCP inventory and fixture output. A PONG file, catalog entry, quota value, helper output or dispatch handle by itself is insufficient. Raw child evidence remains independently mandatory in `t3-app.ts`.
 
-Preparation requires permanent reference-bound pool and Codex verification profiles. The existing T3-local redacted API-key slot is not a safe shared-reference proof. Until provisioning is supported and qualified, report `pool-verification-unprepared`; retain the existing credential guards and do not run a direct-profile stand-in. No verifier task provisions settings or resolves secrets.
+Preparation requires permanent pool and Codex verification profiles. The default shared-reference policy requires matching explicit references. An owner-authorized independent-client policy instead compares public route metadata while T3 holds each client credential separately; it makes no credential-equality claim. Until the selected policy is prepared, report `pool-verification-unprepared`. No verifier task provisions keys or settings, resolves secrets, or substitutes direct login.
 
 After parent integration, offline checks and final review, the narrow publishing gate uses:
 

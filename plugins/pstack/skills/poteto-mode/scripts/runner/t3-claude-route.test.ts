@@ -24,6 +24,22 @@ const request = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe("persisted T3 Claude selection", () => {
+  it("uses a standing default only when no task override or saved profile exists", () => {
+    const input = request({ sheet: "", defaultInstanceId: pool.providerInstanceId });
+    expect(resolveClaudeRoute(input)).toMatchObject({ kind: "selected", selectionSource: "standing-default", target: { providerInstanceId: pool.providerInstanceId } });
+    expect(resolveClaudeRoute({ ...input, sheet: `t3 claude instance: ${named.providerInstanceId}\n` }))
+      .toMatchObject({ kind: "selected", selectionSource: "sheet", target: { providerInstanceId: named.providerInstanceId } });
+    expect(resolveClaudeRoute({ ...input, operatorInstanceId: direct.providerInstanceId }))
+      .toMatchObject({ kind: "selected", selectionSource: "operator", target: { providerInstanceId: direct.providerInstanceId } });
+  });
+
+  it("keeps a missing standing default pinned until the same instance is discovered", () => {
+    const input = request({ sheet: "", defaultInstanceId: pool.providerInstanceId, providers: [direct, fallback] });
+    expect(resolveClaudeRoute(input)).toMatchObject({ kind: "dropout", reason: "unavailable-claude-instance" });
+    expect(resolveClaudeRoute({ ...input, providers: [direct, fallback, pool] }))
+      .toMatchObject({ kind: "selected", target: { providerInstanceId: pool.providerInstanceId } });
+  });
+
   it("uses the saved pool even when a literal direct-login default is eligible", () => {
     expect(resolveClaudeRoute(request())).toEqual({
       kind: "selected", descriptor: "claude:opus@high", selectionSource: "sheet",

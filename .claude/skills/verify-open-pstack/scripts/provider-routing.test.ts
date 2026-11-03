@@ -32,7 +32,7 @@ async function fixture(harness: 'claude' | 'codex') {
   if (harness === 'claude') { r.appTools = []; r.appRoutes = []; }
   const helperOutput = { kind: 'selected', descriptor: 'claude:opus@high', selectionSource: 'sheet', target: { providerInstanceId: route.providerInstanceId, model: route.model, options: { effort: 'high' } }, quota: 'unknown' };
   r.tools = harness === 'codex' ? [{ name: 'command', id: 'validator', input: { command: `sh '${join(f.location, 'skills/poteto-mode/scripts/runner/resolve-t3-claude-route')}' '${join(dir, 'live-route-request.json')}'` }, result: JSON.stringify(helperOutput), parent: null, failed: false }] : [];
-  if (harness === 'codex') await writeFile(join(dir, 'live-route-request.json'), JSON.stringify({ sheet: await readFile(join(dir, 'routing-sheet.md'), 'utf8'), operatorInstanceId: null, descriptor: 'claude:opus@high', mode: 'read-only', providers: [route.providerInstanceId, ...Object.values(route.policy)].map(provider) }));
+  if (harness === 'codex') await writeFile(join(dir, 'live-route-request.json'), JSON.stringify({ sheet: await readFile(join(dir, 'routing-sheet.md'), 'utf8'), operatorInstanceId: null, defaultInstanceId: null, descriptor: 'claude:opus@high', mode: 'read-only', providers: [route.providerInstanceId, ...Object.values(route.policy)].map(provider) }));
   await writeFile(join(dir, 'app-output.md'), pong);
   await writeFile(join(dir, 'app-lane.json'), JSON.stringify({ route: 't3-claude-agent', descriptor: 'claude:opus@high', providerInstanceId: route.providerInstanceId, model: route.model, effort: 'high', clientRequestId: r.appTools?.[1]?.arguments.clientRequestId,
     taskId: 'task', childThreadId: 'child', status: 'completed', dropoutReason: null }));
@@ -41,7 +41,7 @@ async function fixture(harness: 'claude' | 'codex') {
 
 test('the compact oracle has fresh input identities and keeps all answers out of candidate inputs', async () => {
   const { f, c, input, challenge } = await fixture('claude');
-  expect(input.kind).toBe('synthetic-routing-input'); expect(input.cases).toHaveLength(12);
+  expect(input.kind).toBe('synthetic-routing-input'); expect(input.cases).toHaveLength(13);
   expect(input.expected).toBeUndefined(); expect(input.decisions).toBeUndefined();
   expect(c.prompt(f)).not.toContain(JSON.stringify(challenge.expected));
   const other = await fixture('claude'); expect(other.input.nonce).not.toBe(input.nonce);
@@ -66,10 +66,15 @@ for (const harness of ['claude', 'codex'] as const) test(`${harness} has one rep
   expect(c.app?.child).toBe(harness === 'codex' ? true : undefined);
   if (harness === 'codex') { expect(c.id).toMatch(/^app-route-/); expect(c.prompt(f)).toContain('no explicit operator instance override'); expect(c.app!.result!(f)).toStartWith('PONG '); }
 });
-for (const label of ['alternative-missing', 'targeted-lookup-missing', 'logical-model-mismatch', 'child-running', 'extra-child', 'wrong-child', 'nonce-result-replay', 'skill-not-loaded', 'fake-capability-label'] as const) test(`live policy assertions reject ${label} despite matching synthetic answers`, async () => {
+test('complete native catalog evidence needs no redundant targeted primary lookup', async () => {
+  const { c, f, r } = await fixture('codex');
+  r.appTools![0]!.arguments = {};
+  expect((await c.assert(r, f)).assertions).toContain('live-policy-with-direct-and-manual-fallback');
+});
+for (const label of ['alternative-missing', 'primary-missing', 'logical-model-mismatch', 'child-running', 'extra-child', 'wrong-child', 'nonce-result-replay', 'skill-not-loaded', 'fake-capability-label'] as const) test(`live policy assertions reject ${label} despite matching synthetic answers`, async () => {
   const { c, f, r } = await fixture('codex');
   if (label === 'alternative-missing') r.appTools![0]!.result.providers = [provider(route.providerInstanceId), provider(route.policy.primary)];
-  if (label === 'targeted-lookup-missing') r.appTools![0]!.arguments.search = 'claude';
+  if (label === 'primary-missing') r.appTools![0]!.result.providers = [route.providerInstanceId, route.policy.direct, route.policy.fallback].map(provider);
   if (label === 'logical-model-mismatch') (r.appTools![0]!.result.providers as ReturnType<typeof provider>[]).find(p => p.providerInstanceId === route.policy.primary)!.models[0]!.id = 'claude-opus-6-0';
   if (label === 'child-running') r.appTools![2]!.result.status = 'running';
   if (label === 'extra-child') r.appTools!.push(r.appTools![1]!);
