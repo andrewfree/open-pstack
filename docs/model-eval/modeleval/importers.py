@@ -299,7 +299,7 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
         if excluded:
             metadata["excluded_events"] += 1
 
-    def emit(obj, raw, dialect, provider, line, identity=None, extra_warnings=()):
+    def emit(obj, raw, dialect, provider, line, identity=None, extra_warnings=(), *, request_session=None):
         usage, warnings = _normalize(raw, dialect)
         if usage is None:
             diagnostic(warnings[0], line, True)
@@ -307,7 +307,8 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
         model_value = _model(obj.get("model"))
         if model_value == "unknown":
             warnings.append("model_unknown")
-        record_id = _hash(provider + ":" + (identity or (str(source) + ":" + str(line))))
+        record_id = (_hash(json.dumps([provider, str(source), request_session or session, identity]))
+                     if identity else _hash(provider + ":" + str(source) + ":" + str(line)))
         record = {"schema_version": 1, "record_id": record_id, "provider": provider,
                   "model": model_value, "billing_basis": billing_basis, "source_kind": "observational",
                   "source_ref": f"{source}:{line}", "timestamp": _timestamp(obj.get("timestamp", obj.get("created_at"))),
@@ -331,6 +332,7 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
                 diagnostic("contradictory_duplicate_id", line, True)
         else:
             records[record_id] = record
+        return record_id
 
     def consume(obj, line):
         nonlocal model, session, previous, previous_model, previous_last, codex_mode, epoch, previous_record_id
@@ -357,7 +359,11 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
         if mode == "codex":
             if kind == "session_meta":
                 if isinstance(payload.get("id"), str):
-                    session = _hash(payload["id"])
+                    next_session = _hash(payload["id"])
+                    if next_session != session:
+                        model, codex_mode, epoch = "unknown", None, 0
+                        previous = previous_model = previous_last = previous_record_id = None
+                        session = next_session
                 return
             if kind == "turn_context":
                 model = _model(payload.get("model"))
@@ -423,12 +429,11 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
             elif any(k in total and v is not None and total[k] != v for k, v in last.items()):
                 warnings.append("initial_cumulative_baseline_unavailable")
             identity = session + ":token_count:" + _hash(json.dumps([model, epoch, total or last, line if not total else None], sort_keys=True))
-            previous_record_id = _hash("openai:" + identity)
             request_usage = dict(last)
             if info.get("last_usage_includes_reasoning") is False:
                 request_usage.pop("output_tokens", None)
                 warnings.append("codex_reasoning_output_overlap_unproven")
-            emit({"model": model, "timestamp": obj.get("timestamp")}, request_usage, "openai", "openai", line, identity, warnings)
+            previous_record_id = emit({"model": model, "timestamp": obj.get("timestamp")}, request_usage, "openai", "openai", line, identity, warnings)
             return
         if mode in {"claude", "anthropic"}:
             message = _dict(obj.get("message"))
@@ -514,7 +519,7 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
             if not identity:
                 diagnostic("partial_usage_without_request_identity", line, True)
                 return
-            key = (provider, identity)
+            key = (provider, session, identity)
             group = partials.setdefault(key, {"raw": {}, "data": {}, "line": line, "conflict": False, "partial": False, "snapshots": set()})
             group["partial"] = group["partial"] or partial
             filtered = {}
@@ -617,11 +622,11 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
         metadata["sha256"] = digest.hexdigest()
     except OSError:
         diagnostic("source_unreadable", 0, True)
-    for (provider, identity), group in partials.items():
+    for (provider, request_session, identity), group in partials.items():
         if group["conflict"]:
             diagnostic("contradictory_partial_usage", group["line"], True)
         else:
-            emit(group["data"], group["raw"], "openai", provider, group["line"], identity, ["merged_partial_usage"] if group["partial"] else [])
+            emit(group["data"], group["raw"], "openai", provider, group["line"], identity, ["merged_partial_usage"] if group["partial"] else [], request_session=request_session)
     result["records"] = list(records.values())
     metadata["records_imported"] = len(records)
     return result
