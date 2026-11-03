@@ -11,6 +11,7 @@ export interface ClaudeEvidenceOptions {
   sessionId?: string;
   model?: string;
   writePolicy?: NativeWritePolicy;
+  t3Tools?: boolean;
 }
 export interface ClaudeSkillEvidence { name: string; path: string; sha256: string; toolUseId: string }
 export interface ClaudeHookEvidence { hookId: string; declaredCommand: string; contextPath: string; contextHash: string }
@@ -27,14 +28,18 @@ export interface ClaudeEvidence {
   cliVersion: string;
   hooks: ClaudeHookEvidence[];
   skills: ClaudeSkillEvidence[];
+  t3Tools: T3Tool[];
   raw: string;
 }
+export type T3Tool = NonNullable<SessionRecord['appTools']>[number];
 type ObjectValue = Record<string, unknown>;
 type Tool = {
   id: string; name: 'Skill' | 'Bash'; input: string; args?: string;
   result?: { success: boolean; signature: string };
   source?: { path: string; body: string };
 };
+type T3Call = { tool: string; arguments: ObjectValue; signature: string; callIndex: number; result?: { value: ObjectValue; signature: string; resultIndex: number } };
+const T3_TOOL = /^mcp__t3[-_]code__(orchestrator_capabilities|delegate_task|task_status|t3_thread_read)$/;
 type AgentCall = {
   subagentType: string; signature: string; index: number;
   result?: { agentId: string; model: string; completed: boolean; output: string; signature: string; async: boolean; index: number };
@@ -77,6 +82,18 @@ async function agentDefinition(subagentType: string, pluginRoot: string): Promis
   const declaredEffort = efforts[0]?.[1]?.trim();
   if (declaredEffort !== undefined && !['low', 'medium', 'high', 'xhigh', 'max'].includes(declaredEffort)) throw new Error('Unsupported candidate agent declared effort');
   return { ...(declaredEffort === undefined ? {} : { declaredEffort }), definitionPath, definitionHash: createHash('sha256').update(source).digest('hex') };
+}
+function t3Tool(name: string, init: ObjectValue): string | undefined {
+  const tool = T3_TOOL.exec(name)?.[1];
+  return tool && Array.isArray(init.tools) && init.tools.includes(name) ? tool : undefined;
+}
+/** T3 tools return JSON; the native stream carries it as structuredContent or as one text block. Anything else proves nothing. */
+function t3Result(content: unknown, metadata: unknown): ObjectValue {
+  const isObject = (value: unknown): value is ObjectValue => typeof value === 'object' && value !== null && !Array.isArray(value);
+  if (isObject(metadata) && isObject(metadata.structuredContent)) return metadata.structuredContent;
+  const parts = typeof content === 'string' ? [content] : Array.isArray(content) ? content.map(part => isObject(part) && part.type === 'text' && typeof part.text === 'string' ? part.text : undefined) : [];
+  if (parts.length !== 1 || parts[0] === undefined) return {};
+  try { const value: unknown = JSON.parse(parts[0]); return isObject(value) ? value : {}; } catch { return {}; }
 }
 const dailyHookText = /outcome-ledger|Stop hook (?:feedback|error)|blocked the stop/i;
 async function verifyHooks(events: ObjectValue[], pluginRoot: string): Promise<ClaudeHookEvidence[]> {
@@ -131,7 +148,7 @@ export async function parseClaudeEvidence(text: string, expected: ClaudeEvidence
   }
   const initIndex = events.indexOf(init), resultIndex = events.indexOf(results[0]!);
   if (resultIndex <= initIndex) throw new Error('Claude terminal result precedes init');
-  const tools = new Map<string, Tool>(), agents = new Map<string, AgentCall>();
+  const tools = new Map<string, Tool>(), agents = new Map<string, AgentCall>(), t3Calls = new Map<string, T3Call>();
   for (const [index, event] of events.entries()) {
     if (event.type !== 'assistant' && event.type !== 'user') continue;
     if (index < initIndex || index > resultIndex) throw new Error('Claude message outside native session boundaries');
@@ -145,11 +162,16 @@ export async function parseClaudeEvidence(text: string, expected: ClaudeEvidence
       const block = object(value);
       if (event.type === 'assistant' && block.type === 'tool_use') {
         const name = string(block.name, 'tool name');
-        if (name.startsWith('mcp__')) throw new Error('Forbidden MCP tool in Claude candidate session');
+        if (name.startsWith('mcp__') && !(expected.t3Tools && event.parent_tool_use_id == null && event.isReplay !== true && t3Tool(name, init))) throw new Error('Forbidden MCP tool in Claude candidate session');
         if (name === 'Bash' && forbiddenCommand(string(object(block.input).command, 'Bash command'))) throw new Error('Forbidden command in Claude candidate session');
         if (name === 'Write' || name === 'Edit') await assertAllowedWrite(string(object(block.input).file_path, 'write target'), cwd, expected.writePolicy);
       }
       if (event.parent_tool_use_id != null || event.isReplay === true) continue;
+      if (event.type === 'assistant' && block.type === 'tool_use' && typeof block.name === 'string' && block.name.startsWith('mcp__')) {
+        const id = string(block.id, 'MCP tool id'), input = object(block.input), signature = JSON.stringify([block.name, input]), prior = t3Calls.get(id);
+        if (tools.has(id) || agents.has(id) || (prior && prior.signature !== signature)) throw new Error('Conflicting Claude tool invocation');
+        if (!prior) t3Calls.set(id, { tool: t3Tool(block.name, init)!, arguments: input, signature, callIndex: index });
+      }
       if (event.type === 'assistant' && block.type === 'tool_use' && block.name === 'Agent') {
         const id = string(block.id, 'Agent tool id'), input = object(block.input), subagentType = string(input.subagent_type, 'Agent type');
         if (!Array.isArray(init.agents) || !init.agents.includes(subagentType)) throw new Error('Claude Agent type is absent from native inventory');
@@ -167,6 +189,12 @@ export async function parseClaudeEvidence(text: string, expected: ClaudeEvidence
         const prior = tools.get(id);
         if (prior && (prior.name !== block.name || prior.input !== argument || prior.args !== args)) throw new Error('Conflicting Claude tool invocation');
         if (!prior) tools.set(id, { id, name: block.name, input: argument, args });
+      }
+      if (event.type === 'user' && block.type === 'tool_result' && typeof block.tool_use_id === 'string' && t3Calls.has(block.tool_use_id)) {
+        const call = t3Calls.get(block.tool_use_id)!, signature = JSON.stringify([block, event.tool_use_result ?? null]);
+        if (call.result && call.result.signature !== signature) throw new Error('Conflicting Claude tool result');
+        call.result ??= { value: block.is_error === true ? {} : t3Result(block.content, event.tool_use_result), signature, resultIndex: index };
+        continue;
       }
       if (event.type === 'user' && block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
         const agent = agents.get(block.tool_use_id);
@@ -250,6 +278,11 @@ export async function parseClaudeEvidence(text: string, expected: ClaudeEvidence
     nativeAgents.push({ subagentType: agent.subagentType, model: result.model, completed: result.completed, output: result.output,
       ...await agentDefinition(agent.subagentType, pluginRoot) });
   }
+  const t3Tools: T3Tool[] = [];
+  for (const [id, call] of t3Calls) {
+    if (!call.result) throw new Error(`Missing Claude tool result: ${id}`);
+    t3Tools.push({ tool: call.tool, arguments: call.arguments, result: call.result.value, callIndex: call.callIndex, resultIndex: call.result.resultIndex });
+  }
   const skills: ClaudeSkillEvidence[] = [], commands: string[] = [];
   for (const tool of tools.values()) {
     if (!tool.result) throw new Error(`Missing Claude tool result: ${tool.id}`);
@@ -268,5 +301,5 @@ export async function parseClaudeEvidence(text: string, expected: ClaudeEvidence
   }
   return { session: { harness: 'claude', exitCode: 0, started: expected.started, skills: skills.map(skill => skill.name), commands,
     commandAttempts: [...tools.values()].filter(tool => tool.name === 'Bash').map(tool => tool.input), ...(nativeAgents.length ? { nativeAgents } : {}) },
-    sessionId, cwd, pluginRoot, cliVersion, hooks, skills, raw: text };
+    sessionId, cwd, pluginRoot, cliVersion, hooks, skills, t3Tools, raw: text };
 }

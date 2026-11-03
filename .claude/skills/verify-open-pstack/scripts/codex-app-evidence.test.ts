@@ -64,6 +64,15 @@ async function asyncFixture() {
 }
 
 describe('Codex app native evidence', () => {
+  test('retains actual native invocation and result positions for overlapping MCP tools', async () => {
+    const f = await fixture(), catalog = { ...delegation('catalog'), tool: 'orchestrator_capabilities', arguments: { search: 'selected' } }, dispatched = delegation('dispatch');
+    f.events.splice(7, 0, nativeStart(catalog), nativeStart(dispatched), nativeItem(dispatched), nativeItem(catalog));
+    const calls = (await parseCodexAppEvidence(serialize(f.events), f.expected)).toolCalls;
+    expect(calls.map(call => [call.tool, call.callIndex, call.resultIndex])).toEqual([
+      ['delegate_task', 8, 9], ['orchestrator_capabilities', 7, 10],
+    ]);
+  });
+
   test('binds an async completion notification to the original delegate and later terminal status in both streams', async () => {
     const f = await asyncFixture();
     const evidence = await parseCodexAppEvidence(serialize(f.events), f.expected);
@@ -297,7 +306,7 @@ describe('Codex app native evidence', () => {
     const capabilities = { type: 'mcpToolCall', id: 'capabilities', server: 't3-code', tool: 'orchestrator_capabilities', arguments: {} };
     f.events.splice(7, 0, nativeStart(capabilities), truncatedItem(), nativeStart(item), nativeItem(item));
     const proof = await parseCodexAppEvidence(serialize(f.events), f.expected);
-    expect(proof.toolCalls).toEqual([{ tool: 'delegate_task', arguments: args, result: data }]);
+    expect(proof.toolCalls).toEqual([{ tool: 'delegate_task', arguments: args, result: data, callIndex: 9, resultIndex: 10 }]);
     expect(proof.items).toContainEqual(item);
   });
   test.each(['failed', 'error-result', 'unstructured'])('retains a %s T3 attempt without successful result evidence', async kind => {
@@ -306,7 +315,7 @@ describe('Codex app native evidence', () => {
     if (kind === 'error-result') item.result.isError = true;
     if (kind === 'unstructured') delete item.result.structuredContent;
     f.events.splice(7, 0, nativeItem(item));
-    expect((await parseCodexAppEvidence(serialize(f.events), f.expected)).toolCalls).toEqual([{ tool: 'delegate_task', arguments: {}, result: {} }]);
+    expect((await parseCodexAppEvidence(serialize(f.events), f.expected)).toolCalls).toEqual([{ tool: 'delegate_task', arguments: {}, result: {}, resultIndex: 7 }]);
   });
   test('retains both a rejected dispatch and its later successful retry', async () => {
     const f = await fixture(), failed = delegation('failed'), succeeded = delegation('succeeded');
@@ -314,8 +323,8 @@ describe('Codex app native evidence', () => {
     f.events.splice(7, 0, nativeStart(failed), nativeItem(failed), nativeStart(succeeded), nativeItem(succeeded));
     const proof = await parseCodexAppEvidence(serialize(f.events), f.expected);
     expect(proof.toolCalls).toEqual([
-      { tool: 'delegate_task', arguments: failed.arguments, result: {} },
-      { tool: 'delegate_task', arguments: succeeded.arguments, result: succeeded.result.structuredContent },
+      { tool: 'delegate_task', arguments: failed.arguments, result: {}, callIndex: 7, resultIndex: 8 },
+      { tool: 'delegate_task', arguments: succeeded.arguments, result: succeeded.result.structuredContent, callIndex: 9, resultIndex: 10 },
     ]);
     expect(proof.items).toContainEqual(failed);
   });

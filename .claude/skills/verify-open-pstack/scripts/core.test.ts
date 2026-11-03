@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import registryData from '../features/registry.json';
 import { recipe } from '../features/recipes.ts';
 import { classify, completeEvidence, matches, newReceipt, requiredFeatures, requiredHarnesses, validateRegistry } from './core.ts';
-import { HARNESSES, type Receipt } from './types.ts';
+import { HARNESSES, KIMI_ROUTE_FEATURE, type Receipt } from './types.ts';
 import codexManifest from '../../../../plugins/pstack/.codex-plugin/plugin.json';
 import claudeManifest from '../../../../plugins/pstack/.claude-plugin/plugin.json';
 
@@ -63,6 +63,19 @@ describe('registry and ownership', () => {
     expect(s.features).toContain('claude:agent-preload:poteto-agent');
     expect(s.features).not.toContain('codex:agent-preload:poteto-agent');
   });
+  test('the selected Kimi CLIProxy case is reachable exactly where the runner is, including the dispatch guide and its Codex pointer', () => {
+    for (const filename of ['plugins/pstack/skills/poteto-mode/references/provider-dispatch.md', 'plugins/pstack/skills/poteto-mode/references/codex-tools.md',
+      'plugins/pstack/skills/poteto-mode/scripts/runner/pstack-runner', 'plugins/pstack/skills/poteto-mode/references/model-catalog.md']) {
+      const s = classify([{ filename }], registry);
+      for (const harness of HARNESSES) {
+        expect(s.features).toContain(`${harness}:runner`);
+        expect(s.features).toContain(`${harness}:${KIMI_ROUTE_FEATURE}`);
+      }
+    }
+    for (const filename of ['plugins/pstack/skills/poteto-mode/SKILL.md', 'plugins/pstack/skills/poteto-mode/scripts/bootstrap.ts', 'README.md']) {
+      expect(classify([{ filename }], registry).features.filter(f => f.endsWith(KIMI_ROUTE_FEATURE))).toEqual([]);
+    }
+  });
   test('poteto-mode SKILL.md also reaches the Claude agent that preloads it', () => {
     const s = classify([{ filename: 'plugins/pstack/skills/poteto-mode/SKILL.md' }], registry);
     expect(s.features).toEqual([...both('skill-invocation:poteto-mode'), 'claude:agent-preload:poteto-agent'].sort());
@@ -74,12 +87,12 @@ describe('registry and ownership', () => {
       'plugins/pstack/skills/poteto-mode/scripts/runner/registry/models.ts', 'plugins/pstack/skills/poteto-mode/scripts/runner/providers/grok.ts']) {
       const s = classify([{ filename }], registry);
       expect(s.skills).toEqual([]);
-      expect(s.features).toEqual(both('catalog', 'runner', 'setup'));
+      expect(s.features).toEqual(both('catalog', 'runner', KIMI_ROUTE_FEATURE, 'setup'));
     }
   });
   test('a renamed or deleted catalog path keeps catalog ownership', () => {
     for (const previous_filename of [CATALOG, 'plugins/pstack/agents/pstack-opus-max.md']) {
-      expect(classify([{ filename: 'docs/moved.md', previous_filename }], registry).features).toEqual(both('catalog', 'runner', 'setup'));
+      expect(classify([{ filename: 'docs/moved.md', previous_filename }], registry).features).toEqual(both('catalog', 'runner', KIMI_ROUTE_FEATURE, 'setup'));
     }
   });
   test('a catalog change mixed with a shared reference or a skill keeps their checks', () => {
@@ -87,7 +100,7 @@ describe('registry and ownership', () => {
     expect(shared.skills).toEqual([...registry.skills].sort());
     for (const feature of both('catalog', 'setup', 'runner', 'shipped-tools')) expect(shared.features).toContain(feature);
     const skill = classify([{ filename: 'plugins/pstack/agents/pstack-opus-max.md' }, { filename: 'plugins/pstack/skills/arena/SKILL.md' }], registry);
-    expect(skill.features).toEqual(both('catalog', 'runner', 'setup', 'skill-invocation:arena'));
+    expect(skill.features).toEqual(both('catalog', 'runner', KIMI_ROUTE_FEATURE, 'setup', 'skill-invocation:arena'));
   });
   test('an unlisted generated agent fails closed', () => {
     expect(() => classify([{ filename: 'plugins/pstack/agents/pstack-retired-max.md' }], registry)).toThrow('Unmapped path');
@@ -184,7 +197,7 @@ describe('registry and ownership', () => {
   });
   test('the shared recipe implementation reaches every implemented recipe and preserves project proof', () => {
     const path = '.claude/skills/verify-open-pstack/features/recipes.ts';
-    const expected = [...both('catalog', 'setup', 'runner', 'shipped-tools', 'hook:startup', 'project-skill',
+    const expected = [...both('catalog', 'setup', 'runner', KIMI_ROUTE_FEATURE, 'shipped-tools', 'hook:startup', 'project-skill',
       ...registry.skills.map(skill => `skill-invocation:${skill}`)), 'claude:agent-preload:poteto-agent'].sort();
     for (const file of [{ filename: path }, { filename: 'docs/moved.md', previous_filename: path }]) {
       const s = classify([file], registry);

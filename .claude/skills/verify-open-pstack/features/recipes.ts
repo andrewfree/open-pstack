@@ -4,7 +4,8 @@ import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { sha256, type Command } from '../scripts/io.ts';
-import type { Harness, SessionRecord } from '../scripts/types.ts';
+import { KIMI_ROUTE_FEATURE, type Harness, type SelectedKimiRoute, type SessionRecord } from '../scripts/types.ts';
+import { kimiPongTask } from '../scripts/kimi-child-evidence.ts';
 
 export interface Fixture {
   harness: Harness;
@@ -20,6 +21,7 @@ export interface Case {
   cwd?: 'workspace';
   /** Codex parents that launch external provider CLIs need network and their CLI state outside the fixture. */
   codexSandbox?: 'danger-full-access';
+  t3Child?: 'selected-kimi';
   prepare?(fixture: Fixture): Promise<void>;
   cleanup?(fixture: Fixture): Promise<void>;
   prompt(fixture: Fixture): string;
@@ -426,6 +428,137 @@ function appRunner(appRoute: AppRoute | undefined, fixed: string): Case {
   };
 }
 
+const KIMI_LANE_ROUTE = 't3-kimi-cliproxy';
+function toolPrecedes(first: NonNullable<SessionRecord['appTools']>[number], second: NonNullable<SessionRecord['appTools']>[number]): boolean {
+  const a = first.callIndex, b = first.resultIndex, c = second.callIndex, d = second.resultIndex;
+  return typeof a === 'number' && typeof b === 'number' && typeof c === 'number' && typeof d === 'number'
+    && [a, b, c, d].every(Number.isSafeInteger) && 0 <= a && a < b && b < c && c < d;
+}
+function externalKimiCommand(command: string): boolean {
+  const tokens = command.match(/[;&|()\n]+|(?:[^\s;&|()'"\\]+|\\.|'[^']*'|"(?:\\.|[^"\\])*")+/g) ?? [];
+  let executable = true, interpreter = '', wrapper = '', skipArgument = false, splitArgument = false;
+  for (const token of tokens) {
+    if (/^[;&|()\n]+$/.test(token)) { executable = true; interpreter = ''; wrapper = ''; skipArgument = false; splitArgument = false; continue; }
+    const word = token.replace(/^(['"])(.*)\1$/s, '$2'), name = basename(word);
+    if (skipArgument) { skipArgument = false; continue; }
+    if (splitArgument) { splitArgument = false; if (externalKimiCommand(word)) return true; continue; }
+    if (executable) {
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) continue;
+      if (['env', 'exec', 'command', 'nohup'].includes(name)) { wrapper = name; continue; }
+      if (wrapper && word.startsWith('-')) {
+        skipArgument = wrapper === 'env' && ['-u', '--unset', '-C', '--chdir'].includes(word);
+        splitArgument = wrapper === 'env' && ['-S', '--split-string'].includes(word);
+        if (wrapper === 'env' && word.startsWith('--split-string=') && externalKimiCommand(word.slice('--split-string='.length).replace(/^(['"])(.*)\1$/s, '$2'))) return true;
+        continue;
+      }
+      executable = false;
+      if (name === 'kimi' || /^pstack-runner(?:\.[cm]?[jt]s)?$/.test(name)) return true;
+      if (['bun', 'node', 'bash', 'sh', 'zsh'].includes(name)) interpreter = name;
+    } else if (interpreter) {
+      if (word.startsWith('-')) {
+        skipArgument = ['--cwd', '-C', '--require', '-r', '--loader', '--import', '--preload'].includes(word);
+        if (['node', 'bun'].includes(interpreter) && ['-e', '--eval', '-p', '--print'].includes(word)) { skipArgument = true; interpreter = ''; }
+        continue;
+      }
+      if (interpreter === 'bun' && word === 'run') continue;
+      if (['bash', 'sh', 'zsh'].includes(interpreter) ? externalKimiCommand(word) : name === 'kimi' || /^pstack-runner(?:\.[cm]?[jt]s)?$/.test(name)) return true;
+      interpreter = '';
+    }
+  }
+  return false;
+}
+function optionMap(options: unknown): Record<string, unknown> | undefined {
+  if (!Array.isArray(options)) return options && typeof options === 'object' ? object(options) : undefined;
+  const map: Record<string, unknown> = {};
+  for (const option of options.map(object)) {
+    if (typeof option.id !== 'string' || Object.hasOwn(map, option.id)) return undefined;
+    map[option.id] = option.value;
+  }
+  return map;
+}
+function optionValues(model: Record<string, unknown>, id: string): unknown[] | undefined {
+  const option = Array.isArray(model.options) ? model.options.map(object).find(o => o.id === id) : undefined;
+  return Array.isArray(option?.values) ? option.values : undefined;
+}
+function kimiRunner(selected: SelectedKimiRoute | undefined): Case {
+  let effort = '';
+  const lane = (f: Fixture) => join(f.dir, 'kimi-lane.json'), output = (f: Fixture) => join(f.dir, 'kimi-output.md');
+  const reads = (f: Fixture) => f.harness === 'codex'
+    ? 'Read installed reference files one at a time in byte ranges of at most 8192 bytes per shell command; bound stdout in the command itself, since a tool output-token limit does not bound native log records.'
+    : 'Read installed reference files one at a time in pieces of at most 150 lines per Read call.';
+  return {
+    id: 't3-kimi-cliproxy',
+    t3Child: 'selected-kimi',
+    async prepare(f) {
+      if (!selected) throw new Error('unsupported-native-consumer:kimi-cliproxy: the selected T3 Kimi CLIProxy case needs --t3-app with an operator-selected kimiRoute');
+      const parts = ROUTE.exec(selected.descriptor);
+      if (!parts || parts[1] !== 'kimi' || parts[3] === 'default') throw new Error('kimi-route-descriptor-invalid');
+      if ((await readCatalog(f.location)).route(f.harness, selected.descriptor) !== 'external') throw new Error(`kimi-route-default-not-external:${f.harness}`);
+      effort = parts[3]!;
+    },
+    prompt: f => `${invoke(f.harness, 'poteto-mode', `Dispatch exactly one read-only lane for descriptor ${selected!.descriptor}. For this task the operator explicitly selects the existing T3 Kimi CLIProxy route: provider instance ${selected!.providerInstanceId}, exact proxy model ${selected!.model}, service tier ${selected!.serviceTier}. ${reads(f)} Do not concatenate reference files or dump the entire model catalog. Resolve the lane yourself using the installed provider-dispatch.md and your native T3 catalog; call orchestrator_capabilities with search set to ${selected!.providerInstanceId}. Use the test role and this exact child task: ${kimiPongTask(f.dir)} Reserve the private lane record at ${lane(f)} and final output at ${output(f)} before dispatch. Complete the selected route, retain its task and thread identities, and drain the original task before finishing. After completion, use t3_thread_read on the original child and retain its complete untruncated request, run and final PONG activity. Do not run the external launcher or the Kimi CLI, and do not substitute another provider instance, model or option.`)} ${rules(f.dir)}`,
+    async assert(record, f) {
+      const route = selected!, assertions = [loaded(record, 'pstack:poteto-mode')];
+      const attempted = [...record.commands, ...record.tools.map(tool => typeof tool.input.command === 'string' ? tool.input.command : '')];
+      if (attempted.some(externalKimiCommand)) throw new Error('kimi-route-used-external-cli');
+      const calls = record.appTools ?? [], launches = calls.filter(call => call.tool === 'delegate_task');
+      if (launches.length !== 1) throw new Error('kimi-route-requires-one-native-dispatch');
+      const launch = launches[0]!, catalog = calls.slice(0, calls.indexOf(launch)).filter(call => call.tool === 'orchestrator_capabilities' && Array.isArray(call.result.providers)).at(-1);
+      if (!catalog) throw new Error('kimi-route-requires-native-catalog-before-dispatch');
+      if (Object.keys(catalog.arguments).some(key => key !== 'search')) throw new Error('kimi-route-catalog-scope-mismatch');
+      if (!toolPrecedes(catalog, launch)) throw new Error('kimi-route-catalog-result-after-dispatch');
+      const provider = (catalog.result.providers as unknown[]).map(object).find(p => p.providerInstanceId === route.providerInstanceId);
+      if (!provider || provider.driverKind !== 'codex' || provider.canRunChildTask !== true || provider.canRunCrossProviderChildTask !== true
+        || !Array.isArray(provider.constraints) || provider.constraints.length || !Array.isArray(provider.models)) throw new Error('kimi-route-ineligible-provider');
+      const model = provider.models.map(object).find(m => m.id === route.model);
+      if (!model) throw new Error('kimi-route-live-capability-model-missing');
+      if (!optionValues(model, 'reasoningEffort')?.includes(effort)) throw new Error('kimi-route-live-capability-effort-unsupported');
+      if (!optionValues(model, 'serviceTier')?.includes(route.serviceTier)) throw new Error('kimi-route-live-capability-option-unsupported');
+      const coordinator = record.appRoutes?.find(r => r.providerInstanceId === route.providerInstanceId && r.model === route.model);
+      if (!coordinator?.efforts.includes(effort) || !coordinator.serviceTiers?.includes(route.serviceTier)) throw new Error('kimi-route-coordinator-catalog-mismatch');
+      const requested = object(launch.arguments.target), options = { reasoningEffort: effort, serviceTier: route.serviceTier };
+      if (requested.providerInstanceId !== route.providerInstanceId || requested.model !== route.model
+        || Object.keys(requested).some(key => !['providerInstanceId', 'model', 'options'].includes(key))) throw new Error('kimi-route-target-mismatch');
+      if (!Bun.deepEquals(optionMap(requested.options), options)) throw new Error('kimi-route-options-mismatch');
+      const args = launch.arguments;
+      if (args.mode !== 'async' || args.interactionMode !== 'plan' || args.role !== 'test' || typeof args.clientRequestId !== 'string' || !args.clientRequestId.trim()
+        || Object.keys(args).some(key => !['target', 'task', 'mode', 'interactionMode', 'role', 'clientRequestId', 'title', 'isolation'].includes(key))
+        || (args.isolation !== undefined && args.isolation !== 'shared')) throw new Error('kimi-route-dispatch-contract-mismatch');
+      if (args.task !== kimiPongTask(f.dir)) throw new Error('kimi-route-child-task-mismatch');
+      const taskId = launch.result.taskId;
+      if (typeof taskId !== 'string' || !taskId.trim()) throw new Error('kimi-route-missing-task-id');
+      const statuses = calls.filter(call => call.tool === 'task_status');
+      if (statuses.some(call => calls.indexOf(call) < calls.indexOf(launch))) throw new Error('kimi-route-completion-before-dispatch');
+      if (statuses.some(call => call.arguments.taskId !== taskId || (call.result.taskId !== undefined && call.result.taskId !== taskId))) throw new Error('kimi-route-task-mismatch');
+      if (statuses.some(call => call.result.hasPendingQuestion === true || (call.result.pendingApproval !== undefined && call.result.pendingApproval !== null))) throw new Error('kimi-route-pending-question');
+      const terminal = statuses.find(call => call.result.status === 'completed'), result = terminal?.result;
+      if (!terminal || !result || result.workState !== 'result_available' || result.hasPendingChildRuns !== false || result.hasPendingQuestion !== false || result.pendingApproval !== null) throw new Error('kimi-route-child-unfinished');
+      if (statuses.some(call => !toolPrecedes(launch, call))) throw new Error('kimi-route-completion-before-dispatch');
+      if (result.taskId !== taskId || typeof result.childThreadId !== 'string' || !result.childThreadId || typeof result.childRunId !== 'string' || !result.childRunId
+        || result.latestTerminalRunId !== result.childRunId || result.latestTerminalStatus !== 'completed'
+        || (launch.result.childThreadId !== undefined && launch.result.childThreadId !== result.childThreadId)
+        || (launch.result.childRunId !== undefined && launch.result.childRunId !== result.childRunId)) throw new Error('kimi-route-task-mismatch');
+      if (result.providerInstanceId !== route.providerInstanceId || result.model !== route.model || !Bun.deepEquals(optionMap(result.options), options)) throw new Error('kimi-route-child-route-mismatch');
+      if (typeof result.summary !== 'string' || result.summary.trim() !== 'PONG') throw new Error('kimi-route-no-completed-PONG');
+      const reads = calls.filter(call => call.tool === 't3_thread_read');
+      if (!reads.length || reads.some(call => call.arguments.threadId !== result.childThreadId || Object.keys(call.arguments).some(key => !['threadId', 'view', 'limit', 'maxCharsPerItem', 'afterPosition', 'itemId', 'textOffset', 'runLimit'].includes(key)))) throw new Error('kimi-route-child-read-mismatch');
+      if (reads.some(call => !toolPrecedes(terminal, call))) throw new Error('kimi-route-child-read-before-completion');
+      const nativeChild = record.appKimiChild;
+      if (!nativeChild || nativeChild.taskId !== taskId || nativeChild.threadId !== result.childThreadId || nativeChild.runId !== result.childRunId
+        || nativeChild.providerInstanceId !== route.providerInstanceId || nativeChild.model !== route.model || nativeChild.task !== args.task || nativeChild.output !== 'PONG') throw new Error('kimi-route-native-child-mismatch');
+      const receipt = object(JSON.parse(await readFile(lane(f), 'utf8')));
+      const expected = { route: KIMI_LANE_ROUTE, descriptor: route.descriptor, providerInstanceId: route.providerInstanceId, model: route.model, effort,
+        clientRequestId: args.clientRequestId, taskId, childThreadId: result.childThreadId, status: 'completed', dropoutReason: null };
+      const mismatched = Object.entries(expected).filter(([key, value]) => receipt[key] !== value).map(([key]) => key);
+      if (mismatched.length) throw new Error(`kimi-route-lane-record-mismatch:${mismatched.join(',')}`);
+      if ((await readFile(output(f), 'utf8')).trim() !== 'PONG') throw new Error('kimi-route-output-not-PONG');
+      return { assertions: [...assertions, 'native-catalog-before-dispatch', 'selected-codex-instance', 'exact-proxy-model', 'live-capability-options', 'coordinator-catalog-match',
+        'native-t3-dispatch', 'async-plan-request', 'exact-target-options', 'bounded-child-task', 'matching-child-run', 'native-child-PONG', 'no-pending-question', 'completed-PONG', `lane-record:${KIMI_LANE_ROUTE}`,
+        await written(record, lane(f)), await written(record, output(f))], files: [lane(f), output(f)] };
+    },
+  };
+}
+
 function runner(harness: Harness, routes: string[], appRoute?: AppRoute): Case[] {
   const chosen = routes.filter(route => !route.startsWith(`${harness}:`) && !(harness === 'codex' && route.startsWith('claude:')));
   const cases = (chosen.length ? chosen : ['']).map((fixed, index): Case => {
@@ -755,11 +888,12 @@ const startupHook: Case = {
   },
 };
 
-export function recipe(feature: string, harness: Harness, routes: string[] = [], appRoute?: AppRoute): Case[] {
+export function recipe(feature: string, harness: Harness, routes: string[] = [], appRoute?: AppRoute, kimiRoute?: SelectedKimiRoute): Case[] {
   if (feature === 'assets:codex') throw new Error('unsupported-native-consumer:assets:codex');
   if (feature === 'project-skill') return [projectSkill];
   if (feature === 'hook:startup') return [startupHook];
   if (feature === 'runner') return runner(harness, routes, appRoute);
+  if (feature === KIMI_ROUTE_FEATURE) return [kimiRunner(kimiRoute)];
   if (feature === 'setup' || feature === 'skill-invocation:setup-pstack') return setup;
   if (feature === 'catalog') return catalog(harness);
   if (feature === 'shipped-tools') return [shippedTools];
