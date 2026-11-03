@@ -88,7 +88,8 @@ function commandLine(pid: number): string {
 const runningCodex = (pid: number): boolean => { if (!processAlive(pid)) return false; const command = commandLine(pid); return command.includes('codex') && command.includes('app-server'); };
 const accountEnvironment = (entry: JsonObject): boolean => entry.environment?.some((e: JsonObject) => e.sensitive === true || /TOKEN|KEY|SECRET|PASSWORD|AUTH/i.test(e.name)) ?? false;
 function caseEnvironment(env: Record<string, string>): Record<string, string> {
-  const merged = { ...env, DO_NOT_TRACK: '1', DISABLE_ERROR_REPORTING: '1', CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: '1', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', GH_TOKEN: '', GITHUB_TOKEN: '', GH_ENTERPRISE_TOKEN: '', GITHUB_ENTERPRISE_TOKEN: '' };
+  const merged = { ...env, DO_NOT_TRACK: '1', DISABLE_ERROR_REPORTING: '1', CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: '1', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
+    DISABLE_AUTOUPDATER: '1', FORCE_AUTOUPDATE_PLUGINS: '', GH_TOKEN: '', GITHUB_TOKEN: '', GH_ENTERPRISE_TOKEN: '', GITHUB_ENTERPRISE_TOKEN: '' };
   for (const [name, value] of Object.entries(merged)) {
     if (/TOKEN|KEY|SECRET|PASSWORD|AUTH/i.test(name) && name !== 'GIT_CONFIG_KEY_0' && value) throw new Error('Verifier launcher environment must not contain credential values');
   }

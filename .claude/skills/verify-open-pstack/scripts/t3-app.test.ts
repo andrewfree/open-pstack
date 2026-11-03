@@ -297,6 +297,31 @@ async function answerCase(a: Awaited<ReturnType<typeof fakeApp>>, { terminal = '
 const idle = (a: Awaited<ReturnType<typeof fakeApp>>) => Promise.all(['claude', 'codex'].map(driver => readFile(join(a.launcherDirectory, driver), 'utf8')));
 const passThrough = [launcherScript({ real: '/usr/bin/true' }), launcherScript({ real: '/usr/bin/true' })];
 
+test('verification child disables background updates without changing provider settings or its caller', async () => {
+  const a = await fakeApp(), real = join(a.root, 'claude-probe');
+  await writeFile(real, '#!/bin/sh\nprintf \'%s\\n\' "$DISABLE_AUTOUPDATER" "${FORCE_AUTOUPDATE_PLUGINS-unset}"\n', { mode: 0o700 });
+  const settings = await json(a.settingsPath);
+  settings.providerInstances.claude.config.binaryPath = real;
+  await writeFile(a.settingsPath, JSON.stringify(settings));
+  const before = await readFile(a.settingsPath, 'utf8');
+  const caller = { ...process.env, DISABLE_AUTOUPDATER: '0', FORCE_AUTOUPDATE_PLUGINS: '1' };
+  a.c.env = { ...a.c.env, DISABLE_AUTOUPDATER: '0', FORCE_AUTOUPDATE_PLUGINS: '1' };
+  await a.app.prepare();
+  const work = a.app.record(a.c);
+  await pending(a.root);
+  const child = Bun.spawn([join(a.launcherDirectory, 'claude')], { env: caller, stdout: 'pipe', stderr: 'pipe' });
+  const output = await new Response(child.stdout).text(), exitCode = await child.exited;
+  await answerCase(a, { launched: [] });
+  await work;
+  await a.app.cleanup();
+  expect(exitCode).toBe(0);
+  expect(output).toBe('1\n\n');
+  expect(caller.DISABLE_AUTOUPDATER).toBe('0');
+  expect(caller.FORCE_AUTOUPDATE_PLUGINS).toBe('1');
+  expect(await readFile(a.settingsPath, 'utf8')).toBe(before);
+  expect(await readFile(join(a.launcherDirectory, 'claude'), 'utf8')).toBe(launcherScript({ real }));
+});
+
 test('sequential cases arm candidate launchers and restore pass-through without editing T3 settings', async () => {
   const a = await fakeApp(), before = await readFile(a.settingsPath, 'utf8');
   await expect(a.app.record(a.c)).rejects.toThrow('Prepare the T3 verification launchers');
