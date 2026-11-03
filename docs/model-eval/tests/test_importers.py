@@ -189,6 +189,30 @@ class ImportTests(unittest.TestCase):
                 usage[right][field] = 8
                 self.assertEqual(len(self.load([request(usage)], 'openai')['records']), 1)
 
+    def test_nested_aliases_reconcile_disjoint_and_top_level_counters(self):
+        for primary, secondary in (('input_tokens_details', 'prompt_tokens_details'),
+                                   ('prompt_tokens_details', 'input_tokens_details')):
+            with self.subTest(primary=primary):
+                usage = {'input_tokens': 100, 'output_tokens': 20,
+                         primary: {'cache_write_tokens': 0, 'cached_tokens': None},
+                         secondary: {'cached_tokens': 80}}
+                result = self.load([request(usage)], 'openai')
+                normalized = result['records'][0]['usage']
+                self.assertEqual((normalized['cache_read'], normalized['input_uncached']), (80, 20))
+                self.assertEqual(normalized['cache_write_unknown'], 0)
+                usage['cached_input_tokens'] = 20
+                result = self.load([request(usage)], 'openai')
+                self.assertFalse(result['records'])
+                self.assertIn('contradictory_usage_aliases', self.codes(result))
+        usage = {'input_tokens': 100, 'output_tokens': 20, 'reasoning_output_tokens': 8,
+                 'output_tokens_details': {}, 'completion_tokens_details': {'reasoning_tokens': 2}}
+        result = self.load([request(usage)], 'openai')
+        self.assertFalse(result['records'])
+        self.assertIn('contradictory_usage_aliases', self.codes(result))
+        del usage['reasoning_output_tokens']
+        result = self.load([request(usage)], 'openai')
+        self.assertEqual(result['records'][0]['usage']['reasoning_output'], 2)
+
     def test_pstack_explicit_aggregate_scope_is_rejected_even_with_identity(self):
         for scope in ('usage_scope', 'usageScope'):
             for value in ('turn', 'session', 'aggregate'):
