@@ -92,7 +92,8 @@ class IntegrationTests(unittest.TestCase):
             source = root / "source.jsonl"
             source.write_text('{"type":"request.completed","request_id":"r1","model":"gpt-6-sol","usage":{"input_tokens":10}}\n')
             before = source.read_bytes()
-            with patch.dict(os.environ, {"HOME": str(root)}), contextlib.redirect_stderr(io.StringIO()):
+            with patch.dict(os.environ, {"HOME": str(root), "USERPROFILE": str(root)}), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(Path("~/source.jsonl").expanduser(), source)
                 self.assertEqual(main(["import", "~/source.jsonl", "--output", str(source), "--force"]), 2)
             self.assertEqual(source.read_bytes(), before)
             missing = root / "missing.jsonl"
