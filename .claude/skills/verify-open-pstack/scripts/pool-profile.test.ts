@@ -15,6 +15,19 @@ test('pool profiles bind identical unresolved references and routing metadata re
   const daily = syntheticPoolEnvironment();
   expect(validatePoolBinding(daily, [...daily].reverse())).toBe('/fixture/real-claude');
 });
+test('independent-client policy accepts separate opaque T3 slots without claiming equal credentials', () => {
+  const local = () => syntheticPoolEnvironment().map(v => v.name === 'ANTHROPIC_API_KEY'
+    ? { name: v.name, value: '', sensitive: true, valueRedacted: true } : v);
+  const daily = local(), verification = local();
+  expect(() => validatePoolBinding(daily, verification)).toThrow('pool-verification-unprepared');
+  expect(validatePoolBinding(daily, verification, 'independent-client')).toBe('/fixture/real-claude');
+  verification[2]!.value = 'https://other.example.invalid';
+  expect(() => validatePoolBinding(daily, verification, 'independent-client')).toThrow('pool-verification-unprepared');
+});
+for (const name of syntheticPoolEnvironment().map(v => v.name)) test(`pool preparation rejects a missing ${name}`, () => {
+  const daily = syntheticPoolEnvironment();
+  expect(() => validatePoolBinding(daily, daily.filter(v => v.name !== name))).toThrow('pool-verification-unprepared');
+});
 for (const [name, edit] of [
   ['redacted local secret without an explicit reference', (v: ReturnType<typeof syntheticPoolEnvironment>) => { delete v[4]!.secret; }],
   ['plaintext API key', (v: ReturnType<typeof syntheticPoolEnvironment>) => { v[4]!.value = 'synthetic-value-never-a-real-key'; }],

@@ -497,3 +497,22 @@ test('the configured pool does not accept T3-local redacted secrets as proof of 
   await expect(app.claudeBinaryPath()).rejects.toThrow('pool-verification-unprepared');
   await expect(app.prepare()).rejects.toThrow('pool-verification-unprepared');
 });
+
+test('independent client credentials require an explicit policy and never enter verifier launchers', async () => {
+  const a = await fakeApp(), settings = await json(a.settingsPath);
+  const environment = syntheticPoolEnvironment().map(v => v.name === 'ANTHROPIC_API_KEY'
+    ? { name: v.name, value: '', sensitive: true, valueRedacted: true } : v);
+  environment[3]!.value = '/usr/bin/true';
+  settings.providerInstances.claude.environment = environment;
+  settings.providerInstances.verify_claude.environment = structuredClone(environment);
+  await writeFile(a.settingsPath, JSON.stringify(settings));
+  const policy = { directProviderId: 'direct', fallbackProviderId: 'manual_mac' };
+  await expect(new T3App({ ...a.config, providerRouting: policy }, a.root).prepare()).rejects.toThrow('pool-verification-unprepared');
+  const config = t3Config({ ...a.config, providerRouting: { ...policy, credentialPolicy: 'independent-client' } });
+  const app = new T3App(config, a.root);
+  expect(await app.claudeBinaryPath()).toBe('/usr/bin/true');
+  await app.prepare();
+  for (const script of await idle(a)) { expect(script).not.toContain('ANTHROPIC'); expect(script).not.toContain('valueRedacted'); }
+  await app.cleanup();
+  expect(() => t3Config({ ...a.config, providerRouting: { ...policy, credentialPolicy: 'anything' } })).toThrow('credential policy is invalid');
+});

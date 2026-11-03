@@ -32,7 +32,7 @@ The feature documents below define sub-features, user entry points, driving inst
 - `skill-invocation.md`: installed native skills, principle leaves, and project-skill self-test.
 - `setup.md`: setup/routing/model configuration and byte-exact restoration.
 - `isolation.md`: existing native logins, verification launchers, Codex auth symlink, and private run state.
-- `provider-routing.md`: the compact policy exercise, unchanged helper target, reference-bound pool preparation, and one real nested Claude child.
+- `provider-routing.md`: the compact policy exercise, unchanged helper target, explicit pool credential-policy preparation, and one real nested Claude child.
 - `runner.md`: parent-to-child provider dispatch and receipts.
 - `t3-app.md`: T3 app configuration, request rendezvous, candidate loading, native log binding, and cleanup.
 - `catalog.md`: the generated model catalog and native agents, read by a parent resolving roles from a model sheet.

@@ -1,4 +1,4 @@
-import { validatePoolBinding, type PoolPolicy } from './pool-profile.ts';
+import { validatePoolBinding, type PoolPolicy, type PoolCredentialPolicy } from './pool-profile.ts';
 import { randomUUID } from 'node:crypto';
 import { createReadStream, readFileSync } from 'node:fs';
 import { lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
@@ -13,7 +13,7 @@ import type { NativeWritePolicy } from './command-policy.ts';
 import type { SessionRecord } from './types.ts';
 
 export interface T3Config {
-  providerRouting?: { directProviderId: string; fallbackProviderId: string };
+  providerRouting?: { directProviderId: string; fallbackProviderId: string; credentialPolicy?: PoolCredentialPolicy };
   parentThreadId: string;
   baseProviderId: string;
   model: string;
@@ -67,6 +67,7 @@ export function t3Config(value: unknown): T3Config {
     if (!policy || typeof policy !== 'object' || !('directProviderId' in policy) || !('fallbackProviderId' in policy)
       || typeof policy.directProviderId !== 'string' || !policy.directProviderId || typeof policy.fallbackProviderId !== 'string' || !policy.fallbackProviderId
       || new Set([...ids, policy.directProviderId, policy.fallbackProviderId]).size !== ids.length + 2) throw new Error('T3 provider-routing needs distinct primary, direct, fallback and verification instances');
+    if ('credentialPolicy' in policy && policy.credentialPolicy !== 'shared-reference' && policy.credentialPolicy !== 'independent-client') throw new Error('T3 provider-routing credential policy is invalid');
   }
   return config as unknown as T3Config;
 }
@@ -258,7 +259,7 @@ export class T3App {
     const base = providers[driver === 'claude' ? this.config.baseProviderId : this.config.codexProviderId];
     if (base?.driver !== (driver === 'claude' ? 'claudeAgent' : 'codex') || base.enabled !== true || typeof base.config?.binaryPath !== 'string' || !base.config.binaryPath) throw new Error('Select an enabled native app provider with an explicit binary');
     if (driver === 'claude' && this.config.providerRouting) {
-      validatePoolBinding(base.environment, providers[this.config.verifyClaudeProviderId]?.environment);
+      validatePoolBinding(base.environment, providers[this.config.verifyClaudeProviderId]?.environment, this.config.providerRouting.credentialPolicy);
       if (base.config.launchArgs) throw new Error('Pool daily launcher must not have launch arguments');
     } else if (accountEnvironment(base)) throw new Error('This provider requires account-specific environment; use its normal app lane without copying credentials');
     if (!isAbsolute(base.config.binaryPath)) throw new Error('The daily provider binary must be an absolute path');
@@ -270,9 +271,9 @@ export class T3App {
       const id = driver === 'claude' ? this.config.verifyClaudeProviderId : this.config.verifyCodexProviderId, entry = providers[id];
       const kind = driver === 'claude' ? 'claudeAgent' : 'codex';
       const pool = driver === 'claude' && this.config.providerRouting;
-      if (pool) validatePoolBinding(providers[this.config.baseProviderId]?.environment, entry?.environment);
+      if (pool) validatePoolBinding(providers[this.config.baseProviderId]?.environment, entry?.environment, this.config.providerRouting?.credentialPolicy);
       if (entry?.driver !== kind || entry.enabled !== true || entry.config?.binaryPath !== this.launcher(driver) || entry.config?.launchArgs || (!pool && (entry.environment ?? []).length)) {
-        throw new Error(`Add T3 provider instance ${id} once in T3 Settings: driver ${kind}, enabled, binary ${this.launcher(driver)}, no launch arguments, ${pool ? 'identical reference-bound pool environment' : 'no environment entries'}. Verification runs never edit T3 settings.`);
+        throw new Error(`Add T3 provider instance ${id} once in T3 Settings: driver ${kind}, enabled, binary ${this.launcher(driver)}, no launch arguments, ${pool ? 'matching public pool environment and configured credential policy' : 'no environment entries'}. Verification runs never edit T3 settings.`);
       }
     }
   }
@@ -281,7 +282,7 @@ export class T3App {
     const providers = await this.providers();
     const binary = this.dailyBinary(providers, 'claude');
     if (!this.config.providerRouting) return binary;
-    const real = validatePoolBinding(providers[this.config.baseProviderId].environment, providers[this.config.verifyClaudeProviderId]?.environment);
+    const real = validatePoolBinding(providers[this.config.baseProviderId].environment, providers[this.config.verifyClaudeProviderId]?.environment, this.config.providerRouting.credentialPolicy);
     const resolved = await realpath(real), launchers = await realpath(this.config.launcherDirectory).catch(() => this.config.launcherDirectory);
     if (resolved === launchers || resolved.startsWith(launchers + sep)) throw new Error('Pool real Claude binary resolves into the launcher directory');
     return real;
@@ -471,7 +472,8 @@ export class T3App {
     catch (error) { throw failure === undefined ? error : new Error(`${errorMessage(failure)}; ${errorMessage(error)}`); }
     if (failure !== undefined) throw failure;
     const raw = c.stdout + '.t3-native.log', binding = c.stdout + '.t3-binding.json', caseLaunches = c.stdout + '.launches.log';
-    await save(binding, { request, reply, identity, launchers: this.config.launcherDirectory });
+    await save(binding, { request, reply, identity, launchers: this.config.launcherDirectory,
+      ...(this.config.providerRouting ? { poolCredentialPolicy: this.config.providerRouting.credentialPolicy ?? 'shared-reference', poolRouteEvidence: 'matching public routing metadata; credential acceptance requires native completion' } : {}) });
     const collected = await nativeMessages(this.config.logsDirectory, identity, c.started, c.harness, { native: c.stdout, raw });
     await writeFile(c.stderr, '', { flag: 'wx', mode: 0o600 });
     const launches = (await readFile(receipts, 'utf8')).split('\n').filter(line => line.startsWith(`${id} `) || (c.harness === 'codex' && / codex \d+$/.test(line)));

@@ -32,7 +32,7 @@ export type ClaudeRoute =
   | {
     readonly kind: "selected";
     readonly descriptor: string;
-    readonly selectionSource: "operator" | "sheet" | "sole-eligible";
+    readonly selectionSource: "operator" | "sheet" | "standing-default" | "sole-eligible";
     readonly target: {
       readonly providerInstanceId: string;
       readonly model: string;
@@ -151,11 +151,12 @@ export function resolveClaudeRoute(value: unknown): ClaudeRoute {
       return dropout("invalid-claude-instance-setting");
     }
     const operator = input.operatorInstanceId === null ? null : instanceId(input.operatorInstanceId);
+    const standingDefault = input.defaultInstanceId == null ? null : instanceId(input.defaultInstanceId);
     const instances = array(input.providers).map(provider);
     if (new Set(instances.map((entry) => entry.providerInstanceId)).size !== instances.length) throw new Error("duplicate instance");
     const eligible = instances.filter((entry) => entry.driverKind === "claudeAgent"
       && entry.canRunChildTask && entry.canRunCrossProviderChildTask && entry.constraints.length === 0);
-    const requested = operator ?? saved;
+    const requested = operator ?? saved ?? standingDefault;
     const selected = requested === null
       ? eligible.length === 1 ? eligible[0] : undefined
       : eligible.find((entry) => entry.providerInstanceId === requested);
@@ -187,7 +188,7 @@ export function resolveClaudeRoute(value: unknown): ClaudeRoute {
     return {
       kind: "selected",
       descriptor: `claude:${normalized}@${requestedEffort}`,
-      selectionSource: operator !== null ? "operator" : saved !== null ? "sheet" : "sole-eligible",
+      selectionSource: operator !== null ? "operator" : saved !== null ? "sheet" : standingDefault !== null ? "standing-default" : "sole-eligible",
       target: {
         providerInstanceId: selected.providerInstanceId,
         model: chosen.id,
