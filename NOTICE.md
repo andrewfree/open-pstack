@@ -32,6 +32,8 @@ The port is editorial, not mechanical. See [CHANGES.md](CHANGES.md) for the full
 
 Summary of structural changes:
 
+- Local T3 Claude route additions: `plugins/pstack/skills/poteto-mode/scripts/runner/{t3-claude-route.ts,t3-claude-route-cli.ts,resolve-t3-claude-route,t3-claude-route.test.ts}` validate the existing model-sheet instance binding against capabilities and the shared registry. Shared dispatch, setup and poteto-mode instructions consume this validator. These are port-authored additions/adaptations, with no second skill tree or credential handling.
+
 - Plugin content lives at `plugins/pstack/` (with its own `.claude-plugin/plugin.json`). The repo root holds `.claude-plugin/marketplace.json` and the LICENSE / NOTICE / README / CHANGES docs.
 - `.claude-plugin/marketplace.json` added at repo root so the repo is installable via `/plugin marketplace add`. The marketplace's single plugin entry sources from `./plugins/pstack`.
 - The native `plugins/pstack/skills/` tree is the only user-facing workflow surface. Claude Code and Codex invoke those skills directly.
