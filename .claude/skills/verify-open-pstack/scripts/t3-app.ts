@@ -8,12 +8,14 @@ import { parseClaudeEvidence } from './claude-evidence.ts';
 import { parseCodexAppEvidence } from './codex-app-evidence.ts';
 import { parseSession } from './harness.ts';
 import { removeCodexHome } from './isolation.ts';
+import { assertPoolCaseEnvironment, resolveClaudePool, type ClaudePoolRoute } from './claude-pool.ts';
 import type { NativeWritePolicy } from './command-policy.ts';
 import type { SessionRecord } from './types.ts';
 
 export interface T3Config {
   parentThreadId: string;
   baseProviderId: string;
+  claudePoolProviderId?: string;
   model: string;
   codexProviderId: string;
   codexModel: string;
@@ -57,7 +59,9 @@ export function t3Config(value: unknown): T3Config {
     if (typeof config[key] !== 'string' || !config[key]) throw new Error(`Missing T3 configuration: ${key}`);
   }
   for (const key of ['launcherDirectory', 'settingsPath', 'logsDirectory']) if (!isAbsolute(config[key] as string)) throw new Error(`T3 ${key} must be absolute`);
-  const ids = [config.baseProviderId, config.codexProviderId, config.verifyClaudeProviderId, config.verifyCodexProviderId];
+  if (config.claudePoolProviderId !== undefined && (typeof config.claudePoolProviderId !== 'string' || !config.claudePoolProviderId.trim())) throw new Error('Invalid Claude pool provider ID');
+  const ids = [config.baseProviderId, config.codexProviderId, config.verifyClaudeProviderId, config.verifyCodexProviderId,
+    ...(config.claudePoolProviderId === undefined ? [] : [config.claudePoolProviderId])];
   if (new Set(ids).size !== ids.length) throw new Error('T3 verification instances must differ from the daily providers and from each other');
   return config as unknown as T3Config;
 }
@@ -218,6 +222,7 @@ export class T3App {
   private armed = false;
   private locked = false;
   private passThrough?: Record<Driver, string>;
+  private pool?: ClaudePoolRoute;
   constructor(private config: T3Config, private root: string) {}
   get runnerRoute(): { providerInstanceId: string; model: string } {
     return { providerInstanceId: this.config.verifyClaudeProviderId, model: this.config.runnerClaudeModel };
@@ -248,14 +253,27 @@ export class T3App {
     for (const driver of ['claude', 'codex'] as const) {
       const id = driver === 'claude' ? this.config.verifyClaudeProviderId : this.config.verifyCodexProviderId, entry = providers[id];
       const kind = driver === 'claude' ? 'claudeAgent' : 'codex';
-      if (entry?.driver !== kind || entry.enabled !== true || entry.config?.binaryPath !== this.launcher(driver) || entry.config?.launchArgs || (entry.environment ?? []).length) {
+      if (entry?.driver !== kind || entry.enabled !== true || entry.config?.binaryPath !== this.launcher(driver) || entry.config?.launchArgs || (!(driver === 'claude' && this.pool) && (entry.environment ?? []).length)) {
         throw new Error(`Add T3 provider instance ${id} once in T3 Settings: driver ${kind}, enabled, binary ${this.launcher(driver)}, no launch arguments, no environment entries. Verification runs never edit T3 settings.`);
       }
     }
   }
 
   async claudeBinaryPath(): Promise<string> {
-    return this.dailyBinary(await this.providers(), 'claude');
+    const providers = await this.providers(), binary = this.dailyBinary(providers, 'claude');
+    await this.claudePool(providers);
+    return binary;
+  }
+
+  private async claudePool(providers: JsonObject): Promise<ClaudePoolRoute | undefined> {
+    const providerInstanceId = this.config.claudePoolProviderId;
+    if (providerInstanceId === undefined) return undefined;
+    return resolveClaudePool({ providerInstanceId, source: providers[providerInstanceId],
+      verification: providers[this.config.verifyClaudeProviderId], cliBinary: this.dailyBinary(providers, 'claude') });
+  }
+
+  private async assertPoolUnchanged(providers: JsonObject): Promise<void> {
+    if (JSON.stringify(await this.claudePool(providers)) !== JSON.stringify(this.pool)) throw new Error('Claude pool changed after verification preparation');
   }
 
   private async passThroughTargets(providers: JsonObject): Promise<Record<Driver, string>> {
@@ -265,7 +283,7 @@ export class T3App {
     if (!info.isDirectory() || info.uid !== process.getuid?.() || info.mode & 0o022) throw new Error(`Launcher directory ${directory} must be a real directory owned by this user and not group- or world-writable`);
     for (const driver of ['claude', 'codex'] as const) await this.assertLauncherSlot(driver);
     const resolvedDirectory = await realpath(directory);
-    const targets = { claude: this.dailyBinary(providers, 'claude'), codex: this.dailyBinary(providers, 'codex') };
+    const targets = { claude: this.pool?.launcher ?? this.dailyBinary(providers, 'claude'), codex: this.dailyBinary(providers, 'codex') };
     for (const target of Object.values(targets)) {
       const resolved = await realpath(target).catch(() => { throw new Error(`Daily provider binary ${target} does not exist`); });
       if (resolved === resolvedDirectory || resolved.startsWith(resolvedDirectory + sep)) throw new Error(`Daily provider binary ${target} resolves into the launcher directory`);
@@ -346,6 +364,7 @@ export class T3App {
 
   async prepare(): Promise<void> {
     const providers = await this.providers();
+    this.pool = await this.claudePool(providers);
     this.passThrough = await this.passThroughTargets(providers);
     await this.lock();
     await this.refuseLiveServers();
@@ -404,12 +423,15 @@ export class T3App {
     if (!this.passThrough || !this.locked) throw new Error('Prepare the T3 verification launchers before recording a case');
     if (this.pending || this.armed) throw new Error('Previous T3 case still has pending work or armed launchers');
     const providers = await this.providers();
+    await this.assertPoolUnchanged(providers);
     this.verifyInstances(providers);
     const configHome = c.env.CLAUDE_CONFIG_DIR || join(c.env.HOME!, '.claude');
-    for (const id of [this.config.baseProviderId, this.config.verifyClaudeProviderId]) {
+    for (const id of [this.config.baseProviderId, this.config.verifyClaudeProviderId,
+      ...(this.config.claudePoolProviderId ? [this.config.claudePoolProviderId] : [])]) {
       const home = providers[id]?.config?.homePath;
       if (home && home !== configHome) throw new Error('Claude app config home differs from the setup snapshot home');
     }
+    if (this.pool) assertPoolCaseEnvironment(c.env);
     const env = caseEnvironment(c.env);
     const claudeArgs = ['--setting-sources', c.projectSkill ? 'project' : '', ...c.projectSkill ? ['--project-config-root', c.workspace, '--add-dir', c.workspace] : [],
       '--plugin-dir', c.pluginRoot, '--strict-mcp-config'];
@@ -442,8 +464,11 @@ export class T3App {
     try { await this.disarm(); }
     catch (error) { throw failure === undefined ? error : new Error(`${errorMessage(failure)}; ${errorMessage(error)}`); }
     if (failure !== undefined) throw failure;
+    const completedProviders = await this.providers();
+    await this.assertPoolUnchanged(completedProviders);
+    this.verifyInstances(completedProviders);
     const raw = c.stdout + '.t3-native.log', binding = c.stdout + '.t3-binding.json', caseLaunches = c.stdout + '.launches.log';
-    await save(binding, { request, reply, identity, launchers: this.config.launcherDirectory });
+    await save(binding, { request, reply, identity, launchers: this.config.launcherDirectory, ...(this.pool ? { claudePool: this.pool } : {}) });
     const collected = await nativeMessages(this.config.logsDirectory, identity, c.started, c.harness, { native: c.stdout, raw });
     await writeFile(c.stderr, '', { flag: 'wx', mode: 0o600 });
     const launches = (await readFile(receipts, 'utf8')).split('\n').filter(line => line.startsWith(`${id} `) || (c.harness === 'codex' && / codex \d+$/.test(line)));

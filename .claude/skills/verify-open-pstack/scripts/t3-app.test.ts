@@ -297,6 +297,128 @@ async function answerCase(a: Awaited<ReturnType<typeof fakeApp>>, { terminal = '
 const idle = (a: Awaited<ReturnType<typeof fakeApp>>) => Promise.all(['claude', 'codex'].map(driver => readFile(join(a.launcherDirectory, driver), 'utf8')));
 const passThrough = [launcherScript({ real: '/usr/bin/true' }), launcherScript({ real: '/usr/bin/true' })];
 
+async function poolApp() {
+  const a = await fakeApp(), wrapper = join(a.root, 'account-launcher');
+  await writeFile(wrapper, `#!/bin/sh\nprintf '%s\\n' "$@" > '${join(a.root, 'pool-args')}'\nprintf '%s' "$ANTHROPIC_API_KEY" > '${join(a.root, 'pool-inherited-key')}'\n`, { mode: 0o700 });
+  const environment = [
+    { name: 'CLIPROXY_CLAUDE_ROUTE', value: 'shared-pool', sensitive: false },
+    { name: 'CLIPROXY_ACCOUNT_PREFIX', value: '', sensitive: false },
+    { name: 'CLIPROXY_BASE_URL', value: 'http://127.0.0.1:8317', sensitive: false },
+    { name: 'CLIPROXY_CLAUDE_BINARY', value: '/usr/bin/true', sensitive: false },
+    { name: 'ANTHROPIC_API_KEY', value: '', sensitive: true, valueRedacted: true },
+    { name: 'ANTHROPIC_AUTH_TOKEN', value: '', sensitive: false },
+    { name: 'CLAUDE_CODE_OAUTH_TOKEN', value: '', sensitive: false },
+    { name: 'DO_NOT_TRACK', value: '1', sensitive: false },
+  ];
+  const settings = await json(a.settingsPath);
+  settings.providerInstances.pool = { driver: 'claudeAgent', enabled: true, config: { binaryPath: wrapper }, environment };
+  settings.providerInstances.verify_claude.environment = structuredClone(environment);
+  await writeFile(a.settingsPath, JSON.stringify(settings));
+  const config = { ...a.config, claudePoolProviderId: 'pool' };
+  return { ...a, app: new T3App(config, a.root), config, wrapper };
+}
+
+test('managed Claude pool uses the dedicated launcher without serializing its inherited credential', async () => {
+  const a = await poolApp(), before = await readFile(a.settingsPath, 'utf8');
+  const wrapper = await realpath(a.wrapper);
+  await a.app.prepare();
+  expect(await a.app.claudeBinaryPath()).toBe('/usr/bin/true');
+  const work = a.app.record(a.c);
+  const request = await pending(a.root);
+  const armed = await readFile(join(a.launcherDirectory, 'claude'), 'utf8');
+  const child = Bun.spawn([join(a.launcherDirectory, 'claude'), '--model', 'haiku'], {
+    env: { ...process.env, ANTHROPIC_API_KEY: 'synthetic-inherited-key' }, stdout: 'ignore', stderr: 'ignore',
+  });
+  expect(await child.exited).toBe(0);
+  await answerCase(a, { launched: [] });
+  const result = await work;
+  const binding = await readFile(a.c.stdout + '.t3-binding.json', 'utf8');
+  expect(armed).toContain(`exec '${wrapper}'`);
+  expect(armed).not.toContain('ANTHROPIC_API_KEY');
+  expect(armed).not.toContain('synthetic-inherited-key');
+  expect(binding).not.toContain('synthetic-inherited-key');
+  expect(binding).not.toContain('valueRedacted');
+  expect(JSON.parse(binding).claudePool).toMatchObject({ providerInstanceId: 'pool', origin: 'http://127.0.0.1:8317', route: 'shared-pool' });
+  expect(await readFile(join(a.root, 'pool-inherited-key'), 'utf8')).toBe('synthetic-inherited-key');
+  expect(await readFile(join(a.root, 'pool-args'), 'utf8')).toContain(`--model\nhaiku\n--setting-sources\n\n--plugin-dir\n${a.c.pluginRoot}\n--strict-mcp-config\n`);
+  expect(result.record.harness).toBe('claude');
+  await a.app.cleanup();
+  expect(await readFile(a.settingsPath, 'utf8')).toBe(before);
+  expect((await idle(a))[0]).toBe(launcherScript({ real: wrapper }));
+  expect(request.target.providerInstanceId).toBe('verify_claude');
+});
+
+test('pool source, endpoint, binary and managed credential metadata must agree before arming', async () => {
+  const a = await poolApp(), original = await json(a.settingsPath);
+  for (const [name, edit] of [
+    ['plaintext key', (s: any) => { s.providerInstances.verify_claude.environment[4].value = 'synthetic-plaintext'; }],
+    ['unredacted key', (s: any) => { s.providerInstances.pool.environment[4].valueRedacted = false; }],
+    ['extra field', (s: any) => { s.providerInstances.verify_claude.environment.push({ name: 'OTHER_KEY', value: '', sensitive: true }); }],
+    ['named account', (s: any) => { s.providerInstances.pool.environment[1].value = 't3-gmail'; }],
+    ['endpoint drift', (s: any) => { s.providerInstances.verify_claude.environment[2].value = 'http://other-host:8317'; }],
+    ['embedded URL credential', (s: any) => { s.providerInstances.pool.environment[2].value = 'http://user:password@localhost:8317'; }],
+    ['OAuth override', (s: any) => { s.providerInstances.verify_claude.environment[5].value = 'synthetic-token'; }],
+    ['different real binary', (s: any) => { s.providerInstances.pool.environment[3].value = '/usr/bin/false'; }],
+    ['duplicate entry', (s: any) => { s.providerInstances.pool.environment.push(s.providerInstances.pool.environment[0]); }],
+  ] as const) {
+    const changed = structuredClone(original); edit(changed);
+    await writeFile(a.settingsPath, JSON.stringify(changed));
+    await expect(a.app.prepare()).rejects.toThrow('Claude pool');
+    expect(await Bun.file(join(a.root, 't3-app', 'pending.json')).exists()).toBe(false);
+  }
+});
+
+test('pool routing drift after preparation fails before a case is pending', async () => {
+  const a = await poolApp(); await a.app.prepare();
+  const settings = await json(a.settingsPath);
+  for (const id of ['pool', 'verify_claude']) settings.providerInstances[id].environment[2].value = 'http://other-host:8317';
+  await writeFile(a.settingsPath, JSON.stringify(settings));
+  await expect(a.app.record(a.c)).rejects.toThrow('Claude pool changed');
+  expect(await Bun.file(join(a.root, 't3-app', 'pending.json')).exists()).toBe(false);
+  await a.app.cleanup();
+});
+
+test('pool changes during a case fail after disarming and before a binding is saved', async () => {
+  const a = await poolApp(); await a.app.prepare();
+  const work = a.app.record(a.c).catch((error: unknown) => error);
+  await pending(a.root);
+  const settings = await json(a.settingsPath);
+  for (const id of ['pool', 'verify_claude']) settings.providerInstances[id].environment[2].value = 'http://other-host:8317';
+  await writeFile(a.settingsPath, JSON.stringify(settings));
+  await answerCase(a);
+  const failure = await work;
+  expect(failure).toBeInstanceOf(Error);
+  if (failure instanceof Error) expect(failure.message).toContain('Claude pool changed');
+  expect(await Bun.file(a.c.stdout + '.t3-binding.json').exists()).toBe(false);
+  expect((await idle(a))[0]).toBe(launcherScript({ real: await realpath(a.wrapper) }));
+  await a.app.cleanup();
+});
+
+test('an unprovisioned pool verification profile fails the binary preflight without reading credentials', async () => {
+  const a = await poolApp(), settings = await json(a.settingsPath);
+  settings.providerInstances.verify_claude.environment = [];
+  await writeFile(a.settingsPath, JSON.stringify(settings));
+  await expect(a.app.claudeBinaryPath()).rejects.toThrow('provisioned T3-managed redacted client key');
+  expect(await Bun.file(join(a.root, 't3-app', 'pending.json')).exists()).toBe(false);
+});
+
+test('case environments cannot override a managed pool route or credential', async () => {
+  const a = await poolApp(); await a.app.prepare();
+  for (const name of ['CLIPROXY_BASE_URL', 'CLIPROXY_CLAUDE_ROUTE', 'CLIPROXY_ACCOUNT_PREFIX',
+    'CLIPROXY_CLAUDE_BINARY', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']) {
+    await expect(a.app.record({ ...a.c, env: { ...a.c.env, [name]: '' } })).rejects.toThrow('must come from T3');
+    expect(await Bun.file(join(a.root, 't3-app', 'pending.json')).exists()).toBe(false);
+  }
+  await a.app.cleanup();
+});
+
+test('optional pool provider ID is nonempty and distinct from all harness providers', async () => {
+  const a = await fakeApp();
+  for (const id of ['', 4, a.config.baseProviderId, a.config.verifyClaudeProviderId]) {
+    expect(() => t3Config({ ...a.config, claudePoolProviderId: id })).toThrow();
+  }
+});
+
 test('verification child disables background updates without changing provider settings or its caller', async () => {
   const a = await fakeApp(), real = join(a.root, 'claude-probe');
   await writeFile(real, '#!/bin/sh\nprintf \'%s\\n\' "$DISABLE_AUTOUPDATER" "${FORCE_AUTOUPDATE_PLUGINS-unset}"\n', { mode: 0o700 });

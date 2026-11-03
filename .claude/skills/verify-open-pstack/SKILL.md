@@ -11,6 +11,14 @@ Claude cases run only through the operator's T3 Claude Agent app route; the veri
 
 The transport uses two permanent T3 verification instances that the operator adds once. Their binaries are verifier launchers. For each case the verifier arms a launcher with the exact candidate plugin arguments, the run-owned environment and telemetry opt-outs, then restores pass-through; the existing operator login is reused. The coordinating T3 agent retains its native capability discovery once per thread and calls `delegate_task` for each case. Catalog reuse never replaces the fresh child-run and native-launch evidence required for every case. The verifier only reads T3 settings, binds each returned task and run to T3's native provider log, checks the loaded plugin and each skill's source and body, and evaluates fixture effects. Missing or truncated required evidence fails the case, as does a session that did not start through the armed launcher.
 
+An optional `claudePoolProviderId` uses an existing T3 shared Claude pool through
+the same permanent verification launcher. This requires prior operator
+provisioning of the verification profile's T3-managed client key and matching
+nonsecret pool configuration. The verifier reads only redacted configuration
+and never provisions or transfers credentials. Direct CLI doctor checks remain
+separate from pool authentication, which the native cases must establish.
+See `features/t3-app.md` for the exact environment contract.
+
 This repository-local, non-shipped skill is shared with Codex through `.agents/skills/verify-open-pstack`. Verifier-changing PRs run from a checkout of their reviewed candidate head; all other PRs run from trusted `main`. The trusted parent owns GitHub reads and publication; candidate processes never receive publisher credentials. Its only GitHub writes are one structured evidence comment and `live-gate` status on the exact candidate SHA; it never queues or merges.
 
 Install development dependencies separately when testing this skill; `verify.sh` does not install at runtime:
