@@ -622,6 +622,15 @@ test('invalid pool recovery never changes launchers held by another active run',
   expect((await json(join(a.launcherDirectory, 'lock.json'))).root).toBe(a.root);
   await a.app.cleanup();
 });
+test('standalone binary preflight releases recovery ownership on success and failure', async () => {
+  const a = await poolApp();
+  expect(await a.app.claudeBinaryPath()).toBe('/usr/bin/true');
+  expect(await readdir(a.launcherDirectory)).not.toContain('lock.json');
+  const settings = await json(a.settingsPath); settings.providerInstances.verify_claude.environment = [];
+  await writeFile(a.settingsPath, JSON.stringify(settings));
+  await expect(a.app.claudeBinaryPath()).rejects.toThrow('Claude pool');
+  expect(await readdir(a.launcherDirectory)).not.toContain('lock.json');
+});
 test('a Codex app-server still running from a run keeps the next run out, and its kept home is removed once it exits', async () => {
   const a = await preparedApp(), saved = process.env.CODEX_HOME;
   const root = await realpath(a.root), daily = join(root, 'daily-codex'), home = join(root, 'run-home');

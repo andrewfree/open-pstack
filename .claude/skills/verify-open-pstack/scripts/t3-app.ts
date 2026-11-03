@@ -262,10 +262,13 @@ export class T3App {
   }
 
   async claudeBinaryPath(): Promise<string> {
-    await this.lockLaunchers();
-    const providers = await this.providers(), binary = this.dailyBinary(providers, 'claude');
-    await this.claudePool(providers);
-    return binary;
+    const held = this.locked;
+    try {
+      await this.lockLaunchers();
+      const providers = await this.providers(), binary = this.dailyBinary(providers, 'claude');
+      await this.claudePool(providers);
+      return binary;
+    } finally { if (!held) await this.cleanup(); }
   }
 
   private async claudePool(providers: JsonObject): Promise<ClaudePoolRoute | undefined> {
