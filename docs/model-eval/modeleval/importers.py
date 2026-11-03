@@ -359,7 +359,7 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
         if mode == "codex":
             if kind == "session_meta":
                 if isinstance(payload.get("id"), str):
-                    next_session = _hash(payload["id"])
+                    next_session = _hash(json.dumps(payload["id"], ensure_ascii=True))
                     if next_session != session:
                         model, codex_mode, epoch = "unknown", None, 0
                         previous = previous_model = previous_last = previous_record_id = None

@@ -87,6 +87,20 @@ class ImportTests(unittest.TestCase):
         self.assertFalse(result["diagnostics"])
         self.assertEqual(report["groups"][0]["token_coverage"]["input_total"]["total"], 300)
 
+    def test_codex_surrogate_session_ids_are_safe_and_distinct(self):
+        events = []
+        for session in ("\ud800", "\\ud800", "\udfff", "ordinary-session"):
+            events.extend([{"type": "session_meta", "payload": {"id": session}},
+                           {"type": "turn.completed", "request_id": "reused",
+                            "model": "gpt-6-sol", "usage": counters()}])
+        for mode in ("codex", "auto"):
+            with self.subTest(mode=mode):
+                result = self.load(events, mode)
+                self.assertFalse(result["diagnostics"])
+                self.assertEqual(len(result["records"]), 4)
+                self.assertEqual(len({row["record_id"] for row in result["records"]}), 4)
+                json.dumps(result, ensure_ascii=False).encode("utf-8")
+
     def test_codex_cumulative_state_resets_only_on_a_new_session(self):
         events = []
         for session in ("first-session", "first-session", "second-session"):
