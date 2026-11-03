@@ -3,6 +3,7 @@ import hashlib
 from html import escape
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -28,6 +29,76 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(len(packet["prompts"]), 3)
         self.assertNotIn('"grading"', output.getvalue())
         self.assertEqual(packet["suite_sha256"], suite_sha256())
+
+    def test_force_cannot_replace_any_command_input_or_file_alias(self):
+        commands = (
+            (["import", "source.jsonl", "--format", "openai"], ("source.jsonl",)),
+            (["summarize", "records.json", "--catalog", "prices.json"], ("records.json", "prices.json")),
+            (["grade", "usage-accounting-v1", "response.json"], ("response.json",)),
+            (["grade-bundle", "--response", "response.json", "--receipt", "receipt.json"],
+             ("response.json", "receipt.json")),
+            (["trials", "trials.json"], ("trials.json",)),
+            (["report", "--usage", "usage.json", "--trials", "trial-summary.json"],
+             ("usage.json", "trial-summary.json")),
+        )
+        for args, inputs in commands:
+            for name in inputs:
+                for alias in ("direct", "symlink", "hardlink"):
+                    with self.subTest(command=args[0], input=name, alias=alias), tempfile.TemporaryDirectory() as scratch:
+                        root = Path(scratch)
+                        fixtures = {"source.jsonl": {"type": "request.completed", "request_id": "r1",
+                                                    "model": "gpt-6-sol", "usage": {"input_tokens": 10}},
+                                    "records.json": {"records": []}, "prices.json": {"models": []},
+                                    "response.json": {}, "receipt.json": self.receipt(),
+                                    "trials.json": {"trials": []},
+                                    "usage.json": {"groups": [], "errors": [], "input_records": 0,
+                                                   "included_records": 0, "identical_duplicates_removed": 0},
+                                    "trial-summary.json": {"groups": [], "ranking": {"verdict": "INCONCLUSIVE", "reasons": []}}}
+                        for filename, value in fixtures.items():
+                            (root / filename).write_text(json.dumps(value) + "\n")
+                        source = root / name
+                        before = source.read_bytes()
+                        target = source if alias == "direct" else root / "output.json"
+                        if alias == "symlink":
+                            target.symlink_to(source)
+                        elif alias == "hardlink":
+                            os.link(source, target)
+                        command = [str(root / arg) if arg in fixtures else arg for arg in args]
+                        with contextlib.redirect_stderr(io.StringIO()):
+                            result = main([*command, "--output", str(target), "--force"])
+                        self.assertEqual(result, 2)
+                        self.assertEqual(source.read_bytes(), before)
+
+    def test_force_cannot_replace_frozen_suite_or_alias(self):
+        for alias in ("direct", "symlink", "hardlink"):
+            with self.subTest(alias=alias), tempfile.TemporaryDirectory() as scratch:
+                root = Path(scratch)
+                suite = root / "suite.json"
+                suite.write_bytes((ROOT / "cases/suite.json").read_bytes())
+                before = suite.read_bytes()
+                target = suite if alias == "direct" else root / "output.json"
+                if alias == "symlink":
+                    target.symlink_to(suite)
+                elif alias == "hardlink":
+                    os.link(suite, target)
+                with patch("modeleval.__main__._SUITE_PATH", suite, create=True), contextlib.redirect_stderr(io.StringIO()):
+                    result = main(["cases", "--output", str(target), "--force"])
+                self.assertEqual(result, 2)
+                self.assertEqual(suite.read_bytes(), before)
+
+    def test_import_protects_expanded_and_missing_input_paths(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            source = root / "source.jsonl"
+            source.write_text('{"type":"request.completed","request_id":"r1","model":"gpt-6-sol","usage":{"input_tokens":10}}\n')
+            before = source.read_bytes()
+            with patch.dict(os.environ, {"HOME": str(root)}), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main(["import", "~/source.jsonl", "--output", str(source), "--force"]), 2)
+            self.assertEqual(source.read_bytes(), before)
+            missing = root / "missing.jsonl"
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main(["import", str(missing), "--output", str(missing), "--force"]), 2)
+            self.assertFalse(missing.exists())
 
     def test_bundle_invalid_response_preserves_failed_attempt(self):
         for text in ('{}', '{"x":1,"x":2}', 'not JSON', '[]'):

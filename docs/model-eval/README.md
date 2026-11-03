@@ -38,6 +38,11 @@ paths and usage metadata. Keep generated imports and reports private. Outputs
 refuse to overwrite existing files unless `--force` is supplied. The `out/`
 directory and other generated artifacts are ignored by Git.
 
+Even with `--force`, an output cannot name a command input or the frozen
+`cases/suite.json`, including symlink and hard-link aliases. The guard also
+protects home-expanded input paths. `--force` replaces only an output artifact;
+it does not authorize replacing source data or the suite.
+
 ## Synthetic cost example
 
 The following invented toy record prints a USD API-price reference of `0.0012`.
