@@ -66,12 +66,13 @@ export function t3Config(value: unknown): T3Config {
   return config as unknown as T3Config;
 }
 
-export interface Launch { real: string; env?: Record<string, string>; args?: string[]; receipt?: { path: string; label: string } }
+export type Launch = { disabled: true } | { real: string; env?: Record<string, string>; args?: string[]; receipt?: { path: string; label: string } };
 const shellQuote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`;
 const LAUNCHER_MARKER = '# pstack-verify launcher';
 /** A launcher records its launch, applies the case environment, and appends the case arguments after T3's own, where the SDK put extra arguments. */
 export function launcherScript(launch: Launch): string {
   const lines = ['#!/bin/sh', LAUNCHER_MARKER];
+  if ('disabled' in launch) return [...lines, "printf '%s\\n' 'Pstack verification launcher disabled until preflight succeeds' >&2", 'exit 78', ''].join('\n');
   if (launch.receipt) lines.push(`printf '%s %s\\n' ${shellQuote(launch.receipt.label)} "$$" >> ${shellQuote(launch.receipt.path)}`);
   for (const [name, value] of Object.entries(launch.env ?? {})) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`Invalid launcher environment name: ${name}`);
@@ -261,6 +262,7 @@ export class T3App {
   }
 
   async claudeBinaryPath(): Promise<string> {
+    await this.lockLaunchers();
     const providers = await this.providers(), binary = this.dailyBinary(providers, 'claude');
     await this.claudePool(providers);
     return binary;
@@ -277,13 +279,24 @@ export class T3App {
     if (JSON.stringify(await this.claudePool(providers)) !== JSON.stringify(this.pool)) throw new Error('Claude pool changed after verification preparation');
   }
 
-  private async passThroughTargets(providers: JsonObject): Promise<Record<Driver, string>> {
+  private async lockLaunchers(): Promise<void> {
     const directory = this.config.launcherDirectory;
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const info = await lstat(directory);
     if (!info.isDirectory() || info.uid !== process.getuid?.() || info.mode & 0o022) throw new Error(`Launcher directory ${directory} must be a real directory owned by this user and not group- or world-writable`);
     for (const driver of ['claude', 'codex'] as const) await this.assertLauncherSlot(driver);
-    const resolvedDirectory = await realpath(directory);
+    if (this.locked) return;
+    await this.lock();
+    const failures: string[] = [];
+    for (const driver of ['claude', 'codex'] as const) {
+      try { await this.writeLauncher(driver, { disabled: true }); } catch (error) { failures.push(`${driver}: ${errorMessage(error)}`); }
+    }
+    if (failures.length) throw new Error(`Verification launchers could not be disabled (${failures.join('; ')})`);
+    await this.retainState();
+  }
+
+  private async passThroughTargets(providers: JsonObject): Promise<Record<Driver, string>> {
+    const resolvedDirectory = await realpath(this.config.launcherDirectory);
     const targets = { claude: this.pool?.launcher ?? this.dailyBinary(providers, 'claude'), codex: this.dailyBinary(providers, 'codex') };
     for (const target of Object.values(targets)) {
       const resolved = await realpath(target).catch(() => { throw new Error(`Daily provider binary ${target} does not exist`); });
@@ -364,10 +377,10 @@ export class T3App {
   }
 
   async prepare(): Promise<void> {
+    await this.lockLaunchers();
     const providers = await this.providers();
     this.pool = await this.claudePool(providers);
     this.passThrough = await this.passThroughTargets(providers);
-    await this.lock();
     await this.refuseLiveServers();
     await this.disarm();
     this.verifyInstances(providers);
