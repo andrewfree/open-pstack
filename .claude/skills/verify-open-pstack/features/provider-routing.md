@@ -14,10 +14,12 @@ The child task must complete with this run's unique `PONG <nonce>`. Match native
 
 Preparation requires permanent pool and Codex verification profiles. The default shared-reference policy requires matching explicit references. An owner-authorized independent-client policy instead compares public route metadata while T3 holds each client credential separately; it makes no credential-equality claim. Until the selected policy is prepared, report `pool-verification-unprepared`. No verifier task provisions keys or settings, resolves secrets, or substitutes direct login.
 
+After daily marketplace drift, account for background Claude health probes as well as conversations when preparing a quiet window. The inspected T3 runtime initializes the CLI for periodic probes; catalog lookups read cached provider snapshots and do not by themselves establish a new CLI launch. A completed turn does not establish process exit. Attribute a write only with process-bound refresh/write evidence, rather than a nearby timestamp. Keep verification caches private and retain unrelated daily-state changes without overwriting them.
+
 After parent integration, offline checks and final review, the narrow publishing gate uses:
 
 ```sh
 .claude/skills/verify-open-pstack/scripts/verify.sh run --repo <owner/repo> --pr <reviewed-pr-number> --feature claude:provider-routing --feature codex:provider-routing --self-test --t3-app <private-config-path> --output <fresh-private-run-directory>
 ```
 
-Replace placeholders with discovered values. For verifier changes, publisher revision equals the reviewed candidate SHA. Confirm the printed four-session plan before inference. Freeze a failed paid run, preserve the original failure and receipts, restore launchers and daily state, and get fresh authority before another charged attempt. Candidate installation, native proof, publication, final review, merge and rollout remain separate gates.
+Replace placeholders with discovered values. For verifier changes, publisher revision equals the reviewed candidate SHA. Confirm the printed four-session plan before inference. Freeze a failed paid run, preserve the original failure and receipts, restore owned launchers and setup snapshots, retain unrelated daily-state drift without overwriting it, and get fresh authority before another charged attempt. Candidate installation, native proof, publication, final review, merge and rollout remain separate gates.
