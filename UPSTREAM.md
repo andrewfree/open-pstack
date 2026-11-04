@@ -43,7 +43,7 @@ The table above is the current Cursor sync point. Open Pstack 1.16.0 imported th
 
 ## Local port-patch ledger
 
-- **Native setup waits**: setup's native Claude probes and smoke calls use explicit `run_in_background: false` and consume the returned Agent results. Codex waits on native handles, while T3 Claude Agent tasks and external processes retain background handles. Preserve this split during syncs so setup can finish its native work in the original turn under the shared wait contract.
+- **Native setup waits**: setup's native Claude probes and smoke calls use explicit `run_in_background: false` and consume the returned Agent results. This is a setup-only exception to the shared main-session background fan-out rule. Codex waits on native handles, while T3 Claude Agent tasks and external processes retain background handles. Preserve this split during syncs so setup can finish its native work in the original turn.
 
 - **Profile guidance preservation**: setup's render step retains non-role guidance from an existing or explicitly supplied profile, including reading limits and escalation rules. Keep these paragraphs with the selected role assignments through reruns and parent integration readback. Confirmation shows the complete proposed sheet, guidance changes, source and destination paths.
 
