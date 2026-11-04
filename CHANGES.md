@@ -5,6 +5,7 @@ This port applies the Cursor → Claude Code substitutions in skill bodies. Earl
 
 ## Unreleased
 
+- Setup explicitly waits for native Claude probe and smoke results with `run_in_background: false`. T3 Claude Agent tasks and external processes keep their background handles and completion checks.
 - Register GPT-6 Astra as an optional direct Codex family with explicit effort selection.
 - Add complete opt-in correctness-first model sheets for Codex and Claude. Code writers use Sol or Astra, readers use Luna or bounded Haiku, and Opus supplies critique. Existing first-run defaults and user settings remain unchanged until explicit setup.
 - Add a standalone Python model evaluation lab, source-backed token-price catalogs, metadata-only importers, deterministic microtasks, and conservative trial summaries. The repository test command includes the Python suite. No private logs or live trial receipts ship with the source.
