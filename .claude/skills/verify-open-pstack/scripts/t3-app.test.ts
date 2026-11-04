@@ -1,8 +1,10 @@
 import { afterEach, expect, test } from 'bun:test';
-import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { save } from './io.ts';
+import { newReceipt } from './core.ts';
+import { MacDriver } from './harness.ts';
 import { syntheticPoolEnvironment } from './pool-profile.test.ts';
 import { validateClaudeChildEffort, capabilityRoutes, launcherScript, nativeMessages, T3App, t3Config, validateAppReply, validateAppTerminalReply, validateClaudeLaunch, validateClaudePrompt, type AppCase } from './t3-app.ts';
 
@@ -227,6 +229,7 @@ async function fakeApp() {
   const root = await mkdtemp(join(tmpdir(), 't3-launchers-')); roots.push(root);
   const settingsPath = join(root, 'settings.json'), logsDirectory = join(root, 'logs'), launcherDirectory = join(root, 'launchers');
   await mkdir(logsDirectory);
+  await writeFile(join(logsDirectory, 'events.daily.log'), native('daily-existing', 'earlier-thread', '2026-10-13T00:00:00Z', { type: 'system', subtype: 'init' }));
   const settings = { uiPreference: 'original', providerInstances: {
     claude: { driver: 'claudeAgent', enabled: true, config: { binaryPath: '/usr/bin/true', homePath: '' }, environment: [] },
     codex: { driver: 'codex', enabled: true, config: { binaryPath: '/usr/bin/true', homePath: '' }, environment: [] },
@@ -284,6 +287,81 @@ async function answerCase(a: Awaited<ReturnType<typeof fakeApp>>, { terminal = '
 }
 const idle = (a: Awaited<ReturnType<typeof fakeApp>>) => Promise.all(['claude', 'codex'].map(driver => readFile(join(a.launcherDirectory, driver), 'utf8')));
 const passThrough = [launcherScript({ real: '/usr/bin/true' }), launcherScript({ real: '/usr/bin/true' })];
+
+test('a log root with native files only in its provider subdirectory is rejected without searching it', async () => {
+  const a = await fakeApp(), provider = join(a.logsDirectory, 'provider');
+  await mkdir(provider);
+  await writeFile(join(provider, 'events.daily.log'), await readFile(join(a.logsDirectory, 'events.daily.log')));
+  await rm(join(a.logsDirectory, 'events.daily.log'));
+  expect(() => new T3App(a.config, a.root)).toThrow(`T3 logsDirectory contains no supported native event files: ${a.logsDirectory}`);
+  await expect(a.app.prepare()).rejects.toThrow('subdirectories are not searched');
+  expect(await readdir(a.root)).not.toContain('launchers');
+  expect(await readdir(a.root)).not.toContain('t3-app');
+  const configured = new T3App({ ...a.config, logsDirectory: provider }, a.root);
+  await configured.prepare();
+  await configured.cleanup();
+});
+
+test.each(['events.daily.log', 'events.daily.log.1', 'events.daily.log.12'])('native log preflight accepts %s without prior verification profile records or fresh timestamps', async name => {
+  const a = await fakeApp(), contents = await readFile(join(a.logsDirectory, 'events.daily.log'));
+  await rm(join(a.logsDirectory, 'events.daily.log'));
+  const file = join(a.logsDirectory, name);
+  await writeFile(file, contents);
+  await utimes(file, 1, 1);
+  const app = new T3App(a.config, a.root);
+  expect(await app.claudeBinaryPath()).toBe('/usr/bin/true');
+  await app.prepare();
+  await expect(nativeMessages(a.logsDirectory, { providerId: 'verify_claude', threadId: 'child' }, started)).rejects.toThrow('unavailable');
+  await app.cleanup();
+});
+
+test.each(['events.log', 'provider.log', 'events.daily.log.gz', 'events.daily.log.1.gz', 'events.daily.log.old'])('native log preflight rejects unsupported filename %s', async name => {
+  const a = await fakeApp(), contents = await readFile(join(a.logsDirectory, 'events.daily.log'));
+  await rm(join(a.logsDirectory, 'events.daily.log'));
+  await writeFile(join(a.logsDirectory, name), contents);
+  expect(() => new T3App(a.config, a.root)).toThrow('no supported native event files');
+});
+
+test('native log preflight requires a regular file and fails closed on empty or missing directories', async () => {
+  const a = await fakeApp();
+  await rm(join(a.logsDirectory, 'events.daily.log'));
+  expect(() => new T3App(a.config, a.root)).toThrow('no supported native event files');
+  await mkdir(join(a.logsDirectory, 'events.directory.log'));
+  await symlink(a.settingsPath, join(a.logsDirectory, 'events.symlink.log'));
+  expect(() => new T3App(a.config, a.root)).toThrow('no supported native event files');
+  await rm(a.logsDirectory, { recursive: true });
+  expect(() => new T3App(a.config, a.root)).toThrow('ENOENT');
+});
+
+test('prepare rechecks native logs before launcher writes, candidate installation or a paid case', async () => {
+  const a = await fakeApp(), before = await readFile(a.settingsPath, 'utf8'), commands: string[][] = [];
+  await rm(join(a.logsDirectory, 'events.daily.log'));
+  const driver = new MacDriver(async args => { commands.push(args); throw new Error('Unexpected command'); }, async () => { throw new Error('Unexpected session'); }, [], a.app);
+  const receipt = newReceipt('andrewfree/open-pstack', 10, 'a'.repeat(40), 'b'.repeat(40), false, a.root);
+  receipt.runFeatures = ['claude:provider-routing'];
+  await expect(driver.prepare(receipt)).rejects.toThrow('no supported native event files');
+  expect(commands).toEqual([]);
+  for (const name of ['launchers', 't3-app', 'source-home', 'state', 'daily-state-before.json']) expect(await readdir(a.root)).not.toContain(name);
+  expect(await readFile(a.settingsPath, 'utf8')).toBe(before);
+  await driver.cleanup();
+});
+
+test.each(['doctor', 'run'])('%s rejects an invalid native log root before invoking any probe or remote command', async mode => {
+  const a = await fakeApp(), config = join(a.root, 't3.json'), output = join(a.root, mode), bin = join(a.root, 'bin'), marker = join(a.root, 'command-invoked');
+  await rm(join(a.logsDirectory, 'events.daily.log'));
+  await mkdir(bin);
+  for (const name of ['bun', 'git', 'gh', 'claude', 'codex']) await writeFile(join(bin, name), `#!/bin/sh\nprintf '%s\\n' invoked >> '${marker}'\nexit 1\n`, { mode: 0o700 });
+  await writeFile(config, JSON.stringify(a.config));
+  const args = mode === 'run' ? ['--repo', 'andrewfree/open-pstack', '--pr', '10', '--feature', 'claude:provider-routing', '--self-test'] : [];
+  const child = Bun.spawn([process.execPath, join(import.meta.dir, 'cli.ts'), mode, ...args, '--t3-app', config, '--output', output], {
+    env: { PATH: bin, HOME: a.root, USER: 'operator', LOGNAME: 'operator', DO_NOT_TRACK: '1' }, stdout: 'ignore', stderr: 'ignore',
+  });
+  expect(await child.exited).toBe(1);
+  expect((await json(join(output, 'failure.json'))).reason).toContain('T3 logsDirectory contains no supported native event files');
+  expect(await readdir(a.root)).not.toContain('command-invoked');
+  expect(await readdir(a.root)).not.toContain('launchers');
+  expect(await readdir(output)).toEqual(['failure.json']);
+});
 
 test('sequential cases arm candidate launchers and restore pass-through without editing T3 settings', async () => {
   const a = await fakeApp(), before = await readFile(a.settingsPath, 'utf8');

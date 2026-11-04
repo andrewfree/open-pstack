@@ -18,10 +18,12 @@ export function routingChallenge(nonce: string) {
     constraints: [], omittedModels: 0, models: [older, model, exact].map(id => ({ id, options: [{ id: 'effort', values: ['high', 'default'] }] })) });
   const all = [direct, fallback, named, pool].map(provider);
   const policy = { primaryPoolInstanceId: pool, manualFallbackInstanceId: fallback };
-  const complete = [{ id: 'complete', complete: true, providers: all }];
-  const cases: { id: string; input: unknown }[] = [], expected: Decision[] = [];
-  function add(id: string, input: object, answer: Partial<Omit<Decision, 'id'>> = {}): void {
-    cases.push({ id, input: { parentHarness: 'codex', descriptor: 'claude:opus@high', mode: 'read-only', sheet: `t3 claude instance: ${pool}\n`, operatorInstanceId: null, defaultInstanceId: null, policy, catalogRounds: complete, ...input } });
+  const complete: { id: string; complete: boolean; search?: string; providers: ReturnType<typeof provider>[] }[] = [{ id: 'complete', complete: true, providers: all }];
+  const defaults: { parentHarness: string; descriptor: string; mode: string; sheet: string; operatorInstanceId: string | null; defaultInstanceId: string | null; policy: typeof policy; catalogRounds: typeof complete }
+    = { parentHarness: 'codex', descriptor: 'claude:opus@high', mode: 'read-only', sheet: `t3 claude instance: ${pool}\n`, operatorInstanceId: null, defaultInstanceId: null, policy, catalogRounds: complete };
+  const cases: { id: string; input: typeof defaults }[] = [], expected: Decision[] = [];
+  function add(id: string, input: Partial<typeof defaults>, answer: Partial<Omit<Decision, 'id'>> = {}): void {
+    cases.push({ id, input: { ...defaults, ...input } });
     expected.push({ id, route: 't3-claude-agent', providerInstanceId: pool, model, options: { effort: 'high' }, dropoutReason: null, catalogReads: ['complete'], ...answer });
   }
   add('policy-short-catalog', { catalogRounds: [{ id: 'short', complete: false, providers: all.filter(p => p.providerInstanceId !== pool) },
@@ -29,18 +31,19 @@ export function routingChallenge(nonce: string) {
   add('explicit-direct', { operatorInstanceId: direct }, { providerInstanceId: direct });
   add('explicit-named', { operatorInstanceId: named }, { providerInstanceId: named });
   add('standing-default', { sheet: '', defaultInstanceId: pool });
+  add('saved-pin-over-standing-default', { defaultInstanceId: direct });
   add('primary-unavailable', { catalogRounds: [{ id: 'complete', complete: true, providers: all.map(p => p.providerInstanceId === pool ? { ...p, canRunChildTask: false } : p) }] },
-    { providerInstanceId: null, model: null, dropoutReason: 'unavailable-claude-instance' });
-  add('missing-explicit-pin', { operatorInstanceId: 'missing', catalogRounds: [...complete, { id: 'selected-lookup', search: 'missing', complete: true, providers: [] }] }, { providerInstanceId: null, model: null, dropoutReason: 'unavailable-claude-instance', catalogReads: ['complete', 'selected-lookup'] });
+    { providerInstanceId: null, model: null, options: {}, dropoutReason: 'unavailable-claude-instance' });
+  add('missing-explicit-pin', { operatorInstanceId: 'missing', catalogRounds: [...complete, { id: 'selected-lookup', search: 'missing', complete: true, providers: [] }] }, { providerInstanceId: null, model: null, options: {}, dropoutReason: 'unavailable-claude-instance', catalogReads: ['complete', 'selected-lookup'] });
   add('exact-model', { descriptor: `claude:${exact}@high` }, { model: exact });
   add('default-effort', { descriptor: 'claude:claude-fixture-1@default', catalogRounds: [{ id: 'complete', complete: true, providers: [{ ...provider(pool), models: [{ id: 'claude-fixture-1', options: [] }] }] }] }, { model: 'claude-fixture-1', options: {} });
-  add('unsupported-effort', { descriptor: 'claude:opus@max' }, { providerInstanceId: null, model: null, options: { effort: 'max' }, dropoutReason: 'unsupported-effort' });
+  add('unsupported-effort', { descriptor: 'claude:opus@max' }, { providerInstanceId: null, model: null, options: {}, dropoutReason: 'unsupported-effort' });
   add('prefixed-model', { catalogRounds: [{ id: 'complete', complete: true, providers: [{ ...provider(pool), models: [{ id: `proxy/${model}`, options: [{ id: 'effort', values: ['high'] }] }] }] }] },
-    { providerInstanceId: null, model: null, dropoutReason: 'unavailable-model' });
+    { providerInstanceId: null, model: null, options: {}, dropoutReason: 'unavailable-model' });
   add('wrong-driver', { catalogRounds: [{ id: 'complete', complete: true, providers: all.map(p => p.providerInstanceId === pool ? { ...p, driverKind: 'codex' } : p) }] },
-    { providerInstanceId: null, model: null, dropoutReason: 'unavailable-claude-instance' });
+    { providerInstanceId: null, model: null, options: {}, dropoutReason: 'unavailable-claude-instance' });
   add('manual-host', { operatorInstanceId: fallback }, { providerInstanceId: fallback });
-  add('native-parent', { parentHarness: 'claude', catalogRounds: [] }, { route: 'native-agent', providerInstanceId: null, model: 'opus', catalogReads: [] });
+  add('native-parent', { parentHarness: 'claude', catalogRounds: [] }, { route: 'native-agent', providerInstanceId: null, model: 'opus', options: {}, catalogReads: [] });
   return { input: { kind: 'synthetic-routing-input', nonce, cases }, expected: { nonce, decisions: expected } };
 }
 
@@ -119,7 +122,7 @@ export function providerRouting(harness: 'claude' | 'codex', appRoute?: AppRoute
       if (harness === 'codex') await live.prepare!(f);
     },
     prompt(f) {
-      const synthetic = `Resolve the explicitly synthetic scenarios in ${join(f.dir, 'routing-input.json')} using the installed provider-dispatch policy and its validator for Codex-parent inputs. For each complete synthetic catalog, use that scenario's sheet, operatorInstanceId and defaultInstanceId; the policy object only describes its configured pool/host meaning. They are fixture data, never native capability results. Do not dispatch or query providers for these scenarios. Write ${join(f.dir, 'routing-decisions.json')} as {"nonce":"<input nonce>","decisions":[{"id":"<case id>","route":"native-agent or t3-claude-agent","providerInstanceId":"<id or null>","model":"<model or null>","options":{},"dropoutReason":"<reason or null>","catalogReads":["<round ids consumed>"]}]}. Keep case order. options contains only the effort option that would actually be sent, including on a dropout. Use installed mapping semantics for each scenario's parent harness.`;
+      const synthetic = `Resolve the explicitly synthetic scenarios in ${join(f.dir, 'routing-input.json')} using the installed provider-dispatch policy and its validator for Codex-parent inputs. For each complete synthetic catalog, use that scenario's sheet, operatorInstanceId and defaultInstanceId; the policy object only describes its configured pool/host meaning. They are fixture data, never native capability results. Do not dispatch or query providers for these scenarios. Write ${join(f.dir, 'routing-decisions.json')} as {"nonce":"<input nonce>","decisions":[{"id":"<case id>","route":"native-agent or t3-claude-agent","providerInstanceId":"<id or null>","model":"<model or null>","options":{},"dropoutReason":"<reason or null>","catalogReads":["<round ids consumed>"]}]}. Keep case order. options contains only fields passed directly to the dispatch tool, not requested effort metadata or effort supplied by a native agent definition. Use installed mapping semantics for each scenario's parent harness.`;
       const actual = harness === 'claude' ? 'Launch no children and perform no live provider discovery.'
         : `Then exercise one real Codex-to-Claude lane. Use the fixture model sheet ${join(f.dir, 'routing-sheet.md')} in place of every configured sheet. Its saved instance is a dedicated pool-backed verification profile, validated by this harness against the daily pool's public routing metadata and the configured credential policy. T3 owns credential resolution; matching redacted slots never assert credential equality. There is no explicit operator instance override or standing default for this task; use null for both fields. The daily pool is ${appRoute!.policy!.primary}, the available direct-login alternative is ${appRoute!.policy!.direct}, and the manual host fallback is ${appRoute!.policy!.fallback}. Discover all four real profiles, including the saved verification profile, through native orchestrator_capabilities calls; use targeted lookups when a broad response is shortened. Choose using installed provider-dispatch, run the installed resolve-t3-claude-route validator with operatorInstanceId and defaultInstanceId null and the exact fixture sheet, and use its selected target unchanged. Project only sheet, operatorInstanceId, defaultInstanceId, descriptor, mode and providers; each provider retains only providerInstanceId, driverKind, both runnable flags, constraints, omittedModels (zero if absent), and models with only id and options, whose entries have only id and values. Keep its request at ${join(f.dir, 'live-route-request.json')} and print its JSON result in the native command output. Dispatch exactly one read-only descriptor claude:opus@high through native T3, async plan interaction, unique clientRequestId, and drain its original task. Its task is: Reply with exactly ${pong()} as the final answer. Do no engineering work, spawn no agents, ask no questions and request no plan approval. Grounding directory: ${f.dir}. Reserve the private lane record at ${join(f.dir, 'app-lane.json')} and final output at ${join(f.dir, 'app-output.md')} before dispatch, as installed routing requires. Preserve the exact concrete model and high effort. No retry, host/account fallback, shell Claude or external runner. Model listing and quota are not inference proof.`;
       return `${invoke(harness, 'poteto-mode', `${synthetic} ${actual}`)} Read installed references separately in byte ranges of at most 8192 bytes per shell command and bound command stdout. Work only in ${f.dir}. Do not edit plugin/configuration files, query credentials or quota, publish, ask questions, or launch other models.`;

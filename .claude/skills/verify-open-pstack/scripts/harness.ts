@@ -190,6 +190,7 @@ export class MacDriver implements Driver {
           for (const c of cases) {
             try {
               await c.prepare?.(fixture);
+              if (this.daily) assertDailyState(this.daily.before, await captureDailyState(this.daily.paths));
               const stdout = join(records, `${c.id}.jsonl`), stderr = join(records, `${c.id}.stderr`), cwd = c.cwd === 'workspace' ? workspace : dir;
               const rolloutCopy = join(records, `${c.id}.rollout.jsonl`), started = Date.now();
               const appCase = harness === 'claude' || c.app !== undefined || c.id.startsWith('app-route-');

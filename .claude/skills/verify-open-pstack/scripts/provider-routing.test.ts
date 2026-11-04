@@ -8,6 +8,7 @@ import { recipe, type Fixture } from '../features/recipes.ts';
 import { classify, newReceipt, requiredFeatures, validateRegistry } from './core.ts';
 import registryData from '../features/registry.json';
 import type { SessionRecord } from './types.ts';
+import { resolveClaudeRoute } from '../../../../plugins/pstack/skills/poteto-mode/scripts/runner/t3-claude-route.ts';
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -41,7 +42,7 @@ async function fixture(harness: 'claude' | 'codex') {
 
 test('the compact oracle has fresh input identities and keeps all answers out of candidate inputs', async () => {
   const { f, c, input, challenge } = await fixture('claude');
-  expect(input.kind).toBe('synthetic-routing-input'); expect(input.cases).toHaveLength(13);
+  expect(input.kind).toBe('synthetic-routing-input'); expect(input.cases).toHaveLength(14);
   expect(input.expected).toBeUndefined(); expect(input.decisions).toBeUndefined();
   expect(c.prompt(f)).not.toContain(JSON.stringify(challenge.expected));
   const other = await fixture('claude'); expect(other.input.nonce).not.toBe(input.nonce);
@@ -49,15 +50,41 @@ test('the compact oracle has fresh input identities and keeps all answers out of
   expect(challenge.expected.decisions.find(c => c.id === 'policy-short-catalog')!.catalogReads).toEqual(['short', 'primary-lookup']);
   expect(challenge.expected.decisions.find(c => c.id === 'default-effort')!.options).toEqual({});
 });
-for (const label of ['nonce', 'direct-instead-of-pool', 'silent-fallback', 'default-sent', 'omitted-lookup', 'missing-case'] as const) test(`the synthetic oracle rejects ${label}`, () => {
+for (const label of ['nonce', 'direct-instead-of-pool', 'silent-fallback', 'default-sent', 'dropout-effort-sent', 'native-effort-sent', 'standing-default-over-pin', 'omitted-lookup', 'missing-case'] as const) test(`the synthetic oracle rejects ${label}`, () => {
   const challenge = routingChallenge(randomUUID()), actual = structuredClone(challenge.expected);
   if (label === 'nonce') actual.nonce = 'old';
   if (label === 'direct-instead-of-pool') actual.decisions[0]!.providerInstanceId = 'claudeAgent';
   if (label === 'silent-fallback') actual.decisions[3]!.providerInstanceId = 'manual-mac';
   if (label === 'default-sent') actual.decisions.find(c => c.id === 'default-effort')!.options = { effort: 'default' };
+  if (label === 'dropout-effort-sent') actual.decisions.find(c => c.id === 'unsupported-effort')!.options = { effort: 'max' };
+  if (label === 'native-effort-sent') actual.decisions.find(c => c.id === 'native-parent')!.options = { effort: 'high' };
+  if (label === 'standing-default-over-pin') actual.decisions.find(c => c.id === 'saved-pin-over-standing-default')!.providerInstanceId = 'claudeAgent';
   if (label === 'omitted-lookup') actual.decisions[0]!.catalogReads.pop();
   if (label === 'missing-case') actual.decisions.pop();
   expect(() => assertRoutingDecisions(actual, challenge.expected)).toThrow('decisions-mismatch');
+});
+const contractChallenge = routingChallenge('contract-proof');
+for (const { id, input } of contractChallenge.input.cases.filter(c => c.input.parentHarness === 'codex')) test(`the hand-authored ${id} answer matches the runtime dispatch contract`, () => {
+  const providers = new Map<string, (typeof input.catalogRounds)[number]['providers'][number]>();
+  for (const round of input.catalogRounds) for (const provider of round.providers) providers.set(provider.providerInstanceId, provider);
+  const result = resolveClaudeRoute({ ...input, providers: [...providers.values()] });
+  const expected = contractChallenge.expected.decisions.find(c => c.id === id)!;
+  if (result.kind === 'selected') {
+    expect({ providerInstanceId: expected.providerInstanceId, model: expected.model, options: expected.options, dropoutReason: expected.dropoutReason })
+      .toEqual({ ...result.target, dropoutReason: null });
+  } else {
+    expect(result).not.toHaveProperty('target');
+    expect({ providerInstanceId: expected.providerInstanceId, model: expected.model, options: expected.options, dropoutReason: expected.dropoutReason })
+      .toEqual({ providerInstanceId: null, model: null, options: {}, dropoutReason: result.reason });
+  }
+});
+test('the native Agent definition supplies the requested effort without a dispatch option', async () => {
+  const scenario = contractChallenge.input.cases.find(c => c.id === 'native-parent')!;
+  const expected = contractChallenge.expected.decisions.find(c => c.id === scenario.id)!;
+  const definition = await readFile(join(import.meta.dir, '../../../../plugins/pstack/agents/pstack-opus-high.md'), 'utf8');
+  expect(scenario.input.descriptor).toBe('claude:opus@high');
+  expect(definition).toMatch(/^model: opus$/m); expect(definition).toMatch(/^effort: high$/m);
+  expect(expected).toEqual({ id: 'native-parent', route: 'native-agent', providerInstanceId: null, model: 'opus', options: {}, dropoutReason: null, catalogReads: [] });
 });
 for (const harness of ['claude', 'codex'] as const) test(`${harness} has one representative recipe, with exactly one nested child only for the Codex app case`, async () => {
   const { c, f, r } = await fixture(harness);
