@@ -5,6 +5,8 @@ This port applies the Cursor → Claude Code substitutions in skill bodies. Earl
 
 ## Unreleased
 
+- Codex verification disables the observed OpenAI Developers and Codex Security plugin MCP servers in its private run configuration, while retaining candidate plugin activation. Native evidence accepts T3's official direct transport with independent startup/readiness checks for each server; unexpected plugin servers remain failures. Failure instructions preserve unrelated daily registry updates instead of restoring older state over them.
+
 - Verifier preflight requires supported native event files directly inside the configured log directory, before probes or installation. Each case rechecks the original daily-state baseline before inference. Concurrent daily-client changes still forbid publication. The routing oracle now records actual dispatch options, checks its authored answers against the runtime validator and native agent definition, and includes a saved pin overriding a conflicting standing default.
 
 - The repository verifier adds a narrow provider-routing feature for both installed harnesses. It checks saved-default selection with a nonce-bound fixture and an unchanged native Claude child target, preserves the existing explicit-pin proof, and accepts omitted default effort. Pool preparation defaults to matching public routing metadata and an explicit shared secret reference owned by T3. An owner-authorized independent-client policy can instead use separately stored T3 credentials while proving route equivalence only. No verifier provisions keys or resolves credential values.
