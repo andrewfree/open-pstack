@@ -1,6 +1,6 @@
 import { validatePoolBinding, type PoolPolicy, type PoolCredentialPolicy } from './pool-profile.ts';
 import { randomUUID } from 'node:crypto';
-import { createReadStream, readFileSync } from 'node:fs';
+import { createReadStream, readFileSync, readdirSync } from 'node:fs';
 import { lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, sep } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -146,6 +146,13 @@ export function capabilityRoutes(request: AppRequest, reply: JsonObject, started
   return routes;
 }
 
+const NATIVE_EVENT_FILE = /^events\..+\.log(?:\.\d+)?$/;
+function assertNativeLogDirectory(logs: string): void {
+  if (!readdirSync(logs, { withFileTypes: true }).some(file => file.isFile() && NATIVE_EVENT_FILE.test(file.name))) {
+    throw new Error(`T3 logsDirectory contains no supported native event files: ${logs}. Configure the directory containing events.*.log or numbered rotations explicitly; subdirectories are not searched.`);
+  }
+}
+
 /** Read app-written records by full provider session identity; log filenames can collide after truncation. */
 export async function nativeMessages(logs: string, identity: { threadId: string; providerId: string }, started: number, harness: 'claude' | 'codex' = 'claude', retain?: { native: string; raw: string }): Promise<{ native: string; raw: string; launches: JsonObject[]; prompts: JsonObject[] }> {
   const instancePrefix = `provider-session:provider-instance:${identity.providerId}:`;
@@ -154,7 +161,7 @@ export async function nativeMessages(logs: string, identity: { threadId: string;
   const threads = new Set<string>();
   const malformed: string[] = [], truncated: string[] = [];
   for (const name of await readdir(logs)) {
-    if (!/^events\..+\.log(?:\.\d+)?$/.test(name)) continue;
+    if (!NATIVE_EVENT_FILE.test(name)) continue;
     const file = join(logs, name);
     if ((await stat(file)).mtimeMs < started) continue;
     const lines = createInterface({ input: createReadStream(file), crlfDelay: Infinity });
@@ -236,7 +243,7 @@ export class T3App {
   private armed = false;
   private locked = false;
   private passThrough?: Record<Driver, string>;
-  constructor(private config: T3Config, private root: string) {}
+  constructor(private config: T3Config, private root: string) { assertNativeLogDirectory(config.logsDirectory); }
   get runnerRoute(): { providerInstanceId: string; model: string; policy?: PoolPolicy } {
     return { providerInstanceId: this.config.verifyClaudeProviderId, model: this.config.runnerClaudeModel,
       ...(this.config.providerRouting ? { policy: { primary: this.config.baseProviderId, direct: this.config.providerRouting.directProviderId, fallback: this.config.providerRouting.fallbackProviderId } } : {}) };
@@ -376,6 +383,7 @@ export class T3App {
   }
 
   async prepare(): Promise<void> {
+    assertNativeLogDirectory(this.config.logsDirectory);
     const providers = await this.providers();
     this.passThrough = await this.passThroughTargets(providers);
     await this.lock();
