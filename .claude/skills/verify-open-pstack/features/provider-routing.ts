@@ -84,7 +84,11 @@ async function helperProof(record: SessionRecord, f: Fixture, route: AppRoute, n
   const requestPath = join(f.dir, 'live-route-request.json'), sheetPath = join(f.dir, 'routing-sheet.md');
   const helper = join(f.location, 'skills/poteto-mode/scripts/runner/resolve-t3-claude-route');
   const commands = [helper, await realpath(helper)].map(name => validatorCommand(name, requestPath));
-  const invocations = new Set([...commands, ...commands.flatMap(command => ['/bin/sh -c', '/bin/sh -lc', '/bin/bash -lc', '/bin/zsh -lc'].map(shell => `${shell} ${shellQuote(command)}`))]);
+  const invocations = new Set([...commands, ...commands.flatMap(command => {
+    const quoted = [shellQuote(command)];
+    if (!/[$`"\\]/.test(command)) quoted.push(`"${command}"`);
+    return ['/bin/sh -c', '/bin/sh -lc', '/bin/bash -lc', '/bin/zsh -lc'].flatMap(shell => quoted.map(value => `${shell} ${value}`));
+  })]);
   const expected = { kind: 'selected', descriptor: 'claude:opus@high', selectionSource: 'sheet', target: { providerInstanceId: target.providerInstanceId, model: target.model, options: { effort: 'high' } }, quota: 'unknown' };
   const resultMatches = (text: string | undefined) => { try { return Bun.deepEquals(JSON.parse(text ?? ''), expected); } catch { return false; } };
   const command = record.tools.find(t => t.name === 'command' && !t.failed && typeof t.input.command === 'string' && invocations.has(t.input.command) && resultMatches(t.result));

@@ -15,8 +15,8 @@ afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { rec
 const route = { providerInstanceId: 'verify-pool', model: 'claude-opus-5-10', policy: { primary: 'daily-pool', direct: 'claudeAgent', fallback: 'manual-mac' } };
 const provider = (providerInstanceId: string) => ({ providerInstanceId, driverKind: 'claudeAgent', canRunChildTask: true, canRunCrossProviderChildTask: true, constraints: [], omittedModels: 0,
   models: [route.model].map(id => ({ id, options: [{ id: 'effort', values: ['high'] }] })) });
-async function fixture(harness: 'claude' | 'codex') {
-  const dir = await mkdtemp(join(tmpdir(), 'provider-routing-')); roots.push(dir);
+async function fixture(harness: 'claude' | 'codex', prefix = 'provider-routing-') {
+  const dir = await mkdtemp(join(tmpdir(), prefix)); roots.push(dir);
   const f: Fixture = { harness, dir, workspace: dir, configHome: dir, location: await realpath(join(import.meta.dir, '../../../../plugins/pstack')), run: async () => { throw new Error('No subprocess expected'); } };
   const c = recipe('provider-routing', harness, [], route)[0]!; await c.prepare!(f);
   const input = JSON.parse(await readFile(join(dir, 'routing-input.json'), 'utf8'));
@@ -190,7 +190,16 @@ test('a native shell wrapper preserves the exact single validator invocation', a
   const { c, f, r } = await fixture('codex'), command = r.tools[0]!, invocation = String(command.input.command);
   const quoted = `'${invocation.replaceAll("'", `'\\''`)}'`;
   for (const shell of ['/bin/sh -c', '/bin/sh -lc', '/bin/bash -lc', '/bin/zsh -lc']) {
-    command.input.command = `${shell} ${quoted}`;
-    expect((await c.assert(r, f)).assertions).toContain('saved-pool-validator-target-unchanged');
+    for (const envelope of [quoted, `"${invocation}"`]) {
+      command.input.command = `${shell} ${envelope}`;
+      expect((await c.assert(r, f)).assertions).toContain('saved-pool-validator-target-unchanged');
+    }
   }
+});
+
+for (const [label, character] of [['dollar', '$'], ['backtick', '`'], ['double-quote', '"'], ['backslash', '\\']]) test(`double-quoted native envelopes reject active ${label} characters`, async () => {
+  const { c, f, r } = await fixture('codex', `provider-routing-${character}-`), command = r.tools[0]!;
+  expect((await c.assert(r, f)).assertions).toContain('saved-pool-validator-target-unchanged');
+  command.input.command = `/bin/zsh -lc "${command.input.command}"`;
+  await expect(c.assert(r, f)).rejects.toThrow('native-validator-before-dispatch-required');
 });
