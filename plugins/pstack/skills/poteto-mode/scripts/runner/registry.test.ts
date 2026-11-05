@@ -311,6 +311,7 @@ describe("hand-written dispatch and setup rules", () => {
       "starts with a rolling alias's versioned-predecessor prefix",
       "preserving the provider, effort, role, and lane order",
       "Show any rolling-alias migrations",
+      "Write each source and destination path separately and in full, as an absolute path or a `~/` path under the operator's home.",
       "An effort-only rerun cannot change a role's family.",
       "<!-- pstack:models:begin -->",
       "<!-- pstack:models:end -->",

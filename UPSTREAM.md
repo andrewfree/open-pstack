@@ -45,7 +45,7 @@ The table above is the current Cursor sync point. Open Pstack 1.16.0 imported th
 
 - **Native setup waits**: setup's native Claude probes and smoke calls use explicit `run_in_background: false` and consume the returned Agent results. This is a setup-only exception to the shared main-session background fan-out rule. Codex waits on native handles, while T3 Claude Agent tasks and external processes retain background handles. Preserve this split during syncs so setup can finish its native work in the original turn.
 
-- **Profile guidance preservation**: setup's render step retains non-role guidance from an existing or explicitly supplied profile, including reading limits and escalation rules. Keep these paragraphs with the selected role assignments through reruns and parent integration readback. Confirmation shows the complete proposed sheet, guidance changes, source and destination paths.
+- **Profile guidance preservation**: setup's render step retains non-role guidance from an existing or explicitly supplied profile, including reading limits and escalation rules. Keep these paragraphs with the selected role assignments through reruns and parent integration readback. Confirmation shows the complete proposed sheet, guidance changes, and each source and destination as its own complete absolute or `~/` path.
 
 - **Correctness-first subscription profile**: the optional Astra family in `registry/models.ts`, complete parent-specific sheets in `docs/model-routing/`, and standalone evaluation lab in `docs/model-eval/` are local additions. Keep the generated catalog in sync with the registry. The opt-in sheets do not replace upstream-derived first-run role defaults, and private usage logs and trial receipts stay outside source control.
 
