@@ -206,10 +206,18 @@ describe("input and sheet boundaries", () => {
     expect(claudeInstanceSetting("a role: inherit-parent")).toBeNull();
   });
 
-  for (const sheet of ["t3 claude instance:", "t3 claude instance", "t3 claude instance: two words", "t3 claude instance: pool\nt3 claude instance: pool"]) {
+  for (const sheet of ["t3 claude instance:", "t3 claude instance", "t3 claude instance subscription-pool-primary", "t3 claude instance: two words", "t3 claude instance: pool\nt3 claude instance: pool"]) {
     it(`rejects a malformed persisted setting even with an override: ${JSON.stringify(sheet)}`, () => {
       expect(resolveClaudeRoute(request({ sheet, operatorInstanceId: direct.providerInstanceId })))
         .toMatchObject({ kind: "dropout", reason: "invalid-claude-instance-setting" });
+    });
+  }
+
+  for (const selection of ["standing-default", "sole-eligible"] as const) {
+    it(`rejects a missing-colon setting before ${selection} selection can change the account`, () => {
+      const alternate = selection === "standing-default" ? { defaultInstanceId: direct.providerInstanceId } : { providers: [direct] };
+      expect(resolveClaudeRoute(request({ sheet: `t3 claude instance ${pool.providerInstanceId}\n`, ...alternate })))
+        .toEqual({ kind: "dropout", reason: "invalid-claude-instance-setting", candidateInstanceIds: [] });
     });
   }
 

@@ -112,7 +112,7 @@ function provider(value: unknown): ClaudeInstance {
 }
 
 export function claudeInstanceSetting(sheet: string): string | null {
-  const lines = sheet.split(/\r?\n/).filter((line) => /^\s*t3 claude instance(?:\s*:|\s*$)/.test(line));
+  const lines = sheet.split(/\r?\n/).filter((line) => /^\s*t3 claude instance\b/.test(line));
   if (lines.length === 0) return null;
   const [line] = lines;
   if (lines.length !== 1 || line === undefined) throw new Error("duplicate instance setting");
