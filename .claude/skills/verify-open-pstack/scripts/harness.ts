@@ -73,8 +73,19 @@ export class MacDriver implements Driver {
   private codexHomes: string[] = [];
   private setup?: SetupSnapshot;
   private restorationFailed = false;
-  private daily?: { paths: DailyStatePaths; before: DailyState; root: string };
+  private daily?: { paths: DailyStatePaths; before: DailyState; previous: DailyState; root: string; evidence: Receipt['dailyState'] };
   constructor(private run: Command = command, private record: Session = session, private routes: string[] = [], private app?: AppTransport) {}
+  private async checkDailyState(final = false): Promise<void> {
+    if (!this.daily) return;
+    const { paths, before, previous, root, evidence } = this.daily;
+    const after = await captureDailyState(paths, evidence.policy);
+    const file = join(root, `daily-state-check-${evidence.snapshots.length}.json`);
+    await save(file, after);
+    evidence.snapshots.push(await retainedFile(root, file));
+    if (final) await save(join(root, 'daily-state-after.json'), after);
+    evidence.acceptedMarketplaceChanges.push(...assertDailyState(before, after, previous));
+    this.daily.previous = after;
+  }
   async cleanup(): Promise<string | void> {
     const failures: unknown[] = [];
     const step = async (action: () => Promise<void>): Promise<void> => { try { await action(); } catch (error) { failures.push(error); } };
@@ -93,11 +104,7 @@ export class MacDriver implements Driver {
       this.codexHomes = [];
     });
     if (failures.length) throw failures[0];
-    if (this.daily) {
-      const after = await captureDailyState(this.daily.paths);
-      await save(join(this.daily.root, 'daily-state-after.json'), after);
-      assertDailyState(this.daily.before, after);
-    }
+    await this.checkDailyState(true);
     if (kept) return "Setup files restored and verified; run-owned Codex home kept, with its auth link verified, while T3's verification app-server still runs; private raw evidence retained";
   }
   private candidate(home: string): Command {
@@ -115,8 +122,10 @@ export class MacDriver implements Driver {
     await this.app?.prepare();
     const root = receipt.artifactRoot;
     const paths = dailyStatePaths(this.app?.settingsPath);
-    this.daily = { paths, before: await captureDailyState(paths), root };
+    const before = await captureDailyState(paths, receipt.dailyState.policy);
+    this.daily = { paths, before, previous: before, root, evidence: receipt.dailyState };
     await save(join(root, 'daily-state-before.json'), this.daily.before);
+    receipt.dailyState.snapshots.push(await retainedFile(root, join(root, 'daily-state-before.json')));
     const referenceHome = join(root, 'source-home'), reference = join(referenceHome, 'workspace');
     await mkdir(join(referenceHome, 'tmp'), { recursive: true, mode: 0o700 });
     const trustedRun: Command = (args, options = {}) => this.run(args, { ...options, env: isolatedEnv(referenceHome) });
@@ -190,7 +199,7 @@ export class MacDriver implements Driver {
           for (const c of cases) {
             try {
               await c.prepare?.(fixture);
-              if (this.daily) assertDailyState(this.daily.before, await captureDailyState(this.daily.paths));
+              await this.checkDailyState();
               const stdout = join(records, `${c.id}.jsonl`), stderr = join(records, `${c.id}.stderr`), cwd = c.cwd === 'workspace' ? workspace : dir;
               const rolloutCopy = join(records, `${c.id}.rollout.jsonl`), started = Date.now();
               const appCase = harness === 'claude' || c.app !== undefined || c.id.startsWith('app-route-');

@@ -16,6 +16,36 @@ const REPO = 'ericlitman/open-pstack';
 const roots: string[] = [];
 const gitEnv = { PATH: process.env.PATH ?? '', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
 async function fixture(): Promise<string> { const root = await realpath(await mkdtemp(join(tmpdir(), 'pstack-test-'))); roots.push(root); return root; }
+
+for (const policy of ['strict', 'marketplace-timestamps'] as const) test(`driver cleanup retains and enforces the selected ${policy} daily-state policy`, async () => {
+  const root = await fixture(), home = join(root, 'operator'), registry = join(home, '.claude/plugins/known_marketplaces.json');
+  await mkdir(join(registry, '..'), { recursive: true });
+  await writeFile(registry, JSON.stringify({ fixture: { source: { source: 'git', url: 'private-value' }, lastUpdated: '2026-11-05T01:00:00.000Z' } }));
+  const prior = { HOME: process.env.HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, CODEX_HOME: process.env.CODEX_HOME };
+  const receipt = newReceipt(REPO, 111, 'a'.repeat(40), 'b'.repeat(40), false, root);
+  receipt.dailyState.policy = policy;
+  receipt.runFeatures = ['claude:project-skill'];
+  const run: Command = async () => { throw new Error('fixture stops after baseline'); };
+  const app = { ...appStub('').app, settingsPath: join(home, 't3-settings.json') };
+  const driver = new MacDriver(run, noSession, [], app);
+  try {
+    process.env.HOME = home; process.env.CLAUDE_CONFIG_DIR = join(home, '.claude'); process.env.CODEX_HOME = join(home, '.codex');
+    await expect(driver.prepare(receipt)).rejects.toThrow('fixture stops after baseline');
+    await writeFile(registry, JSON.stringify({ fixture: { source: { source: 'git', url: 'private-value' }, lastUpdated: '2026-11-05T02:00:00.000Z' } }));
+    if (policy === 'strict') await expect(driver.cleanup()).rejects.toThrow('Daily state changed');
+    else {
+      await driver.cleanup();
+      expect(receipt.dailyState.acceptedMarketplaceChanges).toHaveLength(1);
+      expect(receipt.dailyState.acceptedMarketplaceChanges[0]!.timestamps[0]!.after).toBe('2026-11-05T02:00:00.000Z');
+      expect(JSON.stringify(receipt.dailyState)).not.toContain('private-value');
+      for (const snapshot of receipt.dailyState.snapshots) expect(await retainedFile(root, snapshot.path)).toEqual(snapshot);
+    }
+    expect(receipt.dailyState.snapshots).toHaveLength(2);
+    expect(await readFile(registry, 'utf8')).toContain('2026-11-05T02:00:00.000Z');
+  } finally {
+    for (const [name, value] of Object.entries(prior)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+  }
+});
 const originalEnv = { HOME: process.env.HOME, USER: process.env.USER, LOGNAME: process.env.LOGNAME,
   CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, CODEX_HOME: process.env.CODEX_HOME };
 afterEach(async () => {

@@ -1,7 +1,7 @@
 import { recipe } from '../features/recipes.ts';
 import { classify, completeEvidence, newReceipt, repositoryName, requiredFeatures, requiredHarnesses } from './core.ts';
 import { retainedFile, sha256 } from './io.ts';
-import { type Driver, type GitHub, type Pull, type Receipt, type Registry } from './types.ts';
+import { type DailyStatePolicy, type Driver, type GitHub, type Pull, type Receipt, type Registry } from './types.ts';
 
 class HeadMoved extends Error {}
 export class Refused extends Error {}
@@ -21,7 +21,9 @@ export function evidence(receipt: Receipt): string {
     `- Planned sessions: ${receipt.sessions} (limit ${SESSION_LIMIT})`,
     ...(receipt.wide ? [`- Wide run reason: ${safe(receipt.wide)}`] : []),
     `- Publisher revision: ${receipt.publisherRevision ? `\`${receipt.publisherRevision}\`` : 'not supplied'}`,
-    `- Evidence-set SHA-256: \`${sha256(JSON.stringify({ installations: receipt.installations, observations: receipt.observations }))}\``,
+    `- Daily-state policy: ${receipt.dailyState.policy}; accepted marketplace metadata changes: ${receipt.dailyState.acceptedMarketplaceChanges.length}; accepted timestamp changes: ${receipt.dailyState.acceptedMarketplaceChanges.reduce((sum, change) => sum + change.timestamps.length, 0)}. Writer attribution is not established by timestamp acceptance.`,
+    `- Daily-state evidence SHA-256: \`${sha256(JSON.stringify(receipt.dailyState))}\``,
+    `- Evidence-set SHA-256: \`${sha256(JSON.stringify({ installations: receipt.installations, observations: receipt.observations, dailyState: receipt.dailyState }))}\``,
   ];
   if (!failed) {
     for (const install of receipt.installations) {
@@ -40,6 +42,10 @@ export function evidence(receipt: Receipt): string {
 }
 
 export async function revalidateEvidence(receipt: Receipt): Promise<void> {
+  for (const snapshot of receipt.dailyState.snapshots) {
+    const actual = await retainedFile(receipt.artifactRoot, snapshot.path);
+    if (actual.path !== snapshot.path || actual.sha256 !== snapshot.sha256) throw new Error('Retained daily-state snapshot changed after acceptance');
+  }
   for (const record of receipt.observations) {
     const transcript = await retainedFile(receipt.artifactRoot, record.transcript);
     if (transcript.path !== record.transcript || transcript.sha256 !== record.transcriptHash) throw new Error('Retained transcript changed after acceptance');
@@ -63,6 +69,7 @@ type VerifyOptions = {
   driver: Driver;
   persist: (receipt: Receipt) => Promise<void>;
   publisherRevision?: string;
+  dailyStatePolicy?: DailyStatePolicy;
 };
 
 export async function verify(options: VerifyOptions): Promise<Receipt> {
@@ -71,6 +78,7 @@ export async function verify(options: VerifyOptions): Promise<Receipt> {
   const initial = await github.pull(options.pr);
   if (initial.state !== 'open' || initial.headRepo.toLowerCase() !== repo) throw new Error('Require an open same-repository PR');
   const receipt = newReceipt(repo, options.pr, initial.head.sha, initial.base.sha, options.selfTest, options.root, options.publisherRevision);
+  receipt.dailyState.policy = options.dailyStatePolicy ?? 'strict';
   let successAttempted = false, commentAttempted = false, cleanupComplete = false, cleanupFailed = false;
   const cleanup = async (): Promise<void> => {
     if (cleanupComplete) return;
