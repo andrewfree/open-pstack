@@ -3,7 +3,9 @@
   "private": true,
   "packageManager": "bun@1.4.0",
   "scripts": {
-    "test": "cd plugins/pstack/skills/poteto-mode/scripts && bun install --frozen-lockfile && bun run test",
+    "test": "bun run test:runner && bun run test:model-eval",
+    "test:runner": "cd plugins/pstack/skills/poteto-mode/scripts && bun install --frozen-lockfile && bun run test",
+    "test:model-eval": "cd docs/model-eval && python3 -m unittest discover -s tests -q",
     "typecheck": "cd plugins/pstack/skills/poteto-mode/scripts && bun install --frozen-lockfile && bun run typecheck",
     "static": "bun -e 'for (const path of process.argv.slice(1)) JSON.parse(await Bun.file(path).text())' .claude-plugin/marketplace.json .agents/plugins/marketplace.json plugins/pstack/.claude-plugin/plugin.json plugins/pstack/.codex-plugin/plugin.json && PSTACK_STATIC_ONLY=1 bash tests/skill-collision-repro.sh"
   }

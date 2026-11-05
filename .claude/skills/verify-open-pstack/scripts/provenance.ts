@@ -7,10 +7,23 @@ const plugin = 'plugins/pstack';
 const project = '.claude/skills/verify-open-pstack';
 const alias = '.agents/skills/verify-open-pstack';
 const aliasTarget = '../../.claude/skills/verify-open-pstack';
+const profiles = 'docs/model-routing';
 const generated = new Set([
   'plugins/pstack/skills/poteto-mode/scripts/node_modules',
   '.claude/skills/verify-open-pstack/node_modules',
 ]);
+
+async function hasProfiles(workspace: string): Promise<boolean> {
+  for (const path of ['docs', profiles]) {
+    const info = await lstat(join(workspace, path)).catch((error: unknown) => {
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return undefined;
+      throw error;
+    });
+    if (!info) return false;
+    if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(`Pinned source directory refused: ${path}`);
+  }
+  return true;
+}
 
 export async function sourceDigest(workspace: string): Promise<string> {
   const root = await realpath(workspace);
@@ -36,6 +49,7 @@ export async function sourceDigest(workspace: string): Promise<string> {
   }
   await walk(plugin);
   await walk(project);
+  if (await hasProfiles(root)) await walk(profiles);
   entries.push([alias, '120000', sha256(Buffer.from(await readlink(aliasPath)))].join('\0'));
   return sha256(entries.sort().join('\n'));
 }
@@ -51,18 +65,18 @@ export async function sourceHash(workspace: string, sha: string, run: Command = 
     throw new Error('Codex alias does not resolve to the canonical pinned project skill');
   }
   try {
-    await run([...git, 'diff', '--quiet', '--no-ext-diff', '--no-textconv', sha, '--', plugin, project, alias], { cwd: workspace });
+    await run([...git, 'diff', '--quiet', '--no-ext-diff', '--no-textconv', sha, '--', plugin, project, alias, profiles], { cwd: workspace });
   } catch {
     throw new Error('Source differs from pinned Git tree');
   }
-  const tree = await run([...git, 'ls-tree', '-rz', '--full-tree', sha, '--', plugin, project, alias], { cwd: workspace });
+  const tree = await run([...git, 'ls-tree', '-rz', '--full-tree', sha, '--', plugin, project, alias, profiles], { cwd: workspace });
   const expected = new Map<string, { mode: string; blob: string }>();
   for (const entry of tree.split('\0').filter(Boolean)) {
     const tab = entry.indexOf('\t'), fields = entry.slice(0, tab).split(' '), path = entry.slice(tab + 1);
     if (tab < 0 || fields.length !== 3 || fields[1] !== 'blob' || !/^(100644|100755|120000)$/.test(fields[0]!) || !/^[a-f0-9]{40}$/.test(fields[2]!)) {
       throw new Error('Unrecognized pinned source tree');
     }
-    if (path !== alias && !path.startsWith(plugin + '/') && !path.startsWith(project + '/')) throw new Error('Pinned source path escaped coverage');
+    if (path !== alias && !path.startsWith(plugin + '/') && !path.startsWith(project + '/') && !path.startsWith(profiles + '/')) throw new Error('Pinned source path escaped coverage');
     if (expected.has(path)) throw new Error('Duplicate pinned source path');
     expected.set(path, { mode: fields[0]!, blob: fields[2]! });
   }
@@ -91,6 +105,7 @@ export async function sourceHash(workspace: string, sha: string, run: Command = 
   await walk(plugin);
   if (sha256(entries.map(entry => entry.slice(plugin.length + 1)).join('\n')) !== pluginHash) throw new Error('Plugin source changed while checking provenance');
   await walk(project);
+  if (await hasProfiles(workspace)) await walk(profiles);
   accept(alias, '120000', Buffer.from(await readlink(aliasPath)));
   if (expected.size) throw new Error(`Pinned source files missing: ${[...expected.keys()].join(', ')}`);
   return sha256(entries.sort().join('\n'));

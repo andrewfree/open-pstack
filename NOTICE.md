@@ -28,6 +28,8 @@ This plugin is a port of upstream MIT-licensed work. All upstream copyright noti
 
 ## What changed in the port
 
+The standalone model evaluation lab under `docs/model-eval/`, the opt-in model sheets under `docs/model-routing/`, and the Astra family registration are local Open Pstack additions. They do not change Cursor's source or replace the existing first-run model defaults.
+
 The port is editorial, not mechanical. See [CHANGES.md](CHANGES.md) for the full per-skill audit of substitutions applied.
 
 Summary of structural changes:

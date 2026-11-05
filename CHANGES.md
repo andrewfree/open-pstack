@@ -5,6 +5,15 @@ This port applies the Cursor → Claude Code substitutions in skill bodies. Earl
 
 ## Unreleased
 
+- Setup explicitly waits for native Claude probe and smoke results with `run_in_background: false`. T3 Claude Agent tasks and external processes keep their background handles and completion checks.
+- Register GPT-6 Astra as an optional direct Codex family with explicit effort selection.
+- Add complete opt-in correctness-first model sheets for Codex and Claude. Code writers use Sol or Astra, readers use Luna or bounded Haiku, and Opus supplies critique. Existing first-run defaults and user settings remain unchanged until explicit setup.
+- Add a standalone Python model evaluation lab, source-backed token-price catalogs, metadata-only importers, deterministic microtasks, and conservative trial summaries. The repository test command includes the Python suite. No private logs or live trial receipts ship with the source.
+- Extend live catalog qualification to consume both complete profiles, and bind the profile directory into immutable candidate provenance checks. These cases prepare verification; their unit tests do not claim a live pass.
+- Classify profile-only edits as catalog changes. Select legacy profile cases only when absent from both pinned base and candidate trees. Reject removal or rename of either base profile before installation, and reject missing or changed files the candidate declares. Session planning reports a conservative maximum before optional profile selection.
+- Setup's step 7 preview names each source and destination path in full, absolute or under `~/`, instead of listing them relative to a shared directory.
+- Preserve profile guidance during setup, document the Codex T3 prerequisite and explicit profile input, and fix evaluation imports and reports to retain counter aliases, use UTF-8, escape HTML counts, and keep frozen fixture bytes stable across Git checkouts.
+
 - The Codex Claude-route refusal fixture runs a shell check that succeeds only when the installed runner exits 78. This lets the existing successful-command parser observe the expected refusal without accepting arbitrary failed commands. Regression tests use real shell results through that parser and reject unexpected runner exit codes; receipt and guard assertions are unchanged.
 
 - The T3 dispatch guide gives an explicit lane-record JSON shape and places the concrete target ID under `model`. The verifier still rejects renamed or mismatched fields and now names those fields in its private failure reason without printing their values.

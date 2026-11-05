@@ -10,9 +10,9 @@ import { assertNativeConsumers } from './native-consumer.ts';
 import { sourceDigest, sourceHash } from './provenance.ts';
 import type { AppTransport } from './t3-app.ts';
 import { publishable } from './verify.ts';
-import { type Driver, type Harness, type Installation, type Observation, type Receipt, type SessionRecord } from './types.ts';
+import { HARNESSES, type Driver, type Harness, type Installation, type Observation, type Receipt, type SessionRecord } from './types.ts';
 
-const setupFeature = (feature: string): boolean => feature === 'setup' || feature === 'skill-invocation:setup-pstack';
+const setupFeature = (feature: string): boolean => feature === 'setup' || feature === 'setup-guidance' || feature === 'skill-invocation:setup-pstack';
 export function launch(options: { cwd: string; addDirs: string[]; codexSandbox?: 'danger-full-access' }): string[] {
   return ['codex', 'exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-hook-trust', '-c', 'approval_policy="never"',
     '--sandbox', options.codexSandbox ?? 'workspace-write', '--cd', options.cwd, ...options.addDirs.flatMap(dir => ['--add-dir', dir]), '-'];
@@ -33,7 +33,9 @@ export function parseSession(harness: Harness, text: string, exitCode: number, s
       .flatMap(e => [...(e.message.content as string).matchAll(/<command-name>\/([^<\s]+)<\/command-name>/g)].map(m => m[1]!));
     const context = stream.filter(e => e.type === 'system' && e.subtype === 'hook_response' && e.hook_event === 'SessionStart' &&
       e.exit_code === 0 && e.outcome === 'success' && typeof e.stdout === 'string').map(e => e.stdout as string);
-    return { harness, exitCode, started, context,
+    const assistantText = stream.filter(e => e.type === 'assistant' && e.parent_tool_use_id == null && Array.isArray(e.message?.content))
+      .flatMap(e => (e.message.content as Event[]).filter(b => b.type === 'text' && typeof b.text === 'string').map(b => b.text as string));
+    return { harness, exitCode, started, context, assistantText,
       skills: [...commands, ...uses.filter(u => u.name === 'Skill' && typeof u.input?.skill === 'string').map(u => u.input.skill as string)],
       commands: uses.filter(u => u.name === 'Bash' && typeof u.input?.command === 'string').map(u => u.input.command as string),
       tools: stream.filter(e => e.type === 'assistant' && Array.isArray(e.message?.content)).flatMap(e => (e.message.content as Event[]).filter(b => b.type === 'tool_use')
@@ -52,7 +54,8 @@ export function parseSession(harness: Harness, text: string, exitCode: number, s
     .map(([, name, path]) => path!.includes('/plugins/cache/open-pstack/pstack/') ? name! : path!);
   const tools = items.filter(i => i.type === 'command_execution' && typeof i.command === 'string').map(i => ({ name: 'command', id: String(i.id),
     input: { command: i.command as string }, result: typeof i.aggregated_output === 'string' ? i.aggregated_output : undefined, parent: null, failed: i.exit_code !== 0 }));
-  return { harness, exitCode, started, skills, commands, tools, context };
+  const assistantText = items.filter(i => i.type === 'agent_message' && typeof i.text === 'string').map(i => i.text as string);
+  return { harness, exitCode, started, skills, commands, tools, context, assistantText };
 }
 export async function codexInstallation(output: string, home: string, expected: string): Promise<string> {
   const result = JSON.parse(output);
@@ -122,11 +125,19 @@ export class MacDriver implements Driver {
     const trustedRun: Command = (args, options = {}) => this.run(args, { ...options, env: isolatedEnv(referenceHome) });
     await trustedRun(['git', 'clone', '--no-checkout', '--', `https://github.com/${receipt.repo}.git`, reference]);
     await trustedRun(['git', 'fetch', 'origin', receipt.sha], { cwd: reference });
+    if (receipt.base !== receipt.sha) await trustedRun(['git', 'fetch', 'origin', receipt.base], { cwd: reference });
     await trustedRun(['git', '-c', 'core.hooksPath=/dev/null', 'checkout', '--detach', receipt.sha], { cwd: reference });
     const pinnedSource = await sourceHash(reference, receipt.sha, trustedRun);
+    const profiles = HARNESSES.map(harness => `docs/model-routing/correctness-first-${harness}.md`);
+    const headProfiles = new Set((await trustedRun(['git', 'ls-tree', '--name-only', receipt.sha, '--', ...profiles], { cwd: reference })).trim().split('\n').filter(Boolean));
+    const baseProfiles = (await trustedRun(['git', 'ls-tree', '--name-only', receipt.base, '--', ...profiles], { cwd: reference })).trim().split('\n').filter(Boolean);
+    for (const profile of baseProfiles) {
+      if (!headProfiles.has(profile)) throw new Error(`Pinned candidate removes required correctness profile: ${profile}`);
+    }
     if (process.platform !== 'darwin') throw new Error('Live proof requires the operator Mac');
     const installs: Installation[] = [];
     for (const harness of harnesses) {
+      const correctnessProfile = headProfiles.has(`docs/model-routing/correctness-first-${harness}.md`);
       const home = join(root, 'state', harness), workspace = join(home, 'workspace');
       await mkdir(join(home, 'tmp'), { recursive: true, mode: 0o700 });
       for (const dir of ['.codex', '.config/gh', '.cache']) await mkdir(join(home, dir), { recursive: true, mode: 0o700 });
@@ -154,7 +165,7 @@ export class MacDriver implements Driver {
       }
       const manifest = JSON.parse(await readFile(join(location, harness === 'claude' ? '.claude-plugin/plugin.json' : '.codex-plugin/plugin.json'), 'utf8'));
       if (await sourceDigest(workspace) !== pinnedSource) throw new Error('Pinned source changed during installation');
-      installs.push({ harness, sha: receipt.sha, home, location, treeHash: expected, sourceHash: pinnedSource, pluginVersion: manifest.version,
+      installs.push({ harness, sha: receipt.sha, home, location, treeHash: expected, sourceHash: pinnedSource, correctnessProfile, pluginVersion: manifest.version,
         cliVersion: (await candidateRun([harness === 'claude' ? await this.app!.claudeBinaryPath() : harness, '--version'], { env })).trim() });
     }
     return installs;
@@ -172,7 +183,7 @@ export class MacDriver implements Driver {
     assertNativeConsumers(receipt.installations.map(installation => installation.harness), this.app !== undefined);
     const plans = receipt.installations.map(installation => ({ installation,
       features: requiredFeatures(receipt, installation.harness).sort((a, b) => Number(setupFeature(a)) - Number(setupFeature(b)))
-        .map(feature => ({ feature, cases: recipe(feature, installation.harness, this.routes, this.app?.runnerRoute) })) }));
+        .map(feature => ({ feature, cases: recipe(feature, installation.harness, this.routes, this.app?.runnerRoute, installation.correctnessProfile !== false) })) }));
     const observations: Observation[] = [];
     const writePolicy = this.daily?.paths ?? dailyStatePaths(this.app?.settingsPath);
     for (const { installation, features } of plans) {
@@ -195,7 +206,8 @@ export class MacDriver implements Driver {
               const appCase = harness === 'claude' || c.id.startsWith('app-route-');
               const app = appCase ? await this.app!.record({ harness, projectSkill: feature === 'project-skill', pluginRoot: installation.location, workspace, fixture: dir,
                 prompt: c.prompt(fixture), env, stdout, stderr, started, cliVersion: installation.cliVersion, writePolicy }) : undefined;
-              const exitCode = app ? 0 : await this.record(launch({ cwd, addDirs: cwd === dir ? [] : [dir], codexSandbox: c.codexSandbox }), { cwd, env, input: c.prompt(fixture), stdout, stderr });
+              const addDirs = [...(cwd === dir ? [] : [dir]), ...(harness === 'codex' && feature === 'setup-guidance' ? [fixture.configHome] : [])];
+              const exitCode = app ? 0 : await this.record(launch({ cwd, addDirs, codexSandbox: c.codexSandbox }), { cwd, env, input: c.prompt(fixture), stdout, stderr });
               evidence.push(stdout, ...(await stat(stderr)).size ? [stderr] : [], ...app?.evidence ?? []);
               let record: SessionRecord, result;
               try {

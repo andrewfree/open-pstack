@@ -26,6 +26,8 @@
     "plugins/pstack/skills/poteto-mode/references/**"
   ],
   "catalog": [
+    "docs/model-routing/correctness-first-claude.md",
+    "docs/model-routing/correctness-first-codex.md",
     "plugins/pstack/skills/poteto-mode/references/model-catalog.md",
     "plugins/pstack/skills/poteto-mode/scripts/runner/registry/**",
     "plugins/pstack/skills/poteto-mode/scripts/runner/providers/**",

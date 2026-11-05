@@ -1,0 +1,78 @@
+{
+  "as_of": "2026-11-02",
+  "providers": [
+    {
+      "provider": "kimi",
+      "models": [
+        {
+          "model": "kimi-code/k3.1-pro",
+          "public_model_id": "k3.1-pro",
+          "availability_note": "Kimi Code subscription route. K3.1 Pro available from Plus/Moderato; 1M context requires Pro/Allegretto or above. Thinking is required; supported effort low/high/max. Configured alias does not prove account entitlement.",
+          "prices": [
+            {"currency":"CNY","unit":"1M tokens","tier":"all published contexts","input":"13.00","cache_read":"1.30","cache_write_5m":"13.00","cache_write_1h":"26.00","output":"68.00","reasoning_rule":"Reasoning remains enabled; bill output usage as reported, with reasoning output a subset and not an extra term.","source_url":"https://www.kimi.com/resources/kimi-k3-1-pro-pricing","verified_at":"2026-11-02"}
+          ],
+          "cache_rules": {"published":"API repeated-prefix cache is automatic; default TTL 5 minutes; K3.1 API 5m and 1h cache writes have distinct rates. Switching model or effort invalidates context cache.","minimum_prefix_tokens":null,"ttl_default":"5m","hit_counters":"Exact API counter field/eligibility minimum not established from reviewed source.","source_url":"https://www.kimi.com/resources/kimi-k3-1-pro-pricing"},
+          "subscription_rules": {"billing_basis":"subscription","price_or_quota_debit":null,"availability":"Kimi Code Plus/Moderato+; 1M context Pro/Allegretto+","note":"Subscription quotas are not USD. API usage is separately metered. No exact quota formula/debit published in reviewed sources.","source_url":"https://www.kimi.com/code/docs/en/kimi-code/models"},
+          "unknowns":["USD-equivalent price and subscription debit per request","minimum cache prefix and precise cache counter schema","reasoning-only charge separate from output (none published)"]
+        },
+        {
+          "model": "kimi-code/k3.1-pro-highspeed",
+          "public_model_id": "k3.1-pro-highspeed",
+          "availability_note": "Kimi Code subscription route; Pro/Allegretto+; 1M context. About 2x quota usage of regular K3.1 Pro. Thinking required. Alias/configuration does not establish access.",
+          "prices": [
+            {"currency":"CNY","unit":"1M tokens","tier":"all published contexts","input":"26.00","cache_read":"1.30","cache_write_5m":"26.00","cache_write_1h":"52.00","output":"136.00","reasoning_rule":"Reasoning remains enabled; bill output usage as reported, with reasoning output a subset and not an extra term.","source_url":"https://www.kimi.com/resources/kimi-k3-1-pro-pricing","verified_at":"2026-11-02"}
+          ],
+          "cache_rules": {"published":"API repeated-prefix cache is automatic; default TTL 5 minutes; K3.1 API 5m and 1h cache writes have distinct rates. Switching model or effort invalidates context cache.","minimum_prefix_tokens":null,"ttl_default":"5m","hit_counters":"Exact API counter field/eligibility minimum not established from reviewed source.","source_url":"https://www.kimi.com/resources/kimi-k3-1-pro-pricing"},
+          "subscription_rules": {"billing_basis":"subscription","price_or_quota_debit":null,"availability":"Kimi Code Pro/Allegretto+","note":"Highspeed consumes about twice the regular model quota. Subscription quotas are not USD; API usage is separately metered.","source_url":"https://www.kimi.com/code/docs/en/kimi-code/models"},
+          "unknowns":["USD-equivalent price and subscription debit per request","minimum cache prefix and precise cache counter schema","reasoning-only charge separate from output (none published)"]
+        }
+      ],
+      "sources":[
+        {"url":"https://www.kimi.com/code/docs/en/kimi-code/models","title":"Model Configuration | Kimi Code Docs","verified_at":"2026-11-02","claims":["public exact model IDs","membership access and context tier","thinking efforts and cache invalidation","Highspeed quota/speed notes"]},
+        {"url":"https://www.kimi.com/resources/kimi-k3-1-pro-pricing","title":"Kimi K3.1 Pro pricing and API billing","verified_at":"2026-11-02","claims":["CNY per-million-token API rates","5m/1h write and cache-read rates","subscription and API are separate","reasoning/output accounting"]}
+      ]
+    },
+    {
+      "provider":"xai",
+      "models":[
+        {
+          "model":"grok-4.7",
+          "public_model_id":"grok-4.7",
+          "availability_note":"Direct xAI API model ID. This API price is not a Grok CLI/subscription debit; subscription access and quota are not inferred from API availability.",
+          "prices":[
+            {"currency":"USD","unit":"1M tokens","tier":"input_total < 200000","input":"2.00","cache_read":"0.50","cache_write_5m":null,"cache_write_1h":null,"output":"6.00","reasoning_rule":"Reasoning tokens are reported within output usage, not additional; usage.output_tokens_details.reasoning_tokens is a subset/detail.","source_url":"https://docs.x.ai/developers/pricing","verified_at":"2026-11-02"},
+            {"currency":"USD","unit":"1M tokens","tier":"input_total >= 200000","input":"4.00","cache_read":"1.00","cache_write_5m":null,"cache_write_1h":null,"output":"12.00","reasoning_rule":"Reasoning tokens are reported within output usage, not additional; usage.output_tokens_details.reasoning_tokens is a subset/detail.","source_url":"https://docs.x.ai/developers/pricing","verified_at":"2026-11-02"}
+          ],
+          "cache_rules":{"published":"Automatic prefix caching; reuse prompt_cache_key for conversation locality and keep prior prefix items unchanged. Hits may be evicted/not guaranteed.","minimum_prefix_tokens":null,"ttl_default":null,"hit_counter":"usage.input_tokens_details.cached_tokens","source_url":"https://docs.x.ai/developers/model-capabilities/text/best-practices"},
+          "subscription_rules":{"billing_basis":"unknown","price_or_quota_debit":null,"note":"API price only. No mapping to direct CLI/subscription quota debit.","source_url":"https://docs.x.ai/developers/models/grok-4.7"},
+          "unknowns":["direct Grok CLI/subscription quota debit","cache write price/TTL (API pricing lists discounted cache reads, not write category)","regional variation and request-specific tool fees unless separately recorded","separate charge for reasoning (none; included in output)"]
+        }
+      ],
+      "sources":[
+        {"url":"https://docs.x.ai/developers/models/grok-4.7","title":"Grok 4.7 | xAI Docs","verified_at":"2026-11-02","claims":["API model ID and 500k context","reasoning effort support","direct API charging"]},
+        {"url":"https://docs.x.ai/developers/pricing","title":"API Pricing | xAI Docs","verified_at":"2026-11-02","claims":["short/long context tier threshold and rates","tool invocation fees"]},
+        {"url":"https://docs.x.ai/developers/model-capabilities/text/best-practices","title":"Best Practices Guide | xAI Docs","verified_at":"2026-11-02","claims":["prompt prefix caching","cached input counter","reasoning token usage field"]}
+      ]
+    },
+    {
+      "provider":"cursor",
+      "models":[
+        {
+          "model":"Auto",
+          "public_model_id":null,
+          "availability_note":"Auto is a router mode, not a fixed model ID. In Cost/classic Auto it draws from the Cursor-model weekly pool based on the served model. Teams/Enterprise Balance and Intelligence can route to third-party models. Do not route OpenAI or Anthropic in this evaluation per owner constraint.",
+          "prices":[
+            {"currency":"USD","unit":"1M tokens","tier":"Auto route not fixed","input":null,"cache_read":null,"cache_write_5m":null,"cache_write_1h":null,"output":null,"reasoning_rule":null,"source_url":"https://cursor.com/docs/models-and-pricing","verified_at":"2026-11-02"}
+          ],
+          "cache_rules":{"published":"No Auto-wide cache pricing/counters established. Must record exact route/model and mode; Cursor Grok rates are not general Auto rates.","minimum_prefix_tokens":null,"ttl_default":null,"hit_counter":null,"source_url":"https://cursor.com/docs/models-and-pricing"},
+          "subscription_rules":{"billing_basis":"subscription","price_or_quota_debit":null,"note":"Cost mode draws from weekly Cursor-model pool; routed model/request debit is not published as one stable Auto unit. Teams/Enterprise Balance or Intelligence third-party route uses model list API price plus eligible $0.25 per million-token Cursor Token Rate; do not mix that with Cost mode.","source_url":"https://cursor.com/docs/models-and-pricing"},
+          "unknowns":["exact routed model unless exposed in request metadata","per-request subscription debit for Auto","stable API-equivalent Auto price","cache counters/TTL for Auto as a router"]
+        }
+      ],
+      "sources":[
+        {"url":"https://cursor.com/docs/models-and-pricing","title":"Models & Pricing | Cursor","verified_at":"2026-11-02","claims":["Auto Cost/Balance/Intelligence billing modes","weekly pool versus third-party usage","Cursor Token Rate and exclusions","Cursor Grok 4.7 rates are distinct from Auto"]},
+        {"url":"https://cursor.com/pricing","title":"Cursor Pricing","verified_at":"2026-11-02","claims":["subscription tiers and usage framing"]}
+      ]
+    }
+  ]
+}

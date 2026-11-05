@@ -1,0 +1,418 @@
+{
+  "as_of": "2026-11-02",
+  "providers": [
+    {
+      "provider": "openai",
+      "models": [
+        {
+          "model": "GPT-6 Astra",
+          "public_model_id": "gpt-6-astra",
+          "availability_note": "API model; ChatGPT/Codex subscription also includes model access in plan-specific allowances. Subscription use has no public per-token USD conversion.",
+          "prices": [
+            {
+              "currency": "USD",
+              "unit": "per 1M tokens",
+              "tier": "standard short-context rate (public price page does not state token cutoff)",
+              "input": "10",
+              "cache_read": "1",
+              "cache_write_5m": null,
+              "cache_write_1h": null,
+              "output": "50",
+              "reasoning_rule": "Reasoning tokens are included in output tokens; do not add separately. New API cache write TTL choices are 30m ($12.50/MTok) and 12h ($25/MTok); schema's 5m/1h labels do not fit.",
+              "source_url": "https://developers.openai.com/api/docs/pricing",
+              "verified_at": "2026-11-02",
+              "cache_write_30m": "12.5",
+              "cache_write_12h": "25"
+            },
+            {
+              "currency": "USD",
+              "unit": "per 1M tokens",
+              "tier": "standard long-context rate (public price page does not state token cutoff)",
+              "input": "20",
+              "cache_read": "2",
+              "cache_write_5m": null,
+              "cache_write_1h": null,
+              "output": "75",
+              "reasoning_rule": "Same subset rule; OpenAI long-input tier is full-request pricing.",
+              "source_url": "https://developers.openai.com/api/docs/pricing",
+              "verified_at": "2026-11-02",
+              "cache_write_30m": "25",
+              "cache_write_12h": "50"
+            }
+          ],
+          "cache_rules": {
+            "minimum_prefix_tokens": 1024,
+            "ttl": "30m default; 12h available with prompt_cache_options.ttl",
+            "prefix_rules": "Exact stable prefix, including tools/order; explicit breakpoints supported. Write each prefix at longest selected TTL; no credit for earlier shorter write on upgrade.",
+            "routing": "Automatic model/region/machine routing; org-scoped cache, not shared across organizations or regional boundaries. Cache key optional for GPT-6+ and only separates accounting; no guaranteed hit.",
+            "write_rates": "30m 1.25x input; 12h 2.5x input",
+            "source_url": "https://developers.openai.com/api/docs/guides/prompt-caching"
+          },
+          "subscription_rules": {
+            "billing_basis": "subscription",
+            "usd_per_token": null,
+            "quota_or_invoice_formula": null,
+            "evidence": "Plan access and allowances do not publish a generic per-token USD conversion; API list price is not subscription invoice."
+          },
+          "unknowns": [
+            "Actual subscription charge and API-equivalent USD for Codex/ChatGPT usage are null.",
+            "API tool charges depend on selected tool/use; not part of these token rates.",
+            "Astra model page documents a >272k-input multiplier, but exact short/long tiers for Sol and Luna are not stated; pricing page does not expose a general cutoff. For this entry, refer to model-specific Astra page threshold."
+          ]
+        },
+        {
+          "model": "GPT-6.1 Sol",
+          "public_model_id": "gpt-6.1-sol",
+          "availability_note": "API model; no dollar conversion from subscription CLI quota is published.",
+          "prices": [
+            {
+              "currency": "USD",
+              "unit": "per 1M tokens",
+              "tier": "standard short-context rate (public price page does not state token cutoff)",
+              "input": "2",
+              "cache_read": "0.1",
+              "cache_write_5m": null,
+              "cache_write_1h": null,
+              "output": "10",
+              "reasoning_rule": "Reasoning tokens included in output token count. Cache writes are 30m $2.50/MTok and 12h $5/MTok, not 5m/1h.",
+              "source_url": "https://developers.openai.com/api/docs/pricing",
+              "verified_at": "2026-11-02",
+              "cache_write_30m": "2.5",
+              "cache_write_12h": "5"
+            },
+            {
+              "currency": "USD",
+              "unit": "per 1M tokens",
+              "tier": "standard long-context rate (public price page does not state token cutoff)",
+              "input": "4",
+              "cache_read": "0.2",
+              "cache_write_5m": null,
+              "cache_write_1h": null,
+              "output": "15",
+              "reasoning_rule": "Full request tier; reasoning remains output subset.",
+              "source_url": "https://developers.openai.com/api/docs/pricing",
+              "verified_at": "2026-11-02",
+              "cache_write_30m": "5",
+              "cache_write_12h": "10"
+            }
+          ],
+          "cache_rules": {
+            "minimum_prefix_tokens": 1024,
+            "ttl": "30m default; 12h available",
+            "prefix_rules": "Stable exact prefix and tool definitions/order; explicit breakpoints supported.",
+            "routing": "Automatic; organization and processing region scoped. Cache key optional for GPT-6+; not a hit guarantee.",
+            "write_rates": "30m 1.25x input; 12h 2.5x input",
+            "source_url": "https://developers.openai.com/api/docs/guides/prompt-caching"
+          },
+          "subscription_rules": {
+            "billing_basis": "subscription",
+            "usd_per_token": null,
+            "quota_or_invoice_formula": null,
+            "evidence": "No public subscription token-to-USD formula; do not infer from API pricing."
+          },
+          "unknowns": [
+            "Actual subscription dollars null.",
+            "Tool fees and modifier combinations need request-level facts.",
+            "Exact short/long context threshold for this model was not stated on the public pricing page; threshold is null, do not infer."
+          ]
+        },
+        {
+          "model": "GPT-6 Luna",
+          "public_model_id": "gpt-6-luna",
+          "availability_note": "API model; no dollar conversion from subscription CLI quota is published.",
+          "prices": [
+            {
+              "currency": "USD",
+              "unit": "per 1M tokens",
+              "tier": "standard short-context rate (public price page does not state token cutoff)",
+              "input": "0.1",
+              "cache_read": "0.01",
+              "cache_write_5m": null,
+              "cache_write_1h": null,
+              "output": "0.5",
+              "reasoning_rule": "Reasoning tokens included in output token count. Cache writes are 30m $0.125/MTok and 12h $0.25/MTok.",
+              "source_url": "https://developers.openai.com/api/docs/pricing",
+              "verified_at": "2026-11-02",
+              "cache_write_30m": "0.125",
+              "cache_write_12h": "0.25"
+            },
+            {
+              "currency": "USD",
+              "unit": "per 1M tokens",
+              "tier": "standard long-context rate (public price page does not state token cutoff)",
+              "input": "0.2",
+              "cache_read": "0.02",
+              "cache_write_5m": null,
+              "cache_write_1h": null,
+              "output": "0.75",
+              "reasoning_rule": "Full request tier; reasoning remains output subset.",
+              "source_url": "https://developers.openai.com/api/docs/pricing",
+              "verified_at": "2026-11-02",
+              "cache_write_30m": "0.25",
+              "cache_write_12h": "0.5"
+            }
+          ],
+          "cache_rules": {
+            "minimum_prefix_tokens": 1024,
+            "ttl": "30m default; 12h available",
+            "prefix_rules": "Stable exact prefix and tool definitions/order; explicit breakpoints supported.",
+            "routing": "Automatic; org and region scoped. Cache key optional for GPT-6+; not a hit guarantee.",
+            "write_rates": "30m 1.25x input; 12h 2.5x input",
+            "source_url": "https://developers.openai.com/api/docs/guides/prompt-caching"
+          },
+          "subscription_rules": {
+            "billing_basis": "subscription",
+            "usd_per_token": null,
+            "quota_or_invoice_formula": null,
+            "evidence": "No public subscription token-to-USD formula; do not infer from API pricing."
+          },
+          "unknowns": [
+            "Actual subscription dollars null.",
+            "Tool fees and modifier combinations need request-level facts.",
+            "Exact short/long context threshold for this model was not stated on the public pricing page; threshold is null, do not infer."
+          ]
+        }
+      ],
+      "sources": [
+        {
+          "url": "https://developers.openai.com/api/docs/pricing",
+          "title": "OpenAI API pricing",
+          "verified_at": "2026-11-02",
+          "claims": [
+            "Exact standard and modifier prices for all three model IDs",
+            "30m and 12h cache writes",
+            "long-input tiers",
+            "web search, file search, container and tool fees",
+            "regional and FedRAMP uplifts",
+            "Public pricing page labels short and long context rates but does not state the cutoff; do not assume one for Sol/Luna."
+          ]
+        },
+        {
+          "url": "https://developers.openai.com/api/docs/guides/prompt-caching",
+          "title": "OpenAI prompt caching",
+          "verified_at": "2026-11-02",
+          "claims": [
+            "1,024-token minimum, TTLs, cache-write multipliers, prefix/routing rules, org/region scope, cache hits are not guaranteed"
+          ]
+        },
+        {
+          "url": "https://developers.openai.com/api/docs/guides/latest-model",
+          "title": "Using GPT-6",
+          "verified_at": "2026-11-02",
+          "claims": [
+            "Model-family reasoning behavior and API setup"
+          ]
+        },
+        {
+          "url": "https://openai.com/index/gpt-6-astra/",
+          "title": "GPT-6 Astra announcement",
+          "verified_at": "2026-11-02",
+          "claims": [
+            "Subscription access is allowances/credits; API has separate token charges"
+          ]
+        },
+        {
+          "url": "https://developers.openai.com/api/docs/models/gpt-6-astra",
+          "title": "GPT-6 Astra model page",
+          "verified_at": "2026-11-02",
+          "claims": [
+            "Exact Astra model availability, context and long-input price threshold"
+          ]
+        }
+      ]
+    },
+    {
+      "provider": "anthropic",
+      "models": [
+        {
+          "model": "Claude Opus 5.5",
+          "public_model_id": "claude-opus-5-5",
+          "availability_note": "Claude API and Claude Code/Claude subscription; subscription dollar equivalency is not published.",
+          "prices": [
+            {
+              "currency": "USD",
+              "unit": "per 1M tokens",
+              "tier": "standard global",
+              "input": "4",
+              "cache_read": "0.2",
+              "cache_write_5m": "5",
+              "cache_write_1h": "8",
+              "output": "20",
+              "reasoning_rule": "Thinking tokens are included in billed output_tokens; reasoning_tokens is a subset breakdown.",
+              "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+              "verified_at": "2026-11-02"
+            }
+          ],
+          "cache_rules": {
+            "minimum_prefix_tokens": 512,
+            "ttl": "5m default; optional 1h",
+            "prefix_rules": "Explicit cache_control or automatic caching; reuse matching prefix. Cache entry available to concurrent follow-up only after first response starts; refreshed on use.",
+            "routing": "Cache reuse is provider-side; session continuity alone does not guarantee a hit.",
+            "write_rates": "5m 1.25x input; 1h 2x input",
+            "source_url": "https://platform.claude.com/docs/en/build-with-claude/prompt-caching"
+          },
+          "subscription_rules": {
+            "billing_basis": "subscription",
+            "usd_per_token": null,
+            "quota_or_invoice_formula": null,
+            "evidence": "No public generic per-token USD or quota conversion for Claude Code subscription. API prices are separate."
+          },
+          "unknowns": [
+            "Actual subscription dollars null.",
+            "Tool fees depend on server tool and calls; web search fee is $10 per 1,000; web fetch no extra fee.",
+            "Batch input/output are 50% of standard; fast mode $8/$40 input/output; US-only inference 1.1x all token categories."
+          ]
+        },
+        {
+          "model": "Claude Fable 5.1",
+          "public_model_id": "claude-fable-5-1",
+          "availability_note": "Claude API and Claude Code availability; subscription dollar equivalency is not published.",
+          "prices": [
+            {
+              "currency": "USD",
+              "unit": "per 1M tokens",
+              "tier": "standard global",
+              "input": "10",
+              "cache_read": "0.25",
+              "cache_write_5m": "12.5",
+              "cache_write_1h": "20",
+              "output": "50",
+              "reasoning_rule": "Thinking/reasoning is represented within billed output, never added on top.",
+              "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+              "verified_at": "2026-11-02"
+            }
+          ],
+          "cache_rules": {
+            "minimum_prefix_tokens": 512,
+            "ttl": "5m default; optional 1h",
+            "prefix_rules": "Explicit cache_control or automatic caching; stable matching prefix; refreshed on use.",
+            "routing": "No guaranteed cache hit from session routing.",
+            "write_rates": "5m 1.25x input; 1h 2x input",
+            "source_url": "https://platform.claude.com/docs/en/build-with-claude/prompt-caching"
+          },
+          "subscription_rules": {
+            "billing_basis": "subscription",
+            "usd_per_token": null,
+            "quota_or_invoice_formula": null,
+            "evidence": "No public generic token-to-dollar formula for subscription usage."
+          },
+          "unknowns": [
+            "Actual subscription dollars null.",
+            "Batch is half standard input/output. US-only 1.1x; no Fable fast-mode price documented.",
+            "Server tool fees separate; web search $10/1,000 and web fetch has no extra charge."
+          ]
+        },
+        {
+          "model": "Claude Haiku 5.5",
+          "public_model_id": "claude-haiku-5-5",
+          "availability_note": "Claude API, Claude Code, and Claude subscription access; subscription dollar equivalency is not published.",
+          "prices": [
+            {
+              "currency": "USD",
+              "unit": "per 1M tokens",
+              "tier": "standard global prompt <=100k",
+              "input": "0.1",
+              "cache_read": "0.01",
+              "cache_write_5m": "0.125",
+              "cache_write_1h": "0.2",
+              "output": "0.5",
+              "reasoning_rule": "Reasoning/thinking usage is billed as output and is not additive.",
+              "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+              "verified_at": "2026-11-02"
+            },
+            {
+              "currency": "USD",
+              "unit": "per 1M tokens",
+              "tier": "standard global prompt >100k",
+              "input": "0.5",
+              "cache_read": "0.05",
+              "cache_write_5m": "0.625",
+              "cache_write_1h": "1",
+              "output": "2.5",
+              "reasoning_rule": "Full prompt length includes cache reads and writes when choosing tier; >100k applies to that request.",
+              "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+              "verified_at": "2026-11-02"
+            }
+          ],
+          "cache_rules": {
+            "minimum_prefix_tokens": 512,
+            "ttl": "5m default; optional 1h",
+            "prefix_rules": "Explicit cache_control or automatic caching; stable matching prefix, TTL refreshed on use.",
+            "routing": "No guaranteed cache hit from session continuity.",
+            "write_rates": "5m 1.25x input; 1h 2x input",
+            "source_url": "https://platform.claude.com/docs/en/build-with-claude/prompt-caching"
+          },
+          "subscription_rules": {
+            "billing_basis": "subscription",
+            "usd_per_token": null,
+            "quota_or_invoice_formula": null,
+            "evidence": "No public generic token-to-dollar formula for subscription usage."
+          },
+          "unknowns": [
+            "Actual subscription dollars null.",
+            "Batch is half standard by tier. US-only inference multiplier 1.1x.",
+            "Server tool charges separate; web search $10/1,000 and web fetch no additional fee."
+          ]
+        }
+      ],
+      "sources": [
+        {
+          "url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "title": "Claude Platform pricing",
+          "verified_at": "2026-11-02",
+          "claims": [
+            "Exact model token rates, cache writes/reads, Haiku 100k threshold, batch, Fast, residency, long-context and tool pricing"
+          ]
+        },
+        {
+          "url": "https://platform.claude.com/docs/en/build-with-claude/prompt-caching",
+          "title": "Prompt caching",
+          "verified_at": "2026-11-02",
+          "claims": [
+            "512-token minimums, 5m/1h TTL, prefix rules and write multipliers"
+          ]
+        },
+        {
+          "url": "https://platform.claude.com/docs/en/build-with-claude/extended-thinking",
+          "title": "Extended thinking usage",
+          "verified_at": "2026-11-02",
+          "claims": [
+            "Thinking tokens are included in billed output tokens"
+          ]
+        },
+        {
+          "url": "https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool",
+          "title": "Web search tool",
+          "verified_at": "2026-11-02",
+          "claims": [
+            "Search tool usage behavior"
+          ]
+        },
+        {
+          "url": "https://www.anthropic.com/claude-opus-5-5",
+          "title": "Claude Opus 5.5 announcement",
+          "verified_at": "2026-11-02",
+          "claims": [
+            "Opus 5.5 fast-mode and public pricing"
+          ]
+        },
+        {
+          "url": "https://www.anthropic.com/claude-fable-and-mythos-5-1",
+          "title": "Claude Fable 5.1 announcement",
+          "verified_at": "2026-11-02",
+          "claims": [
+            "Fable 5.1 model availability and cache-read price"
+          ]
+        },
+        {
+          "url": "https://www.anthropic.com/claude-haiku-5-5",
+          "title": "Claude Haiku 5.5 announcement",
+          "verified_at": "2026-11-02",
+          "claims": [
+            "Haiku 5.5 availability, prompt threshold and prices"
+          ]
+        }
+      ]
+    }
+  ]
+}
