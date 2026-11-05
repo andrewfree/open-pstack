@@ -394,7 +394,8 @@ export function appRunner(appRoute: AppRoute | undefined, fixed: string, pong: (
     async assert(record, f) {
       const calls = record.appTools ?? [], launches = calls.filter(call => call.tool === 'delegate_task');
       if (launches.length !== 1) throw new Error('app-route-requires-one-native-dispatch');
-      const launch = launches[0]!, catalog = calls.slice(0, calls.indexOf(launch)).filter(call => call.tool === 'orchestrator_capabilities' && Array.isArray(call.result.providers)).at(-1);
+      const launch = launches[0]!, catalog = calls.slice(0, calls.indexOf(launch)).filter(call => call.tool === 'orchestrator_capabilities' && Array.isArray(call.result.providers)
+        && call.result.providers.some(raw => object(raw).providerInstanceId === appRoute!.providerInstanceId)).at(-1);
       if (!catalog) throw new Error('app-route-requires-native-catalog-before-dispatch');
       const provider = (catalog.result.providers as unknown[]).map(object).find(p => p.providerInstanceId === appRoute!.providerInstanceId);
       if (!provider || provider.driverKind !== 'claudeAgent' || provider.canRunChildTask !== true || provider.canRunCrossProviderChildTask !== true
@@ -416,7 +417,8 @@ export function appRunner(appRoute: AppRoute | undefined, fixed: string, pong: (
       if (typeof launch.result.taskId !== 'string' || !launch.result.taskId.trim()) throw new Error('app-route-missing-task-id');
       const result = calls.filter(call => call.tool === 'task_status' && call.arguments.taskId === launch.result.taskId).map(call => call.result)
         .find(status => status.status === 'completed' && status.workState === 'result_available' && status.hasPendingChildRuns === false);
-      if (!result || result.taskId !== launch.result.taskId || !result.childThreadId || !result.childRunId || result.latestTerminalRunId !== result.childRunId
+      if (!result || result.taskId !== launch.result.taskId || !result.childThreadId || !result.childRunId
+        || result.childThreadId !== launch.result.childThreadId || result.childRunId !== launch.result.childRunId || result.latestTerminalRunId !== result.childRunId
         || result.latestTerminalStatus !== 'completed' || result.providerInstanceId !== appRoute!.providerInstanceId || result.model !== chosen
         || typeof result.summary !== 'string' || result.summary.trim() !== pong()) throw new Error('app-route-no-completed-PONG');
       const receipt = object(JSON.parse(await readFile(lane(f), 'utf8')));

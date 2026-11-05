@@ -237,6 +237,17 @@ export function validateClaudeChildEffort(options: unknown, routes: AppRouteEvid
   return requested;
 }
 
+export function codexAppOrder(text: string, items: Record<string, unknown>[]): NonNullable<SessionRecord['appOrder']> {
+  const events: JsonObject[] = text.trim().split('\n').map(line => JSON.parse(line));
+  const position = (item: Record<string, unknown>, method: string) => events.findIndex(event => event.method === method && event.params?.item?.id === item.id);
+  const commands = items.filter(item => item.type === 'commandExecution');
+  const tools = items.filter(item => item.type === 'mcpToolCall' && item.server === 't3-code');
+  return { commands: Object.fromEntries(commands.map(item => [String(item.id), position(item, 'item/completed')])),
+    tools: tools.map(item => position(item, 'item/completed')),
+    commandStarts: Object.fromEntries(commands.map(item => [String(item.id), position(item, 'item/started')])),
+    toolStarts: tools.map(item => position(item, 'item/started')) };
+}
+
 /** Agent-driven rendezvous: only the T3 delegate_task tool launches Claude. */
 export class T3App {
   private pending?: string;
@@ -504,8 +515,7 @@ export class T3App {
       if (!error.message.includes('escaped isolated candidate')) throw error;
       throw new Error(`${error.message}; T3 may still be serving the Codex verification instance from an app-server started outside this run, so wait for its idle release or restart T3`);
     });
-    return { evidence, rolloutPath: native.rolloutPath, record: { ...native.session, appTools: native.toolCalls, appOrder: { commands: Object.fromEntries(native.items.flatMap((item, index) => item.type === 'commandExecution' ? [[String(item.id), index]] : [])),
-      tools: native.items.flatMap((item, index) => item.type === 'mcpToolCall' && item.server === 't3-code' ? [index] : []) }, appRoutes: routes } };
+    return { evidence, rolloutPath: native.rolloutPath, record: { ...native.session, appTools: native.toolCalls, appOrder: codexAppOrder(collected.native, native.items), appRoutes: routes } };
   }
 }
 
