@@ -1,9 +1,12 @@
 import { afterEach, expect, test } from 'bun:test';
-import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { save } from './io.ts';
-import { capabilityRoutes, launcherScript, nativeMessages, T3App, t3Config, validateAppReply, validateAppTerminalReply, validateClaudeLaunch, validateClaudePrompt, type AppCase } from './t3-app.ts';
+import { newReceipt } from './core.ts';
+import { MacDriver } from './harness.ts';
+import { syntheticPoolEnvironment } from './pool-profile.test.ts';
+import { codexAppOrder, validateClaudeChildEffort, capabilityRoutes, launcherScript, nativeMessages, T3App, t3Config, validateAppReply, validateAppTerminalReply, validateClaudeLaunch, validateClaudePrompt, type AppCase } from './t3-app.ts';
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -226,6 +229,7 @@ async function fakeApp() {
   const root = await mkdtemp(join(tmpdir(), 't3-launchers-')); roots.push(root);
   const settingsPath = join(root, 'settings.json'), logsDirectory = join(root, 'logs'), launcherDirectory = join(root, 'launchers');
   await mkdir(logsDirectory);
+  await writeFile(join(logsDirectory, 'events.daily.log'), native('daily-existing', 'earlier-thread', '2026-10-13T00:00:00Z', { type: 'system', subtype: 'init' }));
   const settings = { uiPreference: 'original', providerInstances: {
     claude: { driver: 'claudeAgent', enabled: true, config: { binaryPath: '/usr/bin/true', homePath: '' }, environment: [] },
     codex: { driver: 'codex', enabled: true, config: { binaryPath: '/usr/bin/true', homePath: '' }, environment: [] },
@@ -283,6 +287,81 @@ async function answerCase(a: Awaited<ReturnType<typeof fakeApp>>, { terminal = '
 }
 const idle = (a: Awaited<ReturnType<typeof fakeApp>>) => Promise.all(['claude', 'codex'].map(driver => readFile(join(a.launcherDirectory, driver), 'utf8')));
 const passThrough = [launcherScript({ real: '/usr/bin/true' }), launcherScript({ real: '/usr/bin/true' })];
+
+test('a log root with native files only in its provider subdirectory is rejected without searching it', async () => {
+  const a = await fakeApp(), provider = join(a.logsDirectory, 'provider');
+  await mkdir(provider);
+  await writeFile(join(provider, 'events.daily.log'), await readFile(join(a.logsDirectory, 'events.daily.log')));
+  await rm(join(a.logsDirectory, 'events.daily.log'));
+  expect(() => new T3App(a.config, a.root)).toThrow(`T3 logsDirectory contains no supported native event files: ${a.logsDirectory}`);
+  await expect(a.app.prepare()).rejects.toThrow('subdirectories are not searched');
+  expect(await readdir(a.root)).not.toContain('launchers');
+  expect(await readdir(a.root)).not.toContain('t3-app');
+  const configured = new T3App({ ...a.config, logsDirectory: provider }, a.root);
+  await configured.prepare();
+  await configured.cleanup();
+});
+
+test.each(['events.daily.log', 'events.daily.log.1', 'events.daily.log.12'])('native log preflight accepts %s without prior verification profile records or fresh timestamps', async name => {
+  const a = await fakeApp(), contents = await readFile(join(a.logsDirectory, 'events.daily.log'));
+  await rm(join(a.logsDirectory, 'events.daily.log'));
+  const file = join(a.logsDirectory, name);
+  await writeFile(file, contents);
+  await utimes(file, 1, 1);
+  const app = new T3App(a.config, a.root);
+  expect(await app.claudeBinaryPath()).toBe('/usr/bin/true');
+  await app.prepare();
+  await expect(nativeMessages(a.logsDirectory, { providerId: 'verify_claude', threadId: 'child' }, started)).rejects.toThrow('unavailable');
+  await app.cleanup();
+});
+
+test.each(['events.log', 'provider.log', 'events.daily.log.gz', 'events.daily.log.1.gz', 'events.daily.log.old'])('native log preflight rejects unsupported filename %s', async name => {
+  const a = await fakeApp(), contents = await readFile(join(a.logsDirectory, 'events.daily.log'));
+  await rm(join(a.logsDirectory, 'events.daily.log'));
+  await writeFile(join(a.logsDirectory, name), contents);
+  expect(() => new T3App(a.config, a.root)).toThrow('no supported native event files');
+});
+
+test('native log preflight requires a regular file and fails closed on empty or missing directories', async () => {
+  const a = await fakeApp();
+  await rm(join(a.logsDirectory, 'events.daily.log'));
+  expect(() => new T3App(a.config, a.root)).toThrow('no supported native event files');
+  await mkdir(join(a.logsDirectory, 'events.directory.log'));
+  await symlink(a.settingsPath, join(a.logsDirectory, 'events.symlink.log'));
+  expect(() => new T3App(a.config, a.root)).toThrow('no supported native event files');
+  await rm(a.logsDirectory, { recursive: true });
+  expect(() => new T3App(a.config, a.root)).toThrow('ENOENT');
+});
+
+test('prepare rechecks native logs before launcher writes, candidate installation or a paid case', async () => {
+  const a = await fakeApp(), before = await readFile(a.settingsPath, 'utf8'), commands: string[][] = [];
+  await rm(join(a.logsDirectory, 'events.daily.log'));
+  const driver = new MacDriver(async args => { commands.push(args); throw new Error('Unexpected command'); }, async () => { throw new Error('Unexpected session'); }, [], a.app);
+  const receipt = newReceipt('andrewfree/open-pstack', 10, 'a'.repeat(40), 'b'.repeat(40), false, a.root);
+  receipt.runFeatures = ['claude:provider-routing'];
+  await expect(driver.prepare(receipt)).rejects.toThrow('no supported native event files');
+  expect(commands).toEqual([]);
+  for (const name of ['launchers', 't3-app', 'source-home', 'state', 'daily-state-before.json']) expect(await readdir(a.root)).not.toContain(name);
+  expect(await readFile(a.settingsPath, 'utf8')).toBe(before);
+  await driver.cleanup();
+});
+
+test.each(['doctor', 'run'])('%s rejects an invalid native log root before invoking any probe or remote command', async mode => {
+  const a = await fakeApp(), config = join(a.root, 't3.json'), output = join(a.root, mode), bin = join(a.root, 'bin'), marker = join(a.root, 'command-invoked');
+  await rm(join(a.logsDirectory, 'events.daily.log'));
+  await mkdir(bin);
+  for (const name of ['bun', 'git', 'gh', 'claude', 'codex']) await writeFile(join(bin, name), `#!/bin/sh\nprintf '%s\\n' invoked >> '${marker}'\nexit 1\n`, { mode: 0o700 });
+  await writeFile(config, JSON.stringify(a.config));
+  const args = mode === 'run' ? ['--repo', 'andrewfree/open-pstack', '--pr', '10', '--feature', 'claude:provider-routing', '--self-test'] : [];
+  const child = Bun.spawn([process.execPath, join(import.meta.dir, 'cli.ts'), mode, ...args, '--t3-app', config, '--output', output], {
+    env: { PATH: bin, HOME: a.root, USER: 'operator', LOGNAME: 'operator', DO_NOT_TRACK: '1' }, stdout: 'ignore', stderr: 'ignore',
+  });
+  expect(await child.exited).toBe(1);
+  expect((await json(join(output, 'failure.json'))).reason).toContain('T3 logsDirectory contains no supported native event files');
+  expect(await readdir(a.root)).not.toContain('command-invoked');
+  expect(await readdir(a.root)).not.toContain('launchers');
+  expect(await readdir(output)).toEqual(['failure.json']);
+});
 
 test('sequential cases arm candidate launchers and restore pass-through without editing T3 settings', async () => {
   const a = await fakeApp(), before = await readFile(a.settingsPath, 'utf8');
@@ -450,4 +529,81 @@ test('a case whose launcher cannot be armed reports that failure, not a pending 
   const cleanup = await a.app.cleanup().catch(error => error);
   expect(cleanup.message).toContain('not a pstack verification launcher');
   expect(cleanup.message).not.toContain('no validated terminal receipt');
+});
+
+test('native child effort validation accepts catalog-supported omission only for default', () => {
+  const routes = [{ providerInstanceId: 'verify', model: 'opus', efforts: ['high', 'default'] }];
+  for (const options of [undefined, {}, []]) expect(validateClaudeChildEffort(options, routes, 'verify', 'opus')).toBe('default');
+  for (const options of [{ effort: 'high' }, [{ id: 'effort', value: 'high' }]]) expect(validateClaudeChildEffort(options, routes, 'verify', 'opus')).toBe('high');
+  for (const options of [{ effort: 'default' }, { effort: 'low' }, { effort: 1 }]) expect(() => validateClaudeChildEffort(options, routes, 'verify', 'opus')).toThrow();
+  expect(validateClaudeChildEffort({}, [{ ...routes[0]!, efforts: [] }], 'verify', 'opus')).toBe('default');
+  expect(() => validateClaudeChildEffort({}, [], 'verify', 'opus')).toThrow('absent from the fresh app catalog');
+  expect(() => validateClaudeChildEffort({ effort: 'high' }, routes, 'daily', 'opus')).toThrow();
+  const launches = launch();
+  expect(() => validateClaudeLaunch(init, launches, 'haiku', '/bin/claude', 'default')).not.toThrow();
+  const explicit = launches.map(item => ({ ...item, options: { ...item.options, effort: 'high' } }));
+  expect(() => validateClaudeLaunch(init, explicit, 'haiku', '/bin/claude', 'default')).toThrow('effort differs');
+  expect(() => validateClaudeLaunch(init, explicit, 'haiku', '/bin/claude', 'max')).toThrow('effort differs');
+});
+
+test('a reference-bound pool passes through T3 environment and probes its real binary without serializing auth', async () => {
+  const a = await fakeApp(), settings = await json(a.settingsPath);
+  const environment = syntheticPoolEnvironment(); environment[3]!.value = '/usr/bin/true';
+  settings.providerInstances.claude.environment = environment;
+  settings.providerInstances.verify_claude.environment = structuredClone(environment);
+  await writeFile(a.settingsPath, JSON.stringify(settings));
+  const app = new T3App({ ...a.config, providerRouting: { directProviderId: 'direct', fallbackProviderId: 'manual_mac' } }, a.root);
+  expect(await app.claudeBinaryPath()).toBe('/usr/bin/true');
+  await app.prepare();
+  expect(await idle(a)).toEqual(passThrough);
+  for (const script of await idle(a)) { expect(script).not.toContain('ANTHROPIC'); expect(script).not.toContain('op://'); expect(script).not.toContain('pool.example'); }
+  expect(app.runnerRoute).toEqual({ providerInstanceId: 'verify_claude', model: 'opus', policy: { primary: 'claude', direct: 'direct', fallback: 'manual_mac' } });
+  settings.providerInstances.verify_claude.environment[2].value = 'https://manual.example.invalid';
+  await writeFile(a.settingsPath, JSON.stringify(settings));
+  await expect(app.record(a.c)).rejects.toThrow('pool-verification-unprepared');
+  expect(await idle(a)).toEqual(passThrough);
+  await app.cleanup();
+});
+
+test('the configured pool does not accept T3-local redacted secrets as proof of credential equivalence', async () => {
+  const a = await fakeApp(), settings = await json(a.settingsPath), environment = syntheticPoolEnvironment();
+  delete environment[4]!.secret;
+  settings.providerInstances.claude.environment = environment;
+  settings.providerInstances.verify_claude.environment = structuredClone(environment);
+  await writeFile(a.settingsPath, JSON.stringify(settings));
+  const app = new T3App({ ...a.config, providerRouting: { directProviderId: 'direct', fallbackProviderId: 'manual_mac' } }, a.root);
+  await expect(app.claudeBinaryPath()).rejects.toThrow('pool-verification-unprepared');
+  await expect(app.prepare()).rejects.toThrow('pool-verification-unprepared');
+});
+
+test('independent client credentials require an explicit policy and never enter verifier launchers', async () => {
+  const a = await fakeApp(), settings = await json(a.settingsPath);
+  const environment = syntheticPoolEnvironment().map(v => v.name === 'ANTHROPIC_API_KEY'
+    ? { name: v.name, value: '', sensitive: true, valueRedacted: true } : v);
+  environment[3]!.value = '/usr/bin/true';
+  settings.providerInstances.claude.environment = environment;
+  settings.providerInstances.verify_claude.environment = structuredClone(environment);
+  await writeFile(a.settingsPath, JSON.stringify(settings));
+  const policy = { directProviderId: 'direct', fallbackProviderId: 'manual_mac' };
+  await expect(new T3App({ ...a.config, providerRouting: policy }, a.root).prepare()).rejects.toThrow('pool-verification-unprepared');
+  const config = t3Config({ ...a.config, providerRouting: { ...policy, credentialPolicy: 'independent-client' } });
+  const app = new T3App(config, a.root);
+  expect(await app.claudeBinaryPath()).toBe('/usr/bin/true');
+  await app.prepare();
+  for (const script of await idle(a)) { expect(script).not.toContain('ANTHROPIC'); expect(script).not.toContain('valueRedacted'); }
+  await app.cleanup();
+  expect(() => t3Config({ ...a.config, providerRouting: { ...policy, credentialPolicy: 'anything' } })).toThrow('credential policy is invalid');
+});
+
+test('native order keeps command completion separate from the start of overlapping dispatch', () => {
+  const catalog = { type: 'mcpToolCall', server: 't3-code', id: 'catalog' };
+  const validator = { type: 'commandExecution', id: 'validator' };
+  const delegate = { type: 'mcpToolCall', server: 't3-code', id: 'delegate' };
+  const event = (method: string, item: object) => ({ method, params: { item } });
+  const events = [event('item/started', catalog), event('item/completed', catalog), event('item/started', validator),
+    event('item/started', delegate), event('item/completed', validator), event('item/completed', delegate)];
+  expect(codexAppOrder(events.map(event => JSON.stringify(event)).join('\n'), [catalog, validator, delegate]))
+    .toEqual({ commands: { validator: 4 }, tools: [1, 5], commandStarts: { validator: 2 }, toolStarts: [0, 3] });
+  const missing = events.filter(event => event.method !== 'item/started');
+  expect(codexAppOrder(missing.map(event => JSON.stringify(event)).join('\n'), [catalog, validator, delegate]).toolStarts).toEqual([-1, -1]);
 });

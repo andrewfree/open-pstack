@@ -7,24 +7,30 @@ import { Publisher } from './github.ts';
 import { MacDriver } from './harness.ts';
 import { command, freshRoot, interruption, interruptCommands, save, session } from './io.ts';
 import { T3App, t3Config } from './t3-app.ts';
+import type { DailyStatePolicy } from './types.ts';
 import { publishable, Refused, verify } from './verify.ts';
 type Options = { mode: 'doctor'; output: string; pr: number; selfTest: boolean; candidate: boolean; t3App?: string }
-  | { mode: 'run'; repo: string; output: string; pr: number; selfTest: boolean; routes: string[]; features: string[]; wide?: string; t3App?: string };
+  | { mode: 'run'; repo: string; output: string; pr: number; selfTest: boolean; routes: string[]; features: string[]; wide?: string; t3App?: string; dailyStatePolicy?: DailyStatePolicy };
 export function parse(args: string[]): Options {
   const mode = args[0];
-  if (mode !== 'doctor' && mode !== 'run') throw new Error('Usage: verify.sh doctor [--candidate | --t3-app CONFIG] --output /fresh/path | run --repo OWNER/REPO --pr NUMBER --feature HARNESS:FEATURE... [--self-test] [--t3-app CONFIG] [--runner-route PROVIDER:MODEL@EFFORT]... [--wide REASON] --output /fresh/path');
+  if (mode !== 'doctor' && mode !== 'run') throw new Error('Usage: verify.sh doctor [--candidate | --t3-app CONFIG] --output /fresh/path | run --repo OWNER/REPO --pr NUMBER --feature HARNESS:FEATURE... [--self-test] [--t3-app CONFIG] [--runner-route PROVIDER:MODEL@EFFORT]... [--daily-state-policy strict|marketplace-timestamps] [--wide REASON] --output /fresh/path');
   let output = '', repo = '', pr = 0, selfTest = false, candidate = false, wide: string | undefined, t3App: string | undefined;
+  let dailyStatePolicy: DailyStatePolicy | undefined;
   const seen = new Set<string>(), routes: string[] = [], features: string[] = [];
   for (let i = 1; i < args.length; i++) {
     const arg = args[i]!;
     if (arg !== '--runner-route' && arg !== '--feature') { if (seen.has(arg)) throw new Error(`Duplicate option: ${arg}`); seen.add(arg); }
     if (arg === '--self-test' && mode === 'run') selfTest = true;
     else if (arg === '--candidate' && mode === 'doctor') candidate = true;
-    else if (arg === '--output' || arg === '--t3-app' || mode === 'run' && (arg === '--pr' || arg === '--repo' || arg === '--runner-route' || arg === '--feature' || arg === '--wide')) {
+    else if (arg === '--output' || arg === '--t3-app' || mode === 'run' && (arg === '--pr' || arg === '--repo' || arg === '--runner-route' || arg === '--feature' || arg === '--wide' || arg === '--daily-state-policy')) {
       const value = args[++i]; if (!value || value.startsWith('--')) throw new Error(`Missing value: ${arg}`);
       if (arg === '--output') output = value;
       else if (arg === '--t3-app') t3App = value;
       else if (arg === '--repo') repo = repositoryName(value);
+      else if (arg === '--daily-state-policy') {
+        if (value !== 'strict' && value !== 'marketplace-timestamps') throw new Error('Daily-state policy must be strict or marketplace-timestamps');
+        dailyStatePolicy = value;
+      }
       else if (arg === '--runner-route') {
         if (!ROUTE.test(value) || routes.includes(value)) throw new Error('Runner route must be a distinct PROVIDER:MODEL@EFFORT');
         routes.push(value);
@@ -39,7 +45,7 @@ export function parse(args: string[]): Options {
   }
   if (!output || mode === 'run' && (!pr || !repo)) throw new Error('Output and (for run) repository and PR are required');
   if (candidate && t3App) throw new Error('A candidate doctor runs inside a verification session and takes no --t3-app');
-  if (mode === 'run') return { mode, repo, output, pr, selfTest, routes, features, ...(wide ? { wide } : {}), ...(t3App ? { t3App } : {}) };
+  if (mode === 'run') return { mode, repo, output, pr, selfTest, routes, features, ...(wide ? { wide } : {}), ...(t3App ? { t3App } : {}), ...(dailyStatePolicy ? { dailyStatePolicy } : {}) };
   return { mode, output, pr, selfTest, candidate, ...(t3App ? { t3App } : {}) };
 }
 async function main(): Promise<void> {
@@ -57,11 +63,11 @@ async function main(): Promise<void> {
     const options = parse(process.argv.slice(2)), repository = resolve(import.meta.dir, '../../../..');
     root = await freshRoot(options.output, repository);
     const app = options.t3App ? new T3App(t3Config(JSON.parse(await readFile(options.t3App, 'utf8'))), root) : undefined;
-    if (options.mode === 'doctor') await doctor(root, undefined, undefined, options.candidate, undefined, await app?.claudeBinaryPath());
+    if (options.mode === 'doctor') await doctor(root, undefined, undefined, options.candidate, undefined, await app?.claudeBinaryPath(), Boolean(app?.runnerRoute.policy));
     else {
       const publisherRevision = (await command(['git', 'rev-parse', 'HEAD'], { cwd: repository })).trim();
       const registry = validateRegistry(JSON.parse(await readFile(join(import.meta.dir, '../features/registry.json'), 'utf8')));
-      const receipt = await verify({ repo: options.repo, pr: options.pr, selfTest: options.selfTest, features: options.features, routes: options.routes, wide: options.wide, root, registry, github: new Publisher(options.repo), driver: new MacDriver(command, session, options.routes, app), persist: r => save(join(root!, 'receipt.json'), r), publisherRevision });
+      const receipt = await verify({ repo: options.repo, pr: options.pr, selfTest: options.selfTest, features: options.features, routes: options.routes, wide: options.wide, dailyStatePolicy: options.dailyStatePolicy, root, registry, github: new Publisher(options.repo), driver: new MacDriver(command, session, options.routes, app), persist: r => save(join(root!, 'receipt.json'), r), publisherRevision });
       console.log(`Pinned ${receipt.sha}: live-gate=${receipt.status}; evidence ${receipt.commentUrl}`);
     }
     interruption.signal.throwIfAborted();

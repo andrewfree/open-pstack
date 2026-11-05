@@ -1,3 +1,5 @@
+import { providerRouting } from './provider-routing.ts';
+import type { PoolPolicy } from '../scripts/pool-profile.ts';
 import { Database } from 'bun:sqlite';
 import { lstat, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -17,6 +19,7 @@ export interface Fixture {
 export interface Evidence { assertions: string[]; files: string[] }
 export interface Case {
   id: string;
+  app?: { child: true; result?: (fixture: Fixture) => string };
   cwd?: 'workspace';
   /** Codex parents that launch external provider CLIs need network and their CLI state outside the fixture. */
   codexSandbox?: 'danger-full-access';
@@ -26,7 +29,7 @@ export interface Case {
   assert(record: SessionRecord, fixture: Fixture): Promise<Evidence>;
 }
 
-export interface AppRoute { providerInstanceId: string; model: string }
+export interface AppRoute { providerInstanceId: string; model: string; policy?: PoolPolicy }
 export const DEFAULT_ROLES: Record<Harness, string> = { claude: 'bug-fix', codex: 'feature, refactoring' };
 export const ROUTE = /^([a-z][a-z0-9-]*):([A-Za-z0-9._/-]+)@([a-z]+)$/;
 const SETUP_DESCRIPTOR = 'claude:opus@high';
@@ -373,11 +376,12 @@ export function t3Model(models: string[], model: string): string {
   if (!models.includes(model)) throw new Error('app-route-live-capability-route-missing');
   return model;
 }
-function appRunner(appRoute: AppRoute | undefined, fixed: string): Case {
+export function appRunner(appRoute: AppRoute | undefined, fixed: string, pong: () => string = () => 'PONG'): Case {
   let route = fixed, model = '', effort = '';
   const lane = (f: Fixture) => join(f.dir, 'app-lane.json'), output = (f: Fixture) => join(f.dir, 'app-output.md');
   return {
     id: 'app-route-1',
+    app: { child: true, result: pong },
     async prepare(f) {
       if (!appRoute) throw new Error('unsupported-native-consumer:claude-app: the Codex runner case verifies the T3 Claude Agent route and needs --t3-app');
       const installed = await readCatalog(f.location);
@@ -386,11 +390,12 @@ function appRunner(appRoute: AppRoute | undefined, fixed: string): Case {
       if (!parts || installed.route('codex', route) !== 't3') throw new Error(`app-route-not-t3:${route || T3_ROLE}`);
       [, , model = '', effort = ''] = parts;
     },
-    prompt: f => `${invoke(f.harness, 'poteto-mode', `Dispatch exactly one read-only lane for descriptor ${route}, using only the operator-selected Claude provider instance ${appRoute!.providerInstanceId}. Read installed reference files one at a time in byte ranges of at most 8192 bytes per shell command; bound stdout in the command itself, since a tool output-token limit does not bound native log records. Do not concatenate reference files or dump the entire model catalog. Resolve the descriptor yourself using the installed provider-dispatch.md and your native T3 catalog; call orchestrator_capabilities with search set to ${appRoute!.providerInstanceId}. Child task: Reply with exactly PONG as the final answer. Do no engineering work, spawn no agents, ask no questions, and request no plan approval. Grounding directory: ${f.dir}. Reserve the private lane record at ${lane(f)} and final output at ${output(f)} before dispatch. Complete the installed route, retain its task and thread identities, and drain the original task before finishing. Do not launch shell Claude or substitute another provider or model.`)} ${rules(f.dir)}`,
+    prompt: f => `${invoke(f.harness, 'poteto-mode', `Dispatch exactly one read-only lane for descriptor ${route}, using only the operator-selected Claude provider instance ${appRoute!.providerInstanceId}. Read installed reference files one at a time in byte ranges of at most 8192 bytes per shell command; bound stdout in the command itself, since a tool output-token limit does not bound native log records. Do not concatenate reference files or dump the entire model catalog. Resolve the descriptor yourself using the installed provider-dispatch.md and your native T3 catalog; call orchestrator_capabilities with search set to ${appRoute!.providerInstanceId}. Child task: Reply with exactly ${pong()} as the final answer. Do no engineering work, spawn no agents, ask no questions, and request no plan approval. Grounding directory: ${f.dir}. Reserve the private lane record at ${lane(f)} and final output at ${output(f)} before dispatch. Complete the installed route, retain its task and thread identities, and drain the original task before finishing. Do not launch shell Claude or substitute another provider or model.`)} ${rules(f.dir)}`,
     async assert(record, f) {
       const calls = record.appTools ?? [], launches = calls.filter(call => call.tool === 'delegate_task');
       if (launches.length !== 1) throw new Error('app-route-requires-one-native-dispatch');
-      const launch = launches[0]!, catalog = calls.slice(0, calls.indexOf(launch)).filter(call => call.tool === 'orchestrator_capabilities' && Array.isArray(call.result.providers)).at(-1);
+      const launch = launches[0]!, catalog = calls.slice(0, calls.indexOf(launch)).filter(call => call.tool === 'orchestrator_capabilities' && Array.isArray(call.result.providers)
+        && call.result.providers.some(raw => object(raw).providerInstanceId === appRoute!.providerInstanceId)).at(-1);
       if (!catalog) throw new Error('app-route-requires-native-catalog-before-dispatch');
       const provider = (catalog.result.providers as unknown[]).map(object).find(p => p.providerInstanceId === appRoute!.providerInstanceId);
       if (!provider || provider.driverKind !== 'claudeAgent' || provider.canRunChildTask !== true || provider.canRunCrossProviderChildTask !== true
@@ -400,26 +405,28 @@ function appRunner(appRoute: AppRoute | undefined, fixed: string): Case {
       if (!coordinator.length || t3Model(coordinator.map(r => r.model), model) !== chosen) throw new Error('app-route-coordinator-catalog-mismatch');
       const options = models.find(m => m.id === chosen)!.options;
       const values = Array.isArray(options) ? options.map(object).find(option => option.id === 'effort')?.values : undefined;
-      if (!coordinator.find(r => r.model === chosen)!.efforts.includes(effort) || !Array.isArray(values) || !values.includes(effort)) throw new Error('app-route-live-capability-effort-unsupported');
+      if (effort !== 'default' && (!coordinator.find(r => r.model === chosen)!.efforts.includes(effort) || !Array.isArray(values) || !values.includes(effort))) throw new Error('app-route-live-capability-effort-unsupported');
       const requested = object(launch.arguments.target);
       if (requested.providerInstanceId !== appRoute!.providerInstanceId || requested.model !== chosen) throw new Error('app-route-target-mismatch');
       const requestedOptions = requested.options;
+      if (Array.isArray(requestedOptions) && requestedOptions.map(object).filter(o => o.id === 'effort').length > 1) throw new Error('app-route-effort-mismatch');
       const actualEffort = Array.isArray(requestedOptions) ? requestedOptions.map(object).find(option => option.id === 'effort')?.value
         : requestedOptions && typeof requestedOptions === 'object' ? object(requestedOptions).effort : undefined;
-      if (actualEffort !== effort) throw new Error('app-route-effort-mismatch');
+      if (actualEffort !== (effort === 'default' ? undefined : effort)) throw new Error('app-route-effort-mismatch');
       if (launch.arguments.mode !== 'async' || launch.arguments.interactionMode !== 'plan' || typeof launch.arguments.clientRequestId !== 'string' || !launch.arguments.clientRequestId.trim()) throw new Error('app-route-dispatch-contract-mismatch');
       if (typeof launch.result.taskId !== 'string' || !launch.result.taskId.trim()) throw new Error('app-route-missing-task-id');
       const result = calls.filter(call => call.tool === 'task_status' && call.arguments.taskId === launch.result.taskId).map(call => call.result)
         .find(status => status.status === 'completed' && status.workState === 'result_available' && status.hasPendingChildRuns === false);
-      if (!result || result.taskId !== launch.result.taskId || !result.childThreadId || !result.childRunId || result.latestTerminalRunId !== result.childRunId
+      if (!result || result.taskId !== launch.result.taskId || !result.childThreadId || !result.childRunId
+        || result.childThreadId !== launch.result.childThreadId || result.childRunId !== launch.result.childRunId || result.latestTerminalRunId !== result.childRunId
         || result.latestTerminalStatus !== 'completed' || result.providerInstanceId !== appRoute!.providerInstanceId || result.model !== chosen
-        || typeof result.summary !== 'string' || result.summary.trim() !== 'PONG') throw new Error('app-route-no-completed-PONG');
+        || typeof result.summary !== 'string' || result.summary.trim() !== pong()) throw new Error('app-route-no-completed-PONG');
       const receipt = object(JSON.parse(await readFile(lane(f), 'utf8')));
       const expected = { route: 't3-claude-agent', descriptor: route, providerInstanceId: appRoute!.providerInstanceId, model: chosen, effort,
         clientRequestId: launch.arguments.clientRequestId, taskId: result.taskId, childThreadId: result.childThreadId, status: 'completed', dropoutReason: null };
       const mismatched = Object.entries(expected).filter(([key, value]) => receipt[key] !== value).map(([key]) => key);
       if (mismatched.length) throw new Error(`app-route-lane-record-mismatch:${mismatched.join(',')}`);
-      if ((await readFile(output(f), 'utf8')).trim() !== 'PONG') throw new Error('app-route-output-not-PONG');
+      if ((await readFile(output(f), 'utf8')).trim() !== pong()) throw new Error('app-route-output-not-PONG');
       return { assertions: [loaded(record, 'pstack:poteto-mode'), 'native-catalog-before-dispatch', 'concrete-family-revision', 'coordinator-catalog-match', 'live-capability-route',
         'native-t3-dispatch', 'async-plan-request', 'matching-child-run', 'lane-record', 'completed-PONG', await written(record, lane(f)), await written(record, output(f))], files: [lane(f), output(f)] };
     },
@@ -759,6 +766,7 @@ export function recipe(feature: string, harness: Harness, routes: string[] = [],
   if (feature === 'assets:codex') throw new Error('unsupported-native-consumer:assets:codex');
   if (feature === 'project-skill') return [projectSkill];
   if (feature === 'hook:startup') return [startupHook];
+  if (feature === 'provider-routing') return [providerRouting(harness, appRoute)];
   if (feature === 'runner') return runner(harness, routes, appRoute);
   if (feature === 'setup' || feature === 'skill-invocation:setup-pstack') return setup;
   if (feature === 'catalog') return catalog(harness);

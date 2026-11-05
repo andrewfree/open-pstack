@@ -3,7 +3,7 @@ import { HARNESSES, type ChangedFile, type Harness, type Receipt, type Registry,
 export function validateRegistry(value: unknown): Registry {
   if (!value || typeof value !== 'object') throw new Error('Invalid feature registry');
   const r = value as Registry;
-  for (const key of ['skills', 'shared', 'catalog', 'assets', 'setup', 'runner', 'tools', 'project', 'nonRuntime'] as const) {
+  for (const key of ['skills', 'shared', 'catalog', 'assets', 'setup', 'routing', 'runner', 'tools', 'project', 'nonRuntime'] as const) {
     if (!Array.isArray(r[key]) || r[key].some(v => typeof v !== 'string' || !v || v.includes('..'))) {
       throw new Error(`Invalid registry.${key}`);
     }
@@ -35,7 +35,7 @@ export function classify(files: ChangedFile[], registry: Registry): Selection {
       features.add('codex:assets:codex'); covered = true;
     }
     const sharedRecipe = path === '.claude/skills/verify-open-pstack/features/recipes.ts';
-    if (sharedRecipe) both('catalog');
+    if (sharedRecipe) both('catalog', 'provider-routing');
     const catalog = registry.catalog.some(p => matches(path, p));
     if (catalog) { both('catalog', 'setup', 'runner'); covered = true; }
     if (sharedRecipe || (!catalog && registry.shared.some(p => matches(path, p)))) {
@@ -44,7 +44,7 @@ export function classify(files: ChangedFile[], registry: Registry): Selection {
       features.add('claude:agent-preload:poteto-agent');
       covered = true;
     }
-    for (const [key, feature] of [['setup', 'setup'], ['runner', 'runner'], ['tools', 'shipped-tools'], ['project', 'project-skill']] as const) {
+    for (const [key, feature] of [['setup', 'setup'], ['routing', 'provider-routing'], ['runner', 'runner'], ['tools', 'shipped-tools'], ['project', 'project-skill']] as const) {
       if (registry[key].some(p => matches(path, p))) { both(feature); covered = true; }
     }
     if (/^plugins\/pstack\/skills\/poteto-mode\/scripts\/resolve-codex-transcript(?:\.ts)?$/.test(path)) { skills.add('reflect'); covered = true; }
@@ -73,7 +73,8 @@ export function newReceipt(repo: string, pr: number, sha: string, base: string, 
   if (publisherRevision !== undefined && !/^[a-f0-9]{40}$/.test(publisherRevision)) throw new Error('Invalid publisher revision');
   return { schema: 1, repo, pr, sha, base, selfTest, artifactRoot, ...(publisherRevision ? { publisherRevision } : {}), phase: 'resolve',
     selection: { paths: [], skills: [], features: [], noRuntime: false }, runFeatures: [], sessions: 0, installations: [], observations: [],
-    started: new Date().toISOString(), cleanup: 'Run state retained; operator owns cleanup.' };
+    started: new Date().toISOString(), cleanup: 'Run state retained; operator owns cleanup.',
+    dailyState: { policy: 'strict', snapshots: [], acceptedMarketplaceChanges: [] } };
 }
 
 export function requiredFeatures(receipt: Receipt, harness: Harness): string[] {

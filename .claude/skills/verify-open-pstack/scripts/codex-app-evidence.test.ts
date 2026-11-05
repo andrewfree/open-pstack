@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseCodexAppEvidence, type CodexAppEvidenceOptions } from './codex-app-evidence.ts';
+import { nativeMcpStartup } from './fixtures/codex-t3-mcp-startup.ts';
 
 const roots: string[] = [];
 const sessionId = '01a13964-c4a5-71d2-8fd3-fde0382ef425', turnId = '01a13964-c50c-7061-8916-457b12d3a1f4';
@@ -62,6 +63,101 @@ async function asyncFixture() {
   f.rows.splice(-1, 0, message(text, 'user.text')); await f.save();
   return { ...f, dispatched, terminal, notification };
 }
+
+function nativeInventory(f: Awaited<ReturnType<typeof fixture>>, names?: readonly string[]): Event[] {
+  const events = f.events.filter(event => event.method !== 'mcpServer/startupStatus/updated');
+  const selected = (phase: 'beforeTurn' | 'duringTurn'): Event[] => nativeMcpStartup[phase]
+    .filter(event => names === undefined || names.includes(event.params.name))
+    .map(event => ({ ...event, params: { ...event.params, threadId: sessionId } }));
+  events.splice(events.findIndex(event => event.method === 'turn/started'), 0, ...selected('beforeTurn'));
+  events.splice(events.findIndex(event => event.method === 'turn/started') + 1, 0, ...selected('duringTurn'));
+  return events;
+}
+
+describe('Codex T3 transport startup inventory', () => {
+  test.each([{ label: 'legacy', names: ['t3-code'] }, { label: 'current', names: ['t3-code', 't3-code-direct'] }])('accepts the exact trusted native inventory $label', async ({ names }) => {
+    const f = await fixture();
+    expect((await parseCodexAppEvidence(serialize(nativeInventory(f, names)), f.expected)).sessionId).toBe(sessionId);
+  });
+  test('retains the frozen plugin-server failure after admitting the official T3 alias', async () => {
+    const f = await fixture();
+    await expect(parseCodexAppEvidence(serialize(nativeInventory(f)), f.expected)).rejects.toThrow('MCP inventory');
+  });
+  test.each(['t3-code', 't3-code-direct'])('requires its own starting event for %s', async name => {
+    const f = await fixture(), events = nativeInventory(f, ['t3-code', 't3-code-direct'])
+      .filter(event => !(event.method === 'mcpServer/startupStatus/updated' && event.params.name === name && event.params.status === 'starting'));
+    await expect(parseCodexAppEvidence(serialize(events), f.expected)).rejects.toThrow('MCP');
+  });
+  test.each(['t3-code', 't3-code-direct'])('requires its own ready event for %s', async name => {
+    const f = await fixture(), events = nativeInventory(f, ['t3-code', 't3-code-direct'])
+      .filter(event => !(event.method === 'mcpServer/startupStatus/updated' && event.params.name === name && event.params.status === 'ready'));
+    await expect(parseCodexAppEvidence(serialize(events), f.expected)).rejects.toThrow('MCP');
+  });
+  test('requires ordinary t3-code even when the direct transport is healthy', async () => {
+    const f = await fixture();
+    await expect(parseCodexAppEvidence(serialize(nativeInventory(f, ['t3-code-direct'])), f.expected)).rejects.toThrow('MCP');
+  });
+  test.each(['t3-code', 't3-code-direct'])('rejects cross-server ready-before-start ordering for %s', async name => {
+    const f = await fixture(), events = nativeInventory(f, ['t3-code', 't3-code-direct']);
+    const first = events.findIndex(event => event.method === 'mcpServer/startupStatus/updated' && event.params.name === name);
+    events.splice(first, 0, mcpStatus('ready', name));
+    await expect(parseCodexAppEvidence(serialize(events), f.expected)).rejects.toThrow('MCP');
+  });
+  test.each(['t3-code', 't3-code-direct'])('rejects restarting %s after it became ready', async name => {
+    const f = await fixture(), events = nativeInventory(f, ['t3-code', 't3-code-direct']);
+    events.splice(-1, 0, mcpStatus('starting', name));
+    await expect(parseCodexAppEvidence(serialize(events), f.expected)).rejects.toThrow('MCP');
+  });
+  test.each(['t3-code', 't3-code-direct'])('rejects duplicate startup for %s', async name => {
+    const f = await fixture(), events = nativeInventory(f, ['t3-code', 't3-code-direct']);
+    const first = events.findIndex(event => event.method === 'mcpServer/startupStatus/updated' && event.params.name === name);
+    events.splice(first, 0, mcpStatus('starting', name));
+    await expect(parseCodexAppEvidence(serialize(events), f.expected)).rejects.toThrow('MCP');
+  });
+  test.each(['error', 'failure-reason', 'failed', 'cancelled', 'unknown-status', 'foreign-thread', 'truncated-event', 'truncated-params', 'missing-error', 'missing-failure-reason'])('rejects %s on the direct transport', async kind => {
+    const f = await fixture(), events = nativeInventory(f, ['t3-code', 't3-code-direct']);
+    const event = events.find(event => event.method === 'mcpServer/startupStatus/updated' && event.params.name === 't3-code-direct' && event.params.status === 'ready')!;
+    if (kind === 'error') event.params.error = 'offline fixture connection failed';
+    if (kind === 'failure-reason') event.params.failureReason = 'connectionFailed';
+    if (kind === 'failed' || kind === 'cancelled' || kind === 'unknown-status') event.params.status = kind;
+    if (kind === 'foreign-thread') event.params.threadId = 'foreign-thread';
+    if (kind === 'truncated-event') event.truncated = true;
+    if (kind === 'truncated-params') event.params.truncated = true;
+    if (kind === 'missing-error') delete event.params.error;
+    if (kind === 'missing-failure-reason') delete event.params.failureReason;
+    await expect(parseCodexAppEvidence(serialize(events), f.expected)).rejects.toThrow('MCP');
+  });
+  test.each(['before-thread', 'after-turn'])('rejects direct-transport startup %s', async placement => {
+    const f = await fixture(), events = nativeInventory(f, ['t3-code', 't3-code-direct']);
+    const first = events.findIndex(event => event.method === 'mcpServer/startupStatus/updated' && event.params.name === 't3-code-direct');
+    const [event] = events.splice(first, 1);
+    if (placement === 'before-thread') events.unshift(event!); else events.push(event!);
+    await expect(parseCodexAppEvidence(serialize(events), f.expected)).rejects.toThrow('MCP');
+  });
+  test.each(['codex_apps', 'data', 'openai-api-key-local-confirmation', 'openai-api-credit-promo', 'codex-security', 'unknown', 't3_code', 't3_code_direct', 't3-code-direct-extra'])('rejects healthy extra or untrusted alias %s', async name => {
+    const f = await fixture(), events = nativeInventory(f, ['t3-code', 't3-code-direct']);
+    events.splice(-1, 0, mcpStatus('starting', name), mcpStatus('ready', name));
+    await expect(parseCodexAppEvidence(serialize(events), f.expected)).rejects.toThrow('MCP inventory');
+  });
+  test.each(['orchestrator_capabilities', 'delegate_task', 'task_status', 't3_thread_read'])('retains ordinary %s calls with the current transport pair', async tool => {
+    const f = await fixture(), events = nativeInventory(f, ['t3-code', 't3-code-direct']);
+    events.splice(-1, 0, nativeItem({ ...delegation(), tool }));
+    expect((await parseCodexAppEvidence(serialize(events), f.expected)).toolCalls[0]!.tool).toBe(tool);
+  });
+  test.each(['t3-code', 't3-code-direct'])('requires complete %s readiness before a native verification tool call', async name => {
+    const f = await fixture(), events = nativeInventory(f, ['t3-code', 't3-code-direct']);
+    const readies = events.filter(event => event.method === 'mcpServer/startupStatus/updated' && event.params.name === name && event.params.status === 'ready');
+    const delayed = events.filter(event => !readies.includes(event));
+    delayed.splice(-1, 0, nativeItem(delegation()), ...readies);
+    await expect(parseCodexAppEvidence(serialize(delayed), f.expected)).rejects.toThrow('MCP tool call precedes');
+  });
+  test.each(['orchestrator_capabilities', 'delegate_task', 'task_status', 't3_thread_read', 't3_thread_wait'].flatMap(tool => ['started', 'completed'].map(stage => ({ tool, stage }))))('rejects direct-transport tool $tool at item/$stage', async ({ tool, stage }) => {
+    const f = await fixture(), events = nativeInventory(f, ['t3-code', 't3-code-direct']);
+    const item = { ...delegation(), server: 't3-code-direct', tool };
+    events.splice(-1, 0, stage === 'started' ? nativeStart(item) : nativeItem(item));
+    await expect(parseCodexAppEvidence(serialize(events), f.expected)).rejects.toThrow('Forbidden MCP tool');
+  });
+});
 
 describe('Codex app native evidence', () => {
   test('binds an async completion notification to the original delegate and later terminal status in both streams', async () => {
