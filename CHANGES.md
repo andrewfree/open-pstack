@@ -5,6 +5,8 @@ This port applies the Cursor → Claude Code substitutions in skill bodies. Earl
 
 ## Unreleased
 
+- Malformed saved Claude instance settings, including a missing colon, fail closed before explicit, standing-default or sole-instance selection. Shared dispatch documents the native Claude ID constraints enforced by the route validator.
+
 - Native routing verification preserves a selected provider across targeted catalog lookups, requires the exact validator invocation and native start/completion ordering, and always binds terminal child/run identities to the original dispatch. Added regressions reject overlapping prerequisites, fabricated validator execution and mismatched child evidence.
 
 - Codex verification disables the observed OpenAI Developers and Codex Security plugin MCP servers in its private run configuration, while retaining candidate plugin activation. Native evidence accepts T3's official direct transport with independent startup/readiness checks for each server; unexpected plugin servers remain failures. Failure instructions preserve unrelated daily registry updates instead of restoring older state over them.
