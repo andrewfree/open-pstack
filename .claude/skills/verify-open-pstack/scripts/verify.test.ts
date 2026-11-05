@@ -6,9 +6,9 @@ import { join } from 'node:path';
 import data from '../features/registry.json';
 import { requiredFeatures, requiredHarnesses, validateRegistry } from './core.ts';
 import { parseChangedFiles, Publisher } from './github.ts';
-import { command, sha256, type Command } from './io.ts';
+import { command, retainedFile, sha256, type Command } from './io.ts';
 import { MacDriver } from './harness.ts';
-import { evidence, Refused, SESSION_LIMIT, verify } from './verify.ts';
+import { evidence, revalidateEvidence, Refused, SESSION_LIMIT, verify } from './verify.ts';
 import { HARNESSES, type ChangedFile, type Driver, type GitHub, type Pull, type Receipt } from './types.ts';
 
 const REPO = 'ericlitman/open-pstack';
@@ -42,6 +42,45 @@ function fixture(runtime = false, selfTest = false) {
 }
 
 describe('exact-head evidence publication', () => {
+  test('discloses opt-in timestamp acceptance including cleanup-time differences and binds the evidence', async () => {
+    const f = fixture();
+    f.options.driver.cleanup = async r => {
+      expect(r.dailyState.policy).toBe('marketplace-timestamps');
+      r.dailyState.acceptedMarketplaceChanges.push({ beforeSha256: HASH, afterSha256: 'e'.repeat(64),
+        timestamps: [{ entrySha256: 'f'.repeat(64), before: '2026-11-05T01:00:00.000Z', after: '2026-11-05T02:00:00.000Z' }] });
+    };
+    const r = await verify({ ...f.options, dailyStatePolicy: 'marketplace-timestamps' });
+    expect(f.comments[0]).toContain('Daily-state policy: marketplace-timestamps');
+    expect(f.comments[0]).toContain('accepted timestamp changes: 1');
+    expect(f.comments[0]).toContain('Writer attribution is not established');
+    expect(f.saved.at(-1)!.dailyState.acceptedMarketplaceChanges).toHaveLength(1);
+    const original = evidence(r); r.dailyState.acceptedMarketplaceChanges = [];
+    const changed = evidence(r);
+    expect(original.match(/Evidence-set SHA-256: `([^`]+)`/)![1]).not.toBe(changed.match(/Evidence-set SHA-256: `([^`]+)`/)![1]);
+    r.failure = 'failed later'; r.dailyState.policy = 'strict';
+    expect(evidence(r)).toContain('Daily-state policy: strict');
+  });
+
+  test('daily-state snapshot tampering prevents a successful gate', async () => {
+    const f = fixture();
+    f.options.driver.cleanup = async r => {
+      r.dailyState.snapshots.push(await retainedFile(r.artifactRoot, 'fixture.json'));
+      writeFileSync(join(r.artifactRoot, 'fixture.json'), 'changed snapshot');
+    };
+    await expect(verify(f.options)).rejects.toThrow('Retained daily-state snapshot changed');
+    expect(f.calls).not.toContain(`status:success:${SHA}`);
+  });
+
+  test('daily-state acceptance remains disclosed when observations are truncated or the result fails', async () => {
+    const r = await verify(fixture(true).options);
+    r.dailyState.policy = 'marketplace-timestamps';
+    r.dailyState.acceptedMarketplaceChanges.push({ beforeSha256: HASH, afterSha256: HASH, timestamps: [] });
+    r.observations = Array.from({ length: 400 }, () => r.observations[0]!);
+    expect(evidence(r)).toContain('accepted marketplace metadata changes: 1');
+    r.failure = 'failed';
+    expect(evidence(r)).toContain('accepted marketplace metadata changes: 1');
+    await revalidateEvidence({ ...r, observations: [] });
+  });
   test('docs-only publishes one no-runtime comment and exact-SHA live-gate without harnesses or PR mutation', async () => {
     const f = fixture(), receipt = await verify(f.options);
     expect(receipt.status).toBe('success'); expect(receipt.sha).toBe(SHA); expect(receipt.publisherRevision).toBe(REVISION);

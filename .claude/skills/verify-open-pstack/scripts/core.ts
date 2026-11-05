@@ -73,7 +73,8 @@ export function newReceipt(repo: string, pr: number, sha: string, base: string, 
   if (publisherRevision !== undefined && !/^[a-f0-9]{40}$/.test(publisherRevision)) throw new Error('Invalid publisher revision');
   return { schema: 1, repo, pr, sha, base, selfTest, artifactRoot, ...(publisherRevision ? { publisherRevision } : {}), phase: 'resolve',
     selection: { paths: [], skills: [], features: [], noRuntime: false }, runFeatures: [], sessions: 0, installations: [], observations: [],
-    started: new Date().toISOString(), cleanup: 'Run state retained; operator owns cleanup.' };
+    started: new Date().toISOString(), cleanup: 'Run state retained; operator owns cleanup.',
+    dailyState: { policy: 'strict', snapshots: [], acceptedMarketplaceChanges: [] } };
 }
 
 export function requiredFeatures(receipt: Receipt, harness: Harness): string[] {

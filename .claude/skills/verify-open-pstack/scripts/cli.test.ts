@@ -73,6 +73,15 @@ test('run binds one explicit OWNER/REPO and has no upstream default', () => {
   expect(() => parse(['run', '--repo', REPO, '--repo', REPO, '--pr', '7', '--output', '/fresh/run'])).toThrow('Duplicate option: --repo');
   expect(() => parse(['doctor', '--repo', REPO, '--output', '/fresh/probe'])).toThrow('Unknown option: --repo');
 });
+test('daily-state policy is explicit, validated, run-only and defaults to strict behavior', () => {
+  const args = ['run', '--repo', REPO, '--pr', '1', '--output', '/fresh/run'];
+  expect(parse(args)).not.toHaveProperty('dailyStatePolicy');
+  for (const policy of ['strict', 'marketplace-timestamps']) expect(parse([...args, '--daily-state-policy', policy])).toMatchObject({ dailyStatePolicy: policy });
+  expect(() => parse([...args, '--daily-state-policy', 'ignore'])).toThrow('Daily-state policy');
+  expect(() => parse([...args, '--daily-state-policy'])).toThrow('Missing value');
+  expect(() => parse([...args, '--daily-state-policy', 'strict', '--daily-state-policy', 'marketplace-timestamps'])).toThrow('Duplicate option');
+  expect(() => parse(['doctor', '--output', '/fresh/probe', '--daily-state-policy', 'marketplace-timestamps'])).toThrow('Unknown option');
+});
 test('credential-directory and account options are removed', () => {
   for (const option of ['--claude-config', '--codex-home', '--claude-account', '--codex-account']) {
     for (const args of [['run', '--pr', '111'], ['doctor'], ['doctor', '--candidate']]) {
