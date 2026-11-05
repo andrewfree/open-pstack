@@ -24,10 +24,10 @@ async function fixture(harness: 'claude' | 'codex') {
   await writeFile(join(dir, 'routing-decisions.json'), JSON.stringify(challenge.expected));
   const pong = `PONG ${input.nonce}`;
   const r: SessionRecord = { harness, exitCode: 0, started: Date.now() - 1000, skills: ['pstack:poteto-mode'], commands: [], context: [], tools: [],
-    appOrder: { commands: { validator: 1 }, tools: [0, 2, 3] },
+    appOrder: { commands: { validator: 4 }, tools: [2, 6, 8], commandStarts: { validator: 3 }, toolStarts: [1, 5, 7] },
     appRoutes: [{ ...route, efforts: ['high'] }], appTools: [
       { tool: 'orchestrator_capabilities', arguments: { search: route.policy.primary }, result: { providers: [route.providerInstanceId, ...Object.values(route.policy)].map(provider) } },
-      { tool: 'delegate_task', arguments: { target: { providerInstanceId: route.providerInstanceId, model: route.model, options: { effort: 'high' } }, mode: 'async', interactionMode: 'plan', clientRequestId: randomUUID() }, result: { taskId: 'task' } },
+      { tool: 'delegate_task', arguments: { target: { providerInstanceId: route.providerInstanceId, model: route.model, options: { effort: 'high' } }, mode: 'async', interactionMode: 'plan', clientRequestId: randomUUID() }, result: { taskId: 'task', childThreadId: 'child', childRunId: 'run' } },
       { tool: 'task_status', arguments: { taskId: 'task' }, result: { taskId: 'task', childThreadId: 'child', childRunId: 'run', latestTerminalRunId: 'run', latestTerminalStatus: 'completed', status: 'completed', workState: 'result_available', hasPendingChildRuns: false, providerInstanceId: route.providerInstanceId, model: route.model, summary: pong } },
     ] };
   if (harness === 'claude') { r.appTools = []; r.appRoutes = []; }
@@ -129,7 +129,7 @@ test('routing ownership permits the four-case gate without adding unrelated runn
 for (const label of ['missing-validator', 'validator-after-dispatch', 'synthetic-input-substitution', 'missing-native-order'] as const) test(`the real-dispatch proof rejects ${label}`, async () => {
   const { c, f, r } = await fixture('codex');
   if (label === 'missing-validator') r.tools = [];
-  if (label === 'validator-after-dispatch') r.appOrder!.commands.validator = 5;
+  if (label === 'validator-after-dispatch') r.appOrder!.commands.validator = 7;
   if (label === 'missing-native-order') r.appOrder = undefined;
   if (label === 'synthetic-input-substitution') {
     const path = join(f.dir, 'live-route-request.json'), request = JSON.parse(await readFile(path, 'utf8'));
@@ -158,4 +158,39 @@ test('the helper request cannot retain environment or unrelated metadata', async
   const request = JSON.parse(await readFile(path, 'utf8'));
   request.providers[0].environment = [{ name: 'FIXTURE_ONLY', value: 'synthetic' }]; await writeFile(path, JSON.stringify(request));
   await expect(c.assert(r, f)).rejects.toThrow('extra-metadata');
+});
+
+for (const label of ['dispatch-overlap', 'catalog-overlap', 'missing-dispatch-start', 'missing-validator-start'] as const) test(`native routing order rejects ${label}`, async () => {
+  const { c, f, r } = await fixture('codex');
+  if (label === 'dispatch-overlap') r.appOrder!.toolStarts[1] = r.appOrder!.commands.validator!;
+  if (label === 'catalog-overlap') r.appOrder!.commandStarts.validator = 1;
+  if (label === 'missing-dispatch-start') r.appOrder!.toolStarts[1] = -1;
+  if (label === 'missing-validator-start') delete r.appOrder!.commandStarts.validator;
+  await expect(c.assert(r, f)).rejects.toThrow();
+});
+
+test('printing validator-shaped JSON with helper paths in a comment proves no invocation', async () => {
+  const { c, f, r } = await fixture('codex'), command = r.tools[0]!;
+  command.input.command = `printf '%s\\n' '${command.result}' # ${command.input.command}`;
+  await expect(c.assert(r, f)).rejects.toThrow('native-validator-before-dispatch-required');
+});
+
+test('targeted lookups for alternatives retain the selected provider catalog', async () => {
+  const { c, f, r } = await fixture('codex');
+  const [catalog, launch, terminal] = r.appTools!;
+  r.appTools = [
+    { ...catalog!, arguments: { search: route.providerInstanceId }, result: { providers: [provider(route.providerInstanceId)] } },
+    { ...catalog!, arguments: { search: 'alternatives' }, result: { providers: Object.values(route.policy).map(provider) } }, launch!, terminal!,
+  ];
+  r.appOrder = { commands: { validator: 6 }, tools: [2, 4, 8, 10], commandStarts: { validator: 5 }, toolStarts: [1, 3, 7, 9] };
+  expect((await c.assert(r, f)).assertions).toContain('saved-pool-validator-target-unchanged');
+});
+
+test('a native shell wrapper preserves the exact single validator invocation', async () => {
+  const { c, f, r } = await fixture('codex'), command = r.tools[0]!, invocation = String(command.input.command);
+  const quoted = `'${invocation.replaceAll("'", `'\\''`)}'`;
+  for (const shell of ['/bin/sh -c', '/bin/sh -lc', '/bin/bash -lc', '/bin/zsh -lc']) {
+    command.input.command = `${shell} ${quoted}`;
+    expect((await c.assert(r, f)).assertions).toContain('saved-pool-validator-target-unchanged');
+  }
 });

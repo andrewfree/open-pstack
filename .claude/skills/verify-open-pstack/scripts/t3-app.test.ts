@@ -6,7 +6,7 @@ import { save } from './io.ts';
 import { newReceipt } from './core.ts';
 import { MacDriver } from './harness.ts';
 import { syntheticPoolEnvironment } from './pool-profile.test.ts';
-import { validateClaudeChildEffort, capabilityRoutes, launcherScript, nativeMessages, T3App, t3Config, validateAppReply, validateAppTerminalReply, validateClaudeLaunch, validateClaudePrompt, type AppCase } from './t3-app.ts';
+import { codexAppOrder, validateClaudeChildEffort, capabilityRoutes, launcherScript, nativeMessages, T3App, t3Config, validateAppReply, validateAppTerminalReply, validateClaudeLaunch, validateClaudePrompt, type AppCase } from './t3-app.ts';
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -593,4 +593,17 @@ test('independent client credentials require an explicit policy and never enter 
   for (const script of await idle(a)) { expect(script).not.toContain('ANTHROPIC'); expect(script).not.toContain('valueRedacted'); }
   await app.cleanup();
   expect(() => t3Config({ ...a.config, providerRouting: { ...policy, credentialPolicy: 'anything' } })).toThrow('credential policy is invalid');
+});
+
+test('native order keeps command completion separate from the start of overlapping dispatch', () => {
+  const catalog = { type: 'mcpToolCall', server: 't3-code', id: 'catalog' };
+  const validator = { type: 'commandExecution', id: 'validator' };
+  const delegate = { type: 'mcpToolCall', server: 't3-code', id: 'delegate' };
+  const event = (method: string, item: object) => ({ method, params: { item } });
+  const events = [event('item/started', catalog), event('item/completed', catalog), event('item/started', validator),
+    event('item/started', delegate), event('item/completed', validator), event('item/completed', delegate)];
+  expect(codexAppOrder(events.map(event => JSON.stringify(event)).join('\n'), [catalog, validator, delegate]))
+    .toEqual({ commands: { validator: 4 }, tools: [1, 5], commandStarts: { validator: 2 }, toolStarts: [0, 3] });
+  const missing = events.filter(event => event.method !== 'item/started');
+  expect(codexAppOrder(missing.map(event => JSON.stringify(event)).join('\n'), [catalog, validator, delegate]).toolStarts).toEqual([-1, -1]);
 });

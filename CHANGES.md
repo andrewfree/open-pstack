@@ -5,6 +5,8 @@ This port applies the Cursor → Claude Code substitutions in skill bodies. Earl
 
 ## Unreleased
 
+- Native routing verification preserves a selected provider across targeted catalog lookups, requires the exact validator invocation and native start/completion ordering, and always binds terminal child/run identities to the original dispatch. Added regressions reject overlapping prerequisites, fabricated validator execution and mismatched child evidence.
+
 - Codex verification disables the observed OpenAI Developers and Codex Security plugin MCP servers in its private run configuration, while retaining candidate plugin activation. Native evidence accepts T3's official direct transport with independent startup/readiness checks for each server; unexpected plugin servers remain failures. Failure instructions preserve unrelated daily registry updates instead of restoring older state over them.
 
 - Verifier preflight requires supported native event files directly inside the configured log directory, before probes or installation. Each case rechecks the original daily-state baseline before inference. Concurrent daily-client changes still forbid publication. The routing oracle now records actual dispatch options, checks its authored answers against the runtime validator and native agent definition, and includes a saved pin overriding a conflicting standing default.

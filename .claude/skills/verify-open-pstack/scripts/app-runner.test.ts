@@ -16,7 +16,7 @@ function record(): SessionRecord {
     appTools: [
       { tool: 'orchestrator_capabilities', arguments: { search: target.providerInstanceId }, result: { providers: [{ providerInstanceId: target.providerInstanceId, driverKind: 'claudeAgent',
         canRunChildTask: true, canRunCrossProviderChildTask: true, constraints: [], models: models.map(id => ({ id, options: [effortOption(['low', 'max']), { id: 'fastMode', values: [false, true] }] })) }] } },
-      { tool: 'delegate_task', arguments: { mode: 'async', interactionMode: 'plan', clientRequestId: 'request', target: { ...target, options: { effort: 'max' } } }, result: { taskId: 'task', status: 'running' } },
+      { tool: 'delegate_task', arguments: { mode: 'async', interactionMode: 'plan', clientRequestId: 'request', target: { ...target, options: { effort: 'max' } } }, result: { taskId: 'task', childThreadId: 'child', childRunId: 'child-run', status: 'running' } },
       { tool: 'task_status', arguments: { taskId: 'task' }, result: { taskId: 'task', childThreadId: 'child', childRunId: 'child-run', latestTerminalRunId: 'child-run', latestTerminalStatus: 'completed',
         status: 'completed', workState: 'result_available', hasPendingChildRuns: false, ...target, summary: 'PONG' } },
     ] };
@@ -129,4 +129,10 @@ test('default effort is omitted for both option representations while explicit e
   for (const model of provider.models) model.options = [effortOption(['max'])];
   const exact = await appCase(f, ['claude:opus@max']);
   await expect(exact.assert(r, f)).rejects.toThrow('app-route-effort-mismatch');
+});
+
+for (const field of ['childThreadId', 'childRunId'] as const) test(`terminal ${field} must match the original native dispatch without a completion notification`, async () => {
+  const r = record(), f = await fixture(r), c = await appCase(f);
+  r.appTools![1]!.result[field] = 'another-original-identity';
+  await expect(c.assert(r, f)).rejects.toThrow('app-route-no-completed-PONG');
 });
