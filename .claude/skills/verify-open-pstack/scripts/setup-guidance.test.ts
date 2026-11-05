@@ -92,6 +92,13 @@ for (const harness of ['claude', 'codex'] as const) {
     const evidence = await c.assert(record(harness, [...paths, fenced(await proposed(f))]), f);
     expect(evidence.assertions).toContain('preview-source-and-destinations');
   });
+  test(`${harness}: preview rejects paths listed relative to a shared directory`, async () => {
+    const f = await fixture(harness), c = caseFor(harness);
+    await c.prepare!(f);
+    const relative = [profilePath(f), sheetPath(f), integrationPath(f)].map(p => `- \`${p.slice(f.dir.length + 1)}\``);
+    const text = `Paths below are relative to \`${f.dir}/\`:\n\n${relative.join('\n')}\n\n${fenced(await proposed(f))}`;
+    await expect(c.assert(record(harness, [text]), f)).rejects.toThrow('setup-guidance-preview-path-missing');
+  });
   test(`${harness}: rejects report claims, partial roles, altered or duplicated guidance, headings and settings`, async () => {
     const f = await fixture(harness), c = caseFor(harness);
     await c.prepare!(f);
