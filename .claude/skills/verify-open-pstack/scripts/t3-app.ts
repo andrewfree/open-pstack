@@ -26,6 +26,7 @@ export interface T3Config {
 }
 export interface AppCase {
   harness: 'claude' | 'codex';
+  claudeChild: boolean;
   projectSkill?: boolean;
   pluginRoot: string;
   workspace: string;
@@ -416,7 +417,7 @@ export class T3App {
     const responsePath = join(directory, `${id}.response.json`);
     const request: AppRequest = { id, parentThreadId: this.config.parentThreadId,
       target: { providerInstanceId: providerId, model: c.harness === 'claude' ? this.config.model : this.config.codexModel }, responsePath,
-      ...(c.harness === 'codex' ? { runnerTarget: this.runnerRoute } : {}),
+      ...(c.harness === 'codex' && c.claudeChild ? { runnerTarget: this.runnerRoute } : {}),
       task: `${c.prompt}\n\nThis is a live verification case. ${c.harness === 'claude' ? 'Invoke named skills with the native Skill tool, never substitute a filesystem read.' : 'Use the natively discovered candidate skill.'} T3's starting directory is inherited; use the absolute fixture paths in this request. Do not publish or change remote state. Case identity: ${id}.` };
     await mkdir(directory, { recursive: true, mode: 0o700 });
     await writeFile(receipts, '', { flag: 'a', mode: 0o600 });
@@ -447,7 +448,7 @@ export class T3App {
     const launches = (await readFile(receipts, 'utf8')).split('\n').filter(line => line.startsWith(`${id} `) || (c.harness === 'codex' && / codex \d+$/.test(line)));
     await writeFile(caseLaunches, launches.map(line => line + '\n').join(''), { flag: 'wx', mode: 0o600 });
     if (reply.status.status !== 'completed') throw new Error(`T3 task ended ${reply.status.status}; terminal receipt retained`);
-    if (!launches.some(line => line.startsWith(`${id} claude `))) throw new Error("No Claude CLI started through this case's launcher");
+    if ((c.harness === 'claude' || c.claudeChild) && !launches.some(line => line.startsWith(`${id} claude `))) throw new Error("No Claude CLI started through this case's launcher");
     if (c.harness === 'codex' && !launches.some(line => / codex \d+$/.test(line))) throw new Error("No Codex app-server started through this run's launcher; an app-server from before this run may still serve the verification instance");
     const routes = capabilityRoutes(request, reply, c.started);
     const evidence = [raw, binding, caseLaunches];
@@ -458,7 +459,7 @@ export class T3App {
       if (native.cliVersion !== c.cliVersion.split(/\s/)[0]) throw new Error('Claude native CLI version changed since candidate preparation');
       return { evidence, record: { ...parseSession('claude', collected.native, 0, c.started), skills: native.session.skills, commands: native.session.commands } };
     }
-    evidence.push(...await this.claudeChild(collected.native, routes, c));
+    if (c.claudeChild) evidence.push(...await this.claudeChild(collected.native, routes, c));
     const native = await parseCodexAppEvidence(collected.native, { pluginRoot: c.pluginRoot, workspace: c.workspace, codexHome: c.env.CODEX_HOME!, started: c.started,
       prompt: request.task, model: request.target.model, writePolicy: c.writePolicy }).catch((error: Error) => {
       if (!error.message.includes('escaped isolated candidate')) throw error;

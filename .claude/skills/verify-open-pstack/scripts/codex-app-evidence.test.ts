@@ -70,7 +70,7 @@ describe('Codex app native evidence', () => {
     expect(evidence.toolCalls.map(call => call.tool)).toEqual(['delegate_task', 'task_status']);
     expect(evidence.items.filter(item => item.type === 'userMessage')).toHaveLength(2);
   });
-  test.each(['unrelated', 'summary', 'title', 'foreign-task', 'foreign-run', 'foreign-thread', 'pending-child', 'pending-question', 'pending-approval', 'failed-tool', 'wrong-route', 'duplicate', 'before-dispatch', 'status-before-wake', 'non-async'])('rejects %s async completion evidence', async kind => {
+  test.each(['unrelated', 'summary', 'title', 'foreign-task', 'foreign-run', 'foreign-thread', 'pending-child', 'pending-question', 'pending-approval', 'failed-tool', 'wrong-route', 'duplicate', 'before-dispatch', 'non-async'])('rejects %s async completion evidence', async kind => {
     const f = await asyncFixture(), result = f.terminal.result.structuredContent;
     if (kind === 'unrelated') f.notification.content[0]!.text = 'Do another task';
     if (kind === 'summary') result.summary = 'different output';
@@ -85,9 +85,12 @@ describe('Codex app native evidence', () => {
     if (kind === 'wrong-route') result.providerInstanceId = 'foreign';
     if (kind === 'duplicate') f.events.splice(-2, 0, nativeItem({ ...f.notification, id: 'duplicate' }));
     if (kind === 'before-dispatch') [f.events[7], f.events[8]] = [f.events[8]!, f.events[7]!];
-    if (kind === 'status-before-wake') [f.events[8], f.events[9]] = [f.events[9]!, f.events[8]!];
     if (kind === 'non-async') f.dispatched.arguments.mode = 'wait';
     await expect(parseCodexAppEvidence(serialize(f.events), f.expected)).rejects.toThrow('bound delegated completion');
+  });
+  test('binds a completion notification that T3 delivers after the parent already read the completed status', async () => {
+    const f = await asyncFixture(); [f.events[8], f.events[9]] = [f.events[9]!, f.events[8]!];
+    expect((await parseCodexAppEvidence(serialize(f.events), f.expected)).items.filter(item => item.type === 'userMessage')).toHaveLength(2);
   });
   test.each(['missing', 'different', 'duplicate'])('rejects %s rollout completion notification', async kind => {
     const f = await asyncFixture();
@@ -100,6 +103,22 @@ describe('Codex app native evidence', () => {
   test('accepts repeated native ready notifications for only t3-code', async () => {
     const f = await fixture(); f.events.splice(7, 0, mcpStatus('ready'));
     expect((await parseCodexAppEvidence(serialize(f.events), f.expected)).sessionId).toBe(sessionId);
+  });
+  test('accepts MCP startup for this thread that arrives just before thread/started', async () => {
+    const f = await fixture(); [f.events[1], f.events[2]] = [f.events[2]!, f.events[1]!];
+    expect((await parseCodexAppEvidence(serialize(f.events), f.expected)).sessionId).toBe(sessionId);
+  });
+  test('accepts T3\'s second server, t3-code-direct, when it starts healthy beside t3-code', async () => {
+    const f = await fixture(); f.events.splice(3, 0, mcpStatus('starting', 't3-code-direct'), mcpStatus('ready', 't3-code-direct'));
+    expect((await parseCodexAppEvidence(serialize(f.events), f.expected)).sessionId).toBe(sessionId);
+  });
+  test('still requires t3-code itself when only t3-code-direct is ready', async () => {
+    const f = await fixture(); f.events = f.events.map(e => e.method === 'mcpServer/startupStatus/updated' ? mcpStatus(e.params.status, 't3-code-direct') : e);
+    await expect(parseCodexAppEvidence(serialize(f.events), f.expected)).rejects.toThrow('Missing Codex MCP startup inventory');
+  });
+  test('rejects t3-code-direct ready before it started', async () => {
+    const f = await fixture(); f.events.splice(3, 0, mcpStatus('ready', 't3-code-direct'));
+    await expect(parseCodexAppEvidence(serialize(f.events), f.expected)).rejects.toThrow('out of order');
   });
   test.each(['starting', 'ready', 'failed'])('rejects another MCP server with startup status %s', async status => {
     const f = await fixture(); f.events.splice(3, 0, mcpStatus(status, 'codex_apps'));
@@ -116,10 +135,20 @@ describe('Codex app native evidence', () => {
     if (kind === 'out-of-order') [f.events[2], f.events[3]] = [f.events[3]!, f.events[2]!];
     await expect(parseCodexAppEvidence(serialize(f.events), f.expected)).rejects.toThrow('MCP');
   });
-  test.each(['orchestrator_capabilities', 'delegate_task', 'task_status', 't3_thread_read'])('retains permitted native MCP tool %s', async tool => {
+  test.each(['orchestrator_capabilities', 'delegate_task', 'task_status', 't3_thread_read', 't3_thread_wait'])('retains permitted native MCP tool %s', async tool => {
     const f = await fixture(), item = { ...delegation(), tool };
     f.events.splice(7, 0, nativeItem(item));
     expect((await parseCodexAppEvidence(serialize(f.events), f.expected)).toolCalls[0]!.tool).toBe(tool);
+  });
+  test.each(['t3_thread_wait', 'delegate_task'])('retains %s on T3\'s second server, t3-code-direct, so recipes see it', async tool => {
+    const f = await fixture(), item = { ...delegation(), server: 't3-code-direct', tool };
+    f.events.splice(7, 0, nativeItem(item));
+    expect((await parseCodexAppEvidence(serialize(f.events), f.expected)).toolCalls.map(call => call.tool)).toContain(tool);
+  });
+  test('rejects a forbidden tool on t3-code-direct', async () => {
+    const f = await fixture(), item = { ...delegation(), server: 't3-code-direct', tool: 't3_thread_launch' };
+    f.events.splice(7, 0, nativeItem(item));
+    await expect(parseCodexAppEvidence(serialize(f.events), f.expected)).rejects.toThrow('Forbidden MCP tool');
   });
   test.each(['t3_thread_launch', 'schedule_task', 't3_environment_preferences_update', 't3_provider_instance_update', 'unknown'])('rejects forbidden native MCP tool %s even on failed attempts', async tool => {
     const f = await fixture(), item = { ...delegation(), tool, status: 'failed', result: null, error: { message: 'denied' } };

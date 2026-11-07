@@ -96,7 +96,7 @@ test('compares numeric versions before dates, excludes proxy IDs, and requires a
 });
 test('an explicit Claude runner route becomes the T3 case, never an external runner case', async () => {
   const f = await fixture(), cases = recipe('runner', 'codex', ['claude:fable@high', 'grok:grok-4.7@high'], target);
-  expect(cases.map(c => c.id)).toEqual(['route-1', 'app-route-1', 'claude-route-refusal']);
+  expect(cases.map(c => c.id)).toEqual(['route-1', 'app-route-1', 'app-route-external-1', 'claude-route-refusal']);
   await cases[1]!.prepare!(f);
   expect(cases[1]!.prompt(f)).toContain('claude:fable@high');
 });
