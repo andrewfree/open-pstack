@@ -426,6 +426,37 @@ function appRunner(appRoute: AppRoute | undefined, fixed: string): Case {
   };
 }
 
+export const T3_EXTERNAL_LANE = 'cursor:composer-2.5@default';
+function appExternal(appRoute: AppRoute | undefined): Case {
+  let provider = '', model = '', effort = '';
+  const lane = (f: Fixture, name: string) => join(f.dir, `app-external.${name}`);
+  return {
+    id: 'app-route-external-1',
+    async prepare(f) {
+      if (!appRoute) throw new Error('unsupported-native-consumer:codex-app: the T3 external-route case runs a T3 Codex parent and needs --t3-app');
+      const parts = ROUTE.exec(T3_EXTERNAL_LANE);
+      if (!parts || (await readCatalog(f.location)).route('codex', T3_EXTERNAL_LANE) !== 'external') throw new Error(`app-route-external-not-external:${T3_EXTERNAL_LANE}`);
+      [, provider = '', model = '', effort = ''] = parts;
+      await writeFile(lane(f, 'prompt.md'), 'Reply with the single word PONG.\n');
+    },
+    prompt: f => `${invoke(f.harness, 'poteto-mode', `Dispatch exactly one read-only lane for descriptor ${T3_EXTERNAL_LANE} and nothing else. First call orchestrator_capabilities with search set to ${model}, then resolve the lane's route yourself from the installed provider-dispatch.md and model catalog. Read installed reference files one at a time in byte ranges of at most 8192 bytes per shell command; bound stdout in the command itself. The lane's prompt file is ${lane(f, 'prompt.md')}, its working directory is ${f.dir}, its final output path is ${lane(f, 'output.md')}, and its receipt path is ${lane(f, 'receipt.json')}. Wait for the lane to finish before you reply. Do not substitute another provider or model.`)} ${rules(f.dir)}`,
+    async assert(record, f) {
+      const calls = record.appTools ?? [];
+      const offered = calls.some(call => call.tool === 'orchestrator_capabilities' && Array.isArray(call.result.providers) && (call.result.providers as unknown[]).map(object)
+        .some(p => p.driverKind === provider && p.canRunChildTask === true && Array.isArray(p.models) && p.models.map(object).some(m => m.id === model)));
+      if (!offered) throw new Error(`app-route-external-not-offered-by-t3:${provider}`);
+      if (calls.some(call => call.tool === 'delegate_task')) throw new Error('app-route-external-used-delegate-task');
+      if (!record.commands.some(c => c.includes('pstack-runner'))) throw new Error('runner-not-run');
+      const receipt = JSON.parse(await readFile(lane(f, 'receipt.json'), 'utf8'));
+      if (receipt.status !== 'complete') throw new Error(`receipt-status:${receipt.status}`);
+      if (receipt.parent !== 'codex' || receipt.provider !== provider || receipt.model !== model || receipt.effort !== effort || receipt.mode !== 'read-only') throw new Error('receipt-route-mismatch');
+      if (receipt.outputPath !== lane(f, 'output.md') || !(Date.parse(receipt.startedAt) >= record.started)) throw new Error('receipt-not-this-session');
+      return { assertions: [loaded(record, 'pstack:poteto-mode'), `t3-offers:${provider}`, 'no-delegate-task', 'runner-ran', 'receipt-complete', `route:${T3_EXTERNAL_LANE}`,
+        await written(record, lane(f, 'output.md'))], files: [lane(f, 'receipt.json'), lane(f, 'output.md')] };
+    },
+  };
+}
+
 function runner(harness: Harness, routes: string[], appRoute?: AppRoute): Case[] {
   const chosen = routes.filter(route => !route.startsWith(`${harness}:`) && !(harness === 'codex' && route.startsWith('claude:')));
   const cases = (chosen.length ? chosen : ['']).map((fixed, index): Case => {
@@ -453,7 +484,7 @@ function runner(harness: Harness, routes: string[], appRoute?: AppRoute): Case[]
       },
     };
   });
-  return harness === 'codex' ? [...cases, appRunner(appRoute, routes.find(route => route.startsWith('claude:')) ?? ''), claudeRefusal] : [...cases, codexWriter(true), codexWriter(false)];
+  return harness === 'codex' ? [...cases, appRunner(appRoute, routes.find(route => route.startsWith('claude:')) ?? ''), appExternal(appRoute), claudeRefusal] : [...cases, codexWriter(true), codexWriter(false)];
 }
 
 const setup: Case[] = [{

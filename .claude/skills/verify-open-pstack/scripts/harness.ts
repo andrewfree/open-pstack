@@ -224,7 +224,7 @@ export class MacDriver implements Driver {
         const passed = `passed: ${assertions.join(' ')}`;
         observations.push({ harness, feature, reviewer: 'recipe', assertions,
           surface: harness === 'claude' ? 'T3 Claude app child with the exact candidate plugin and native session evidence'
-            : cases.some(c => c.id.startsWith('app-route-')) ? 'T3 Codex app parent with the run-owned candidate installation and native Claude dispatch'
+            : cases.some(c => c.id.startsWith('app-route-')) ? 'T3 Codex app parent with the run-owned candidate installation and native T3 route checks'
             : 'codex exec --json with the run-owned candidate installation',
           action: `recipe ${feature}: ${cases.map(c => c.id).join(', ')}`,
           observed: publishable(passed) ? passed : `passed ${assertions.length} assertions; ids retained privately`,
