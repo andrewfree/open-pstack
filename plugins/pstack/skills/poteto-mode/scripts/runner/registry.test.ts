@@ -235,6 +235,14 @@ describe("hand-written dispatch and setup rules", () => {
     expect(native).toContain("`pstack-<family>-<effort>`");
   });
 
+  it("keeps host delegation tools off external-runner lanes", () => {
+    const routes = section(dispatch, "## The parent owns the route", "## Native lanes");
+    expect(routes).toContain("A host's own delegation guidance does not change these routes.");
+    expect(routes).toContain("When a pstack parent dispatches a lane, `delegate_task` carries only lanes whose route is the T3 Claude Agent route.");
+    expect(routes).toContain("On either parent, every other non-native lane goes to the external runner, even when T3 lists an instance for its provider");
+    expect(routes).toContain("A runner dropout stays a dropout: never retry it through `delegate_task` or another host tool.");
+  });
+
   it("normalizes rolling-alias pins and keeps predecessors before any runtime route", () => {
     const normalization = section(dispatch, "## Read-time normalization", "## The parent owns the route");
     expect(normalization).toContain("an exact model-matrix row, then a kept predecessor, then a rolling-alias revision");
