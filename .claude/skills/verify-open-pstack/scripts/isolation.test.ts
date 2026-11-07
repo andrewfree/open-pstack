@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { lstat, mkdir, mkdtemp, readFile, readlink, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { assertCodexAuth, linkCodexAuth, removeCodexHome, restoreSetup, snapshotSetup } from './isolation.ts';
+import { assertCodexAuth, configureCodexVerification, linkCodexAuth, removeCodexHome, restoreSetup, snapshotSetup } from './isolation.ts';
 
 const roots: string[] = [];
 const environment = { HOME: process.env.HOME, CODEX_HOME: process.env.CODEX_HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR };
@@ -74,6 +74,35 @@ describe('existing native login', () => {
     await symlink(process.env.CODEX_HOME!, join(home, '.codex'));
     await expect(linkCodexAuth(home)).rejects.toThrow('Codex state directory redirected');
     expect(await readFile(auth, 'utf8')).toBe('operator login');
+  });
+});
+
+describe('run-owned Codex plugin MCP policy', () => {
+  test.each([
+    ['data-analytics@openai-curated-remote', 'data'],
+    ['openai-developers@openai-curated-remote', 'openai-api-key-local-confirmation'],
+    ['openai-developers@openai-curated-remote', 'openai-api-credit-promo'],
+    ['codex-security@openai-curated-remote', 'codex-security'],
+  ])('configures %s/%s not to initialize while preserving candidate activation', async (plugin, server) => {
+    const { home, auth } = await fixture();
+    const dailyConfig = join(process.env.CODEX_HOME!, 'config.toml');
+    await writeFile(dailyConfig, '[features]\napps = true\n');
+    await writeFile(auth, 'opaque operator login');
+    await linkCodexAuth(home);
+    await configureCodexVerification(home);
+    const config = join(home, '.codex/config.toml');
+    const text = await readFile(config, 'utf8');
+    const policy = Bun.TOML.parse(text);
+    expect(policy).toHaveProperty(['plugins', plugin, 'mcp_servers', server, 'enabled'], false);
+    expect(policy).toHaveProperty(['analytics', 'enabled'], false);
+    expect(policy).toHaveProperty(['features', 'apps'], false);
+    expect(policy).not.toHaveProperty(['features', 'plugins'], false);
+    await writeFile(config, `${text}\n[plugins."pstack@open-pstack"]\nenabled = true\n`);
+    expect(Bun.TOML.parse(await readFile(config, 'utf8'))).toHaveProperty(['plugins', 'pstack@open-pstack', 'enabled'], true);
+    expect((await lstat(config)).mode & 0o777).toBe(0o600);
+    await assertCodexAuth(home);
+    expect(await readFile(dailyConfig, 'utf8')).toBe('[features]\napps = true\n');
+    expect(await readFile(auth, 'utf8')).toBe('opaque operator login');
   });
 });
 

@@ -16,6 +16,36 @@ const REPO = 'ericlitman/open-pstack';
 const roots: string[] = [];
 const gitEnv = { PATH: process.env.PATH ?? '', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
 async function fixture(): Promise<string> { const root = await realpath(await mkdtemp(join(tmpdir(), 'pstack-test-'))); roots.push(root); return root; }
+
+for (const policy of ['strict', 'marketplace-timestamps'] as const) test(`driver cleanup retains and enforces the selected ${policy} daily-state policy`, async () => {
+  const root = await fixture(), home = join(root, 'operator'), registry = join(home, '.claude/plugins/known_marketplaces.json');
+  await mkdir(join(registry, '..'), { recursive: true });
+  await writeFile(registry, JSON.stringify({ fixture: { source: { source: 'git', url: 'private-value' }, lastUpdated: '2026-11-05T01:00:00.000Z' } }));
+  const prior = { HOME: process.env.HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, CODEX_HOME: process.env.CODEX_HOME };
+  const receipt = newReceipt(REPO, 111, 'a'.repeat(40), 'b'.repeat(40), false, root);
+  receipt.dailyState.policy = policy;
+  receipt.runFeatures = ['claude:project-skill'];
+  const run: Command = async () => { throw new Error('fixture stops after baseline'); };
+  const app = { ...appStub('').app, settingsPath: join(home, 't3-settings.json') };
+  const driver = new MacDriver(run, noSession, [], app);
+  try {
+    process.env.HOME = home; process.env.CLAUDE_CONFIG_DIR = join(home, '.claude'); process.env.CODEX_HOME = join(home, '.codex');
+    await expect(driver.prepare(receipt)).rejects.toThrow('fixture stops after baseline');
+    await writeFile(registry, JSON.stringify({ fixture: { source: { source: 'git', url: 'private-value' }, lastUpdated: '2026-11-05T02:00:00.000Z' } }));
+    if (policy === 'strict') await expect(driver.cleanup()).rejects.toThrow('Daily state changed');
+    else {
+      await driver.cleanup();
+      expect(receipt.dailyState.acceptedMarketplaceChanges).toHaveLength(1);
+      expect(receipt.dailyState.acceptedMarketplaceChanges[0]!.timestamps[0]!.after).toBe('2026-11-05T02:00:00.000Z');
+      expect(JSON.stringify(receipt.dailyState)).not.toContain('private-value');
+      for (const snapshot of receipt.dailyState.snapshots) expect(await retainedFile(root, snapshot.path)).toEqual(snapshot);
+    }
+    expect(receipt.dailyState.snapshots).toHaveLength(2);
+    expect(await readFile(registry, 'utf8')).toContain('2026-11-05T02:00:00.000Z');
+  } finally {
+    for (const [name, value] of Object.entries(prior)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+  }
+});
 const originalEnv = { HOME: process.env.HOME, USER: process.env.USER, LOGNAME: process.env.LOGNAME,
   CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, CODEX_HOME: process.env.CODEX_HOME };
 afterEach(async () => {
@@ -92,7 +122,7 @@ describe('isolated harness boundaries', () => {
     expect(JSON.parse(await readFile(join(root, 'doctor.json'), 'utf8')).result).toBe('pass');
     expect(calls.every(c => c.includes('--help') || c.includes('--version'))).toBe(true);
   });
-  test('doctor disables Codex analytics and Apps in its run-owned home before any Codex command', async () => {
+  test('doctor disables Codex analytics, Apps and unsolicited plugin MCP servers before any Codex command', async () => {
     const root = await fixture(), daily = await loginFixture(root), dailyConfig = join(daily, '..', 'config.toml');
     await writeFile(dailyConfig, '[analytics]\nenabled = true\n');
     const calls: string[][] = [];
@@ -101,7 +131,13 @@ describe('isolated harness boundaries', () => {
         calls.push(args);
         const config = join(options!.env!.CODEX_HOME!, 'config.toml');
         expect(Bun.TOML.parse(await readFile(config, 'utf8'))).toEqual({ analytics: { enabled: false }, features: { apps: false },
-          plugins: { 'data-analytics@openai-curated-remote': { mcp_servers: { data: { enabled: false } } } } });
+          plugins: {
+            'data-analytics@openai-curated-remote': { mcp_servers: { data: { enabled: false } } },
+            'openai-developers@openai-curated-remote': { mcp_servers: {
+              'openai-api-key-local-confirmation': { enabled: false }, 'openai-api-credit-promo': { enabled: false },
+            } },
+            'codex-security@openai-curated-remote': { mcp_servers: { 'codex-security': { enabled: false } } },
+          } });
         expect((await stat(config)).mode & 0o777).toBe(0o600);
         expect(options!.env!.DO_NOT_TRACK).toBe('1');
       }
@@ -486,7 +522,7 @@ describe('headless recipes', () => {
     const mac = new MacDriver(command, noSession, [], appStub(claudeStream({ command: 'pstack:architect' })).app);
     const comments: string[] = [], statuses: string[] = [], sha = 'a'.repeat(40), base = 'b'.repeat(40);
     await expect(verify({ repo: REPO, pr: 111, selfTest: false, features: ['claude:skill-invocation:architect'], root, publisherRevision: 'c'.repeat(40), persist: async () => {},
-      registry: { skills: ['architect'], shared: [], catalog: [], assets: [], setup: [], runner: [], tools: [], project: [], nonRuntime: [] },
+      registry: { skills: ['architect'], shared: [], catalog: [], assets: [], setup: [], routing: [], runner: [], tools: [], project: [], nonRuntime: [] },
       github: {
         async pull() { return { number: 111, head: { sha }, base: { sha: base }, state: 'open', headRepo: REPO }; },
         async files() { return [{ filename: 'plugins/pstack/skills/architect/SKILL.md' }]; },

@@ -57,6 +57,18 @@
   ],
   "assets": ["plugins/pstack/assets/**"],
   "setup": ["plugins/pstack/skills/setup-pstack/SKILL.md"],
+  "routing": [
+    ".claude/skills/verify-open-pstack/features/provider-routing.ts",
+    ".claude/skills/verify-open-pstack/scripts/pool-profile.ts",
+    ".claude/skills/verify-open-pstack/scripts/t3-app.ts",
+    "plugins/pstack/skills/poteto-mode/scripts/runner/resolve-t3-claude-route",
+    "plugins/pstack/skills/poteto-mode/scripts/runner/t3-claude-route.ts",
+    "plugins/pstack/skills/poteto-mode/scripts/runner/t3-claude-route-cli.ts",
+    "plugins/pstack/skills/poteto-mode/SKILL.md",
+    "plugins/pstack/skills/poteto-mode/references/provider-dispatch.md",
+    "plugins/pstack/skills/poteto-mode/references/codex-tools.md",
+    "plugins/pstack/skills/setup-pstack/SKILL.md"
+  ],
   "runner": [
     "plugins/pstack/skills/poteto-mode/scripts/runner/**"
   ],

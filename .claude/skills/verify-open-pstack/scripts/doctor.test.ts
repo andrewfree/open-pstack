@@ -93,3 +93,12 @@ test('a Codex-only parent doctor needs no Claude transport', async () => {
   await doctor(root, async args => args.join(' ') === 'codex login status' ? '' : capability(args)!, 'darwin', false, ['codex']);
   expect(JSON.parse(await readFile(join(root, 'doctor.json'), 'utf8')).result).toBe('pass');
 });
+
+test('pool preparation checks CLI capabilities without reporting direct-login auth as pool execution', async () => {
+  const root = await fixture(), calls: string[][] = [];
+  await doctor(root, async args => { calls.push(args); return capability(args) ?? ''; }, 'darwin', false, ['claude'], T3_CLAUDE, true);
+  expect(calls.some(args => args.includes('auth') || args.includes('login'))).toBe(false);
+  const report = JSON.parse(await readFile(join(root, 'doctor.json'), 'utf8'));
+  expect(report.checks['claude login']).toBeUndefined();
+  expect(report.checks['claude authentication']).toContain('unproved until native pool execution');
+});

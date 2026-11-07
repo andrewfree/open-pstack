@@ -120,18 +120,26 @@ export async function parseCodexAppEvidence(text: string, expected: CodexAppEvid
   identity(terminal.id, turnId, 'terminal turn');
   if (turn.status !== 'inProgress' || turn.error !== null || terminal.status !== 'completed' || terminal.error !== null) throw new Error('Codex native turn did not complete successfully');
   if (!(events.indexOf(started) < events.indexOf(turnStart) && events.indexOf(turnStart) < events.indexOf(turnEnd))) throw new Error('Codex native lifecycle is out of order');
-  const inventory = events.filter(event => event.method === 'mcpServer/startupStatus/updated');
-  let mcpStarting = false, mcpReady = false;
-  for (const event of inventory) {
-    const params = object(event.params);
+  const mcpStartup = new Map<string, 'starting' | 'ready'>();
+  let mcpReadyAt = -1;
+  for (const [index, event] of events.entries()) {
+    if (event.method !== 'mcpServer/startupStatus/updated') continue;
+    const params = object(event.params), name = params.name;
     identity(params.threadId, sessionId, 'MCP inventory thread');
-    if (event.truncated === true || params.truncated === true || params.name !== 't3-code'
+    if (event.truncated === true || params.truncated === true || name !== 't3-code' && name !== 't3-code-direct'
       || params.error !== null || params.failureReason !== null || params.status !== 'starting' && params.status !== 'ready'
-      || events.indexOf(event) <= events.indexOf(started) || events.indexOf(event) >= events.indexOf(turnEnd)) throw new Error('Codex MCP inventory must contain only healthy t3-code');
-    if (params.status === 'starting') mcpStarting = true;
-    if (params.status === 'ready') { if (!mcpStarting) throw new Error('Codex MCP inventory is out of order'); mcpReady = true; }
+      || index <= events.indexOf(started) || index >= events.indexOf(turnEnd)) throw new Error('Codex MCP inventory must contain only healthy t3-code and optional t3-code-direct');
+    const prior = mcpStartup.get(name);
+    if (params.status === 'starting') {
+      if (prior !== undefined) throw new Error('Codex MCP inventory is out of order');
+      mcpStartup.set(name, 'starting');
+    } else {
+      if (prior === undefined) throw new Error('Codex MCP inventory is out of order');
+      if (prior === 'starting') mcpReadyAt = index;
+      mcpStartup.set(name, 'ready');
+    }
   }
-  if (!mcpStarting || !mcpReady) throw new Error('Missing Codex MCP startup inventory');
+  if (mcpStartup.get('t3-code') !== 'ready' || [...mcpStartup.values()].some(status => status !== 'ready')) throw new Error('Missing Codex MCP startup inventory or server readiness');
   const items: ObjectValue[] = [], itemIds = new Set<string>(), pending = new Map<string, ObjectValue>();
   for (const [index, event] of events.entries()) {
     if (event.params !== undefined) {
@@ -165,6 +173,7 @@ export async function parseCodexAppEvidence(text: string, expected: CodexAppEvid
         const item = object(params.item), id = string(item.id, 'item id');
         if (item.type === 'commandExecution' && forbiddenCommand(string(item.command, 'native command'))) throw new Error('Forbidden command in Codex candidate session');
         if (item.type === 'mcpToolCall' && (item.server !== 't3-code' || !allowedMcpTools.has(string(item.tool, 'MCP tool name')))) throw new Error('Forbidden MCP tool in Codex candidate session');
+        if (item.type === 'mcpToolCall' && index <= mcpReadyAt) throw new Error('Codex MCP tool call precedes complete T3 readiness');
         if (item.type === 'fileChange') await checkFileChanges(item.changes, thread.cwd, expected.writePolicy);
         if (itemIds.has(id)) throw new Error('Duplicate Codex completed item');
         if (event.method === 'item/started') {

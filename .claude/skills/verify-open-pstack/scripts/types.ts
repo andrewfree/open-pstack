@@ -15,6 +15,7 @@ export interface Registry {
   catalog: string[];
   assets: string[];
   setup: string[];
+  routing: string[];
   runner: string[];
   tools: string[];
   project: string[];
@@ -30,6 +31,16 @@ export interface Installation {
   harness: Harness; cliVersion: string; pluginVersion: string; sha: string;
   location: string; treeHash: string; home: string; sourceHash?: string;
 }
+export type DailyStatePolicy = 'strict' | 'marketplace-timestamps';
+export interface MarketplaceChange {
+  beforeSha256: string; afterSha256: string;
+  timestamps: { entrySha256: string; before: string; after: string }[];
+}
+export interface DailyStateEvidence {
+  policy: DailyStatePolicy;
+  snapshots: { path: string; sha256: string }[];
+  acceptedMarketplaceChanges: MarketplaceChange[];
+}
 export interface Receipt {
   schema: 1; repo: string; pr: number; sha: string; base: string; phase: Phase;
   selection: Selection;
@@ -38,6 +49,7 @@ export interface Receipt {
   installations: Installation[]; observations: Observation[];
   selfTest: boolean; artifactRoot: string; publisherRevision?: string; failure?: string;
   commentUrl?: string; status?: 'success' | 'failure'; cleanup: string; started: string;
+  dailyState: DailyStateEvidence;
 }
 export interface GitHub {
   pull(pr: number): Promise<Pull>;
@@ -52,6 +64,7 @@ export interface SessionRecord {
   tools: { name: string; id: string; input: Record<string, any>; parent: string | null; result?: string; failed: boolean }[];
   context: string[];
   appTools?: { tool: string; arguments: Record<string, unknown>; result: Record<string, unknown> }[];
+  appOrder?: { commands: Record<string, number>; tools: number[]; commandStarts: Record<string, number>; toolStarts: number[] };
   appRoutes?: { providerInstanceId: string; model: string; efforts: string[] }[];
 }
 export interface Driver {

@@ -25,7 +25,19 @@ export async function linkCodexAuth(home: string): Promise<void> {
 }
 
 export async function configureCodexVerification(home: string): Promise<void> {
-  await writeFile(join(await codexDirectory(home), 'config.toml'), '[analytics]\nenabled = false\n[features]\napps = false\n[plugins."data-analytics@openai-curated-remote".mcp_servers.data]\nenabled = false\n', { mode: 0o600 });
+  await writeFile(join(await codexDirectory(home), 'config.toml'), `[analytics]
+enabled = false
+[features]
+apps = false
+[plugins."data-analytics@openai-curated-remote".mcp_servers.data]
+enabled = false
+[plugins."openai-developers@openai-curated-remote".mcp_servers.openai-api-key-local-confirmation]
+enabled = false
+[plugins."openai-developers@openai-curated-remote".mcp_servers.openai-api-credit-promo]
+enabled = false
+[plugins."codex-security@openai-curated-remote".mcp_servers.codex-security]
+enabled = false
+`, { mode: 0o600 });
 }
 
 export async function assertCodexAuth(home: string): Promise<void> {
