@@ -5,7 +5,7 @@ This port applies the Cursor → Claude Code substitutions in skill bodies. Earl
 
 ## Unreleased
 
-- `provider-dispatch.md` says that T3's general rule to use `delegate_task` for another provider's model does not change pstack routes. In a pstack lane, `delegate_task` carries only a Codex parent's `claude` lanes. Lanes routed to the external runner, such as Grok on a Codex parent, stay on the runner even when T3 lists an instance for that provider. A Codex parent's swarm in T3 had sent its Grok workers through `delegate_task`, which skipped the runner's tool limits and receipts. `registry.test.ts` checks the rule.
+- `provider-dispatch.md` says that T3's general rule to use `delegate_task` for another provider's model does not change pstack routes. When a pstack parent dispatches a lane, `delegate_task` carries only lanes whose route is the T3 Claude Agent route. On either parent, every other non-native lane, such as Grok on a Codex parent, stays on the external runner even when T3 lists an instance for its provider, and a runner dropout is never retried through `delegate_task`. A Codex parent's swarm in T3 had sent its Grok workers through `delegate_task`, which skipped the runner's tool limits and receipts. `registry.test.ts` checks the rule.
 
 - The Codex Claude-route refusal fixture runs a shell check that succeeds only when the installed runner exits 78. This lets the existing successful-command parser observe the expected refusal without accepting arbitrary failed commands. Regression tests use real shell results through that parser and reject unexpected runner exit codes; receipt and guard assertions are unchanged.
 
