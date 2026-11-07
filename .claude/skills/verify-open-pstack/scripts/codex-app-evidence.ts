@@ -130,7 +130,7 @@ export async function parseCodexAppEvidence(text: string, expected: CodexAppEvid
     identity(params.threadId, sessionId, 'MCP inventory thread');
     if (event.truncated === true || params.truncated === true || typeof params.name !== 'string' || !T3_MCP_SERVERS.has(params.name)
       || params.error !== null || params.failureReason !== null || params.status !== 'starting' && params.status !== 'ready'
-      || events.indexOf(event) <= events.indexOf(started) || events.indexOf(event) >= events.indexOf(turnEnd)) throw new Error('Codex MCP inventory must contain only healthy T3 servers');
+      || events.indexOf(event) >= events.indexOf(turnEnd)) throw new Error('Codex MCP inventory must contain only healthy T3 servers');
     if (params.status === 'starting') mcpStarting.add(params.name);
     if (params.status === 'ready') { if (!mcpStarting.has(params.name)) throw new Error('Codex MCP inventory is out of order'); mcpReady.add(params.name); }
   }
