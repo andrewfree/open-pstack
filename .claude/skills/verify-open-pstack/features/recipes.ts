@@ -20,6 +20,8 @@ export interface Case {
   cwd?: 'workspace';
   /** Codex parents that launch external provider CLIs need network and their CLI state outside the fixture. */
   codexSandbox?: 'danger-full-access';
+  /** A T3 Codex case whose parent must start exactly one T3 Claude child on the verification instance. */
+  t3ClaudeChild?: true;
   prepare?(fixture: Fixture): Promise<void>;
   cleanup?(fixture: Fixture): Promise<void>;
   prompt(fixture: Fixture): string;
@@ -378,6 +380,7 @@ function appRunner(appRoute: AppRoute | undefined, fixed: string): Case {
   const lane = (f: Fixture) => join(f.dir, 'app-lane.json'), output = (f: Fixture) => join(f.dir, 'app-output.md');
   return {
     id: 'app-route-1',
+    t3ClaudeChild: true,
     async prepare(f) {
       if (!appRoute) throw new Error('unsupported-native-consumer:claude-app: the Codex runner case verifies the T3 Claude Agent route and needs --t3-app');
       const installed = await readCatalog(f.location);
@@ -439,18 +442,21 @@ function appExternal(appRoute: AppRoute | undefined): Case {
       [, provider = '', model = '', effort = ''] = parts;
       await writeFile(lane(f, 'prompt.md'), 'Reply with the single word PONG.\n');
     },
-    prompt: f => `${invoke(f.harness, 'poteto-mode', `Dispatch exactly one read-only lane for descriptor ${T3_EXTERNAL_LANE} and nothing else. First call orchestrator_capabilities with search set to ${model}, then resolve the lane's route yourself from the installed provider-dispatch.md and model catalog. Read installed reference files one at a time in byte ranges of at most 8192 bytes per shell command; bound stdout in the command itself. The lane's prompt file is ${lane(f, 'prompt.md')}, its working directory is ${f.dir}, its final output path is ${lane(f, 'output.md')}, and its receipt path is ${lane(f, 'receipt.json')}. Wait for the lane to finish before you reply. Do not substitute another provider or model.`)} ${rules(f.dir)}`,
+    prompt: f => `${invoke(f.harness, 'poteto-mode', `Dispatch exactly one read-only lane for descriptor ${T3_EXTERNAL_LANE} and nothing else. First call orchestrator_capabilities with search set to ${model}, then resolve the lane's route yourself from the installed provider-dispatch.md and model catalog. Read installed reference files one at a time in byte ranges of at most 8192 bytes per shell command; bound stdout in the command itself, since a tool output-token limit does not bound native log records. Do not concatenate reference files or dump the entire model catalog. The lane's prompt file is ${lane(f, 'prompt.md')}, its working directory is ${f.dir}, its final output path is ${lane(f, 'output.md')}, and its receipt path is ${lane(f, 'receipt.json')}. Wait for the lane to finish before you reply. Do not substitute another provider or model.`)} ${rules(f.dir)}`,
     async assert(record, f) {
       const calls = record.appTools ?? [];
-      const offered = calls.some(call => call.tool === 'orchestrator_capabilities' && Array.isArray(call.result.providers) && (call.result.providers as unknown[]).map(object)
-        .some(p => p.driverKind === provider && p.canRunChildTask === true && Array.isArray(p.models) && p.models.map(object).some(m => m.id === model)));
-      if (!offered) throw new Error(`app-route-external-not-offered-by-t3:${provider}`);
+      const lookups = calls.filter(call => call.tool === 'orchestrator_capabilities' && call.arguments.search === model && Array.isArray(call.result.providers));
+      if (!lookups.length) throw new Error(`app-route-external-no-catalog-lookup:${model}`);
+      if (!lookups.some(call => (call.result.providers as unknown[]).map(object)
+        .some(p => p.driverKind === provider && p.canRunChildTask === true && Array.isArray(p.models) && p.models.map(object).some(m => m.id === model)))) throw new Error(`app-route-external-not-offered-by-t3:${provider}`);
       if (calls.some(call => call.tool === 'delegate_task')) throw new Error('app-route-external-used-delegate-task');
       if (!record.commands.some(c => c.includes('pstack-runner'))) throw new Error('runner-not-run');
       const receipt = JSON.parse(await readFile(lane(f, 'receipt.json'), 'utf8'));
       if (receipt.status !== 'complete') throw new Error(`receipt-status:${receipt.status}`);
       if (receipt.parent !== 'codex' || receipt.provider !== provider || receipt.model !== model || receipt.effort !== effort || receipt.mode !== 'read-only') throw new Error('receipt-route-mismatch');
       if (receipt.outputPath !== lane(f, 'output.md') || !(Date.parse(receipt.startedAt) >= record.started)) throw new Error('receipt-not-this-session');
+      if (typeof receipt.executable !== 'string' || !Array.isArray(receipt.argv) || !receipt.argv.includes(model) || receipt.modelEvidence !== 'pinned-argv') throw new Error('receipt-not-from-runner');
+      if ((await readFile(lane(f, 'output.md'), 'utf8')).trim() !== 'PONG') throw new Error('app-route-external-output-not-PONG');
       return { assertions: [loaded(record, 'pstack:poteto-mode'), `t3-offers:${provider}`, 'no-delegate-task', 'runner-ran', 'receipt-complete', `route:${T3_EXTERNAL_LANE}`,
         await written(record, lane(f, 'output.md'))], files: [lane(f, 'receipt.json'), lane(f, 'output.md')] };
     },

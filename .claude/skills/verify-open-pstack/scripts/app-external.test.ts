@@ -28,7 +28,7 @@ async function prepared(f: Fixture, r: SessionRecord): Promise<Case> {
   await c.prepare!(f);
   await writeFile(join(f.dir, 'app-external.output.md'), 'PONG\n');
   await writeFile(join(f.dir, 'app-external.receipt.json'), JSON.stringify({ status: 'complete', parent: 'codex', provider, model, effort, mode: 'read-only',
-    outputPath: join(f.dir, 'app-external.output.md'), startedAt: new Date(r.started + 10).toISOString() }));
+    executable: '/opt/homebrew/bin/cursor-agent', argv: ['/opt/homebrew/bin/cursor-agent', '-p', '--model', model], modelEvidence: 'pinned-argv', outputPath: join(f.dir, 'app-external.output.md'), startedAt: new Date(r.started + 10).toISOString() }));
   return c;
 }
 
@@ -44,11 +44,13 @@ test('the prompt names the descriptor and lane paths but never the runner comman
   expect(prompt).toContain(join(f.dir, 'app-external.receipt.json'));
   expect(prompt).not.toContain('pstack-runner');
   expect(prompt).not.toContain('--provider');
+  expect(prompt).toContain('Do not concatenate reference files');
   expect(await readFile(join(f.dir, 'app-external.prompt.md'), 'utf8')).toBe('Reply with the single word PONG.\n');
 });
 for (const [label, change, message] of [
   ['a delegate_task call', (r: SessionRecord) => { r.appTools!.push({ tool: 'delegate_task', arguments: { target: { providerInstanceId: 'cursor', model } }, result: { taskId: 'task' } }); }, 'app-route-external-used-delegate-task'],
-  ['no T3 catalog lookup', (r: SessionRecord) => { r.appTools = []; }, 'app-route-external-not-offered-by-t3'],
+  ['no T3 catalog lookup', (r: SessionRecord) => { r.appTools = []; }, 'app-route-external-no-catalog-lookup'],
+  ['a catalog lookup for another search', (r: SessionRecord) => { r.appTools![0]!.arguments.search = 'cursor'; }, 'app-route-external-no-catalog-lookup'],
   ['a T3 catalog without the model', (r: SessionRecord) => { (r.appTools![0]!.result.providers as any)[0].models = [{ id: 'other' }]; }, 'app-route-external-not-offered-by-t3'],
   ['a T3 instance that cannot run child tasks', (r: SessionRecord) => { (r.appTools![0]!.result.providers as any)[0].canRunChildTask = false; }, 'app-route-external-not-offered-by-t3'],
   ['no runner command', (r: SessionRecord) => { r.commands = []; }, 'runner-not-run'],
@@ -60,10 +62,21 @@ for (const [label, field, value, message] of [
   ['an incomplete receipt', 'status', 'child-failed', 'receipt-status:child-failed'],
   ['a receipt for another provider', 'provider', 'grok', 'receipt-route-mismatch'],
   ['a receipt from an earlier session', 'startedAt', new Date(0).toISOString(), 'receipt-not-this-session'],
+  ['a hand-written receipt without the runner argv', 'argv', [], 'receipt-not-from-runner'],
+  ['a receipt without pinned-argv model evidence', 'modelEvidence', 'provider-report', 'receipt-not-from-runner'],
 ] as const) test(`rejects ${label}`, async () => {
   const f = await fixture(), r = record(), c = await prepared(f, r), path = join(f.dir, 'app-external.receipt.json');
   await writeFile(path, JSON.stringify({ ...JSON.parse(await readFile(path, 'utf8')), [field]: value }));
   await expect(c.assert(r, f)).rejects.toThrow(message);
+});
+test('rejects output other than PONG', async () => {
+  const f = await fixture(), r = record(), c = await prepared(f, r);
+  await writeFile(join(f.dir, 'app-external.output.md'), 'pong, probably\n');
+  await expect(c.assert(r, f)).rejects.toThrow('app-route-external-output-not-PONG');
+});
+test('only app-route-1 asks the T3 transport for a Claude child', () => {
+  const cases = recipe('runner', 'codex', [], appRoute);
+  expect(cases.filter(c => c.t3ClaudeChild).map(c => c.id)).toEqual(['app-route-1']);
 });
 test('the T3 external-route case refuses to run without the app transport', async () => {
   const f = await fixture(), c = recipe('runner', 'codex').find(c => c.id === 'app-route-external-1')!;
