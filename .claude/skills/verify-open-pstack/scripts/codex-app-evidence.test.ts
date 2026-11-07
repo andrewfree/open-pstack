@@ -70,7 +70,7 @@ describe('Codex app native evidence', () => {
     expect(evidence.toolCalls.map(call => call.tool)).toEqual(['delegate_task', 'task_status']);
     expect(evidence.items.filter(item => item.type === 'userMessage')).toHaveLength(2);
   });
-  test.each(['unrelated', 'summary', 'title', 'foreign-task', 'foreign-run', 'foreign-thread', 'pending-child', 'pending-question', 'pending-approval', 'failed-tool', 'wrong-route', 'duplicate', 'before-dispatch', 'status-before-wake', 'non-async'])('rejects %s async completion evidence', async kind => {
+  test.each(['unrelated', 'summary', 'title', 'foreign-task', 'foreign-run', 'foreign-thread', 'pending-child', 'pending-question', 'pending-approval', 'failed-tool', 'wrong-route', 'duplicate', 'before-dispatch', 'non-async'])('rejects %s async completion evidence', async kind => {
     const f = await asyncFixture(), result = f.terminal.result.structuredContent;
     if (kind === 'unrelated') f.notification.content[0]!.text = 'Do another task';
     if (kind === 'summary') result.summary = 'different output';
@@ -85,9 +85,12 @@ describe('Codex app native evidence', () => {
     if (kind === 'wrong-route') result.providerInstanceId = 'foreign';
     if (kind === 'duplicate') f.events.splice(-2, 0, nativeItem({ ...f.notification, id: 'duplicate' }));
     if (kind === 'before-dispatch') [f.events[7], f.events[8]] = [f.events[8]!, f.events[7]!];
-    if (kind === 'status-before-wake') [f.events[8], f.events[9]] = [f.events[9]!, f.events[8]!];
     if (kind === 'non-async') f.dispatched.arguments.mode = 'wait';
     await expect(parseCodexAppEvidence(serialize(f.events), f.expected)).rejects.toThrow('bound delegated completion');
+  });
+  test('binds a completion notification that T3 delivers after the parent already read the completed status', async () => {
+    const f = await asyncFixture(); [f.events[8], f.events[9]] = [f.events[9]!, f.events[8]!];
+    expect((await parseCodexAppEvidence(serialize(f.events), f.expected)).items.filter(item => item.type === 'userMessage')).toHaveLength(2);
   });
   test.each(['missing', 'different', 'duplicate'])('rejects %s rollout completion notification', async kind => {
     const f = await asyncFixture();

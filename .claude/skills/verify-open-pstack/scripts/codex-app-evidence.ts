@@ -76,7 +76,7 @@ function userPrompts(items: ObjectValue[], expected: string): string[] {
       const args = object(item.arguments), taskId = string(dispatched.taskId, 'delegated task');
       if (args.mode !== 'async') continue;
       const title = args.title === undefined ? '' : ` (${string(args.title, 'delegate title')})`;
-      for (const terminal of items.slice(position + 1)) {
+      for (const terminal of items.slice(index + 1)) {
         if (terminal.tool !== 'task_status' || object(terminal.arguments).taskId !== taskId) continue;
         const result = nativeToolResult(terminal);
         if (!result || result.taskId !== taskId || result.status !== 'completed' || result.workState !== 'result_available'

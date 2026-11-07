@@ -21,6 +21,13 @@ const absent = (error: NodeJS.ErrnoException): undefined => {
   if (error.code !== 'ENOENT') throw error;
   return undefined;
 };
+const MARKETPLACES = join('plugins', 'known_marketplaces.json');
+type Digest = 'bytes' | 'json' | 'marketplaces';
+function withoutRefreshTimes(value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
+  return Object.fromEntries(Object.entries(value).map(([name, entry]) => [name,
+    entry !== null && typeof entry === 'object' && !Array.isArray(entry) ? Object.fromEntries(Object.entries(entry).filter(([key]) => key !== 'lastUpdated')) : entry]));
+}
 function stable(value: unknown): string {
   if (Array.isArray(value)) return '[' + value.map(stable).join(',') + ']';
   if (value !== null && typeof value === 'object') return '{' + Object.keys(value).sort()
@@ -31,13 +38,14 @@ function stable(value: unknown): string {
 /** Retain only digests, paths, and modes. Never copy daily configuration or credentials. */
 export async function captureDailyState(paths: DailyStatePaths): Promise<DailyState> {
   const result: DailyState = {};
-  async function file(path: string, json = false): Promise<void> {
+  async function file(path: string, digest: Digest = 'bytes'): Promise<void> {
     const info = await lstat(path).catch(absent);
     if (!info) { result[path] = null; return; }
     if (!info.isFile() && !info.isSymbolicLink()) throw new Error(`Daily state is not a file: ${path}`);
     const bytes = await readFile(path);
     const target = info.isSymbolicLink() ? await readlink(path) : '';
-    result[path] = sha256(`${info.mode & 0o777}\0${target}\0${json ? stable(JSON.parse(bytes.toString('utf8'))) : sha256(bytes)}`);
+    const content = digest === 'bytes' ? sha256(bytes) : stable(digest === 'json' ? JSON.parse(bytes.toString('utf8')) : withoutRefreshTimes(JSON.parse(bytes.toString('utf8'))));
+    result[path] = sha256(`${info.mode & 0o777}\0${target}\0${content}`);
   }
   async function memory(path: string): Promise<void> {
     const info = await lstat(path).catch(absent);
@@ -45,7 +53,7 @@ export async function captureDailyState(paths: DailyStatePaths): Promise<DailySt
     if (!info.isDirectory() || info.isSymbolicLink()) { await file(path); return; }
     for (const entry of (await readdir(path)).sort()) await memory(join(path, entry));
   }
-  for (const path of paths.files) await file(path, path === paths.settingsPath);
+  for (const path of paths.files) await file(path, path === paths.settingsPath ? 'json' : path.endsWith(`/${MARKETPLACES}`) ? 'marketplaces' : 'bytes');
   for (const projects of paths.directories) {
     const entries = await readdir(projects, { withFileTypes: true }).catch(absent);
     for (const project of entries ?? []) {
