@@ -6,6 +6,8 @@ import { assertAllowedWrite, forbiddenCommand, type NativeWritePolicy } from './
 import type { SessionRecord } from './types.ts';
 
 type ObjectValue = Record<string, unknown>;
+const T3_MCP_SERVERS = new Set(['t3-code', 't3-code-direct']);
+
 export interface CodexAppEvidenceOptions {
   pluginRoot: string; workspace: string; codexHome: string; started: number; prompt: string; model?: string;
   writePolicy?: NativeWritePolicy;
@@ -121,17 +123,17 @@ export async function parseCodexAppEvidence(text: string, expected: CodexAppEvid
   if (turn.status !== 'inProgress' || turn.error !== null || terminal.status !== 'completed' || terminal.error !== null) throw new Error('Codex native turn did not complete successfully');
   if (!(events.indexOf(started) < events.indexOf(turnStart) && events.indexOf(turnStart) < events.indexOf(turnEnd))) throw new Error('Codex native lifecycle is out of order');
   const inventory = events.filter(event => event.method === 'mcpServer/startupStatus/updated');
-  let mcpStarting = false, mcpReady = false;
+  const mcpStarting = new Set<string>(), mcpReady = new Set<string>();
   for (const event of inventory) {
     const params = object(event.params);
     identity(params.threadId, sessionId, 'MCP inventory thread');
-    if (event.truncated === true || params.truncated === true || params.name !== 't3-code'
+    if (event.truncated === true || params.truncated === true || typeof params.name !== 'string' || !T3_MCP_SERVERS.has(params.name)
       || params.error !== null || params.failureReason !== null || params.status !== 'starting' && params.status !== 'ready'
-      || events.indexOf(event) <= events.indexOf(started) || events.indexOf(event) >= events.indexOf(turnEnd)) throw new Error('Codex MCP inventory must contain only healthy t3-code');
-    if (params.status === 'starting') mcpStarting = true;
-    if (params.status === 'ready') { if (!mcpStarting) throw new Error('Codex MCP inventory is out of order'); mcpReady = true; }
+      || events.indexOf(event) <= events.indexOf(started) || events.indexOf(event) >= events.indexOf(turnEnd)) throw new Error('Codex MCP inventory must contain only healthy T3 servers');
+    if (params.status === 'starting') mcpStarting.add(params.name);
+    if (params.status === 'ready') { if (!mcpStarting.has(params.name)) throw new Error('Codex MCP inventory is out of order'); mcpReady.add(params.name); }
   }
-  if (!mcpStarting || !mcpReady) throw new Error('Missing Codex MCP startup inventory');
+  if (!mcpReady.has('t3-code')) throw new Error('Missing Codex MCP startup inventory');
   const items: ObjectValue[] = [], itemIds = new Set<string>(), pending = new Map<string, ObjectValue>();
   for (const [index, event] of events.entries()) {
     if (event.params !== undefined) {
