@@ -429,7 +429,7 @@ function appRunner(appRoute: AppRoute | undefined, fixed: string): Case {
   };
 }
 
-export const T3_EXTERNAL_LANE = 'cursor:composer-2.5@default';
+export const T3_EXTERNAL_LANE = 'cursor:auto@default';
 function appExternal(appRoute: AppRoute | undefined): Case {
   let provider = '', model = '', effort = '';
   const lane = (f: Fixture, name: string) => join(f.dir, `app-external.${name}`);
@@ -448,7 +448,7 @@ function appExternal(appRoute: AppRoute | undefined): Case {
       const lookups = calls.filter(call => call.tool === 'orchestrator_capabilities' && call.arguments.search === model && Array.isArray(call.result.providers));
       if (!lookups.length) throw new Error(`app-route-external-no-catalog-lookup:${model}`);
       if (!lookups.some(call => (call.result.providers as unknown[]).map(object)
-        .some(p => p.driverKind === provider && p.canRunChildTask === true && Array.isArray(p.models) && p.models.map(object).some(m => m.id === model)))) throw new Error(`app-route-external-not-offered-by-t3:${provider}`);
+        .some(p => p.driverKind === provider && p.canRunChildTask === true))) throw new Error(`app-route-external-not-offered-by-t3:${provider}`);
       if (calls.some(call => call.tool === 'delegate_task')) throw new Error('app-route-external-used-delegate-task');
       if (!record.commands.some(c => c.includes('pstack-runner'))) throw new Error('runner-not-run');
       const receipt = JSON.parse(await readFile(lane(f, 'receipt.json'), 'utf8'));
