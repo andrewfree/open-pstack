@@ -6,10 +6,11 @@ import { createInterface } from 'node:readline';
 import { interruption, save } from './io.ts';
 import { parseClaudeEvidence } from './claude-evidence.ts';
 import { parseCodexAppEvidence } from './codex-app-evidence.ts';
+import { kimiChildPrompt, kimiPongTask, parseKimiNativeChild, validateKimiChildActivity, type KimiChildRequest } from './kimi-child-evidence.ts';
 import { parseSession } from './harness.ts';
 import { removeCodexHome } from './isolation.ts';
 import type { NativeWritePolicy } from './command-policy.ts';
-import type { SessionRecord } from './types.ts';
+import type { SelectedKimiRoute, SessionRecord } from './types.ts';
 
 export interface T3Config {
   parentThreadId: string;
@@ -23,9 +24,11 @@ export interface T3Config {
   launcherDirectory: string;
   settingsPath: string;
   logsDirectory: string;
+  kimiRoute?: SelectedKimiRoute;
 }
 export interface AppCase {
   harness: 'claude' | 'codex';
+  childRoute?: 'selected-kimi';
   projectSkill?: boolean;
   pluginRoot: string;
   workspace: string;
@@ -49,7 +52,9 @@ interface AppRequest {
 }
 type JsonObject = Record<string, any>;
 type Driver = 'claude' | 'codex';
-export interface AppRouteEvidence { providerInstanceId: string; model: string; efforts: string[] }
+export interface AppRouteEvidence { providerInstanceId: string; model: string; efforts: string[]; serviceTiers?: string[] }
+type AppTool = NonNullable<SessionRecord['appTools']>[number];
+const KIMI_DESCRIPTOR = /^kimi:[A-Za-z0-9._/-]+@(?!default$)[a-z]+$/;
 export function t3Config(value: unknown): T3Config {
   if (!value || typeof value !== 'object') throw new Error('T3 configuration must be an object');
   const config = value as Record<string, unknown>;
@@ -59,6 +64,13 @@ export function t3Config(value: unknown): T3Config {
   for (const key of ['launcherDirectory', 'settingsPath', 'logsDirectory']) if (!isAbsolute(config[key] as string)) throw new Error(`T3 ${key} must be absolute`);
   const ids = [config.baseProviderId, config.codexProviderId, config.verifyClaudeProviderId, config.verifyCodexProviderId];
   if (new Set(ids).size !== ids.length) throw new Error('T3 verification instances must differ from the daily providers and from each other');
+  if (config.kimiRoute !== undefined) {
+    const route = config.kimiRoute as Record<string, unknown> | null;
+    if (!route || typeof route !== 'object' || Array.isArray(route)) throw new Error('T3 kimiRoute must be an object');
+    for (const key of ['providerInstanceId', 'model', 'descriptor', 'serviceTier']) if (typeof route[key] !== 'string' || !route[key]) throw new Error(`Missing T3 configuration: kimiRoute.${key}`);
+    if (!KIMI_DESCRIPTOR.test(route.descriptor as string)) throw new Error('T3 kimiRoute.descriptor must be a kimi descriptor with an explicit effort');
+    if (ids.includes(route.providerInstanceId)) throw new Error('The selected Kimi CLIProxy instance must differ from the daily providers and the verification instances');
+  }
   return config as unknown as T3Config;
 }
 
@@ -128,19 +140,20 @@ export function capabilityRoutes(request: AppRequest, reply: JsonObject, started
     const model = provider?.models?.find((m: JsonObject) => m.id === target.model);
     if (!provider?.canRunChildTask || !model) throw new Error('Requested route is absent from the live capability catalog');
     const models = target === request.runnerTarget ? provider.models : [model];
+    const codex = provider.driverKind === 'codex';
     for (const selected of models) {
-      const effort = selected.options?.find((o: JsonObject) => o.id === 'effort');
-      routes.push({ providerInstanceId: target.providerInstanceId, model: selected.id, efforts: Array.isArray(effort?.values) ? effort.values.filter((v: unknown): v is string => typeof v === 'string') : [] });
+      const values = (id: string): string[] => { const option = selected.options?.find((o: JsonObject) => o.id === id); return Array.isArray(option?.values) ? option.values.filter((v: unknown): v is string => typeof v === 'string') : []; };
+      routes.push({ providerInstanceId: target.providerInstanceId, model: selected.id, efforts: values(codex ? 'reasoningEffort' : 'effort'), ...(codex ? { serviceTiers: values('serviceTier') } : {}) });
     }
   }
   return routes;
 }
 
 /** Read app-written records by full provider session identity; log filenames can collide after truncation. */
-export async function nativeMessages(logs: string, identity: { threadId: string; providerId: string }, started: number, harness: 'claude' | 'codex' = 'claude', retain?: { native: string; raw: string }): Promise<{ native: string; raw: string; launches: JsonObject[]; prompts: JsonObject[] }> {
+export async function nativeMessages(logs: string, identity: { threadId: string; providerId: string; nativePrompt?: string }, started: number, harness: 'claude' | 'codex' = 'claude', retain?: { native: string; raw: string }): Promise<{ native: string; raw: string; launches: JsonObject[]; prompts: JsonObject[] }> {
   const instancePrefix = `provider-session:provider-instance:${identity.providerId}:`;
   const prefix = `${instancePrefix}${harness === 'claude' ? `thread:${encodeURIComponent(identity.threadId)}:` : 'shared'}`;
-  const records: { at: string; raw: string; message: JsonObject; incoming: boolean; selected: boolean; thread?: string }[] = [];
+  const records: { at: string; raw: string; message: JsonObject; incoming: boolean; selected: boolean; thread?: string; truncated: boolean }[] = [];
   const threads = new Set<string>();
   const malformed: string[] = [], truncated: string[] = [];
   for (const name of await readdir(logs)) {
@@ -171,14 +184,25 @@ export async function nativeMessages(logs: string, identity: { threadId: string;
       if (thread && opens) threads.add(thread);
       if (!incoming && !(harness === 'claude' && ['query.open', 'prompt.offer'].includes(payload?.type))) continue;
       const selected = harness === 'claude' ? record.providerSessionId.startsWith(prefix) : record.providerSessionId === prefix;
-      records.push({ at: match[1]!, raw: line, message: payload, incoming, selected, thread });
+      records.push({ at: match[1]!, raw: line, message: payload, incoming, selected, thread, truncated: record.truncated === true });
     }
   }
   records.sort((a, b) => a.at.localeCompare(b.at));
-  const caseThread = harness === 'codex' && threads.size === 1 ? [...threads][0] : undefined;
-  const selected = records.filter(r => r.selected && !(caseThread && r.thread && r.thread !== caseThread));
+  let caseThread = harness === 'codex' && threads.size === 1 ? [...threads][0] : undefined;
+  if (harness === 'codex' && identity.nativePrompt !== undefined) {
+    const matching = new Set(records.filter(record => {
+      const item = record.message.params?.item;
+      return record.selected && record.incoming && record.message.method === 'item/completed' && item?.type === 'userMessage'
+        && Array.isArray(item.content) && item.content.every((part: JsonObject) => part?.type === 'text' && typeof part.text === 'string')
+        && kimiChildPrompt(item.content.map((part: JsonObject) => part.text).join('\n'), identity.nativePrompt!);
+    }).map(record => record.thread));
+    if (matching.size !== 1 || matching.has(undefined)) throw new Error('Kimi native child prompt does not identify exactly one provider thread');
+    caseThread = [...matching][0];
+  }
+  const selected = records.filter(r => r.selected && (identity.nativePrompt === undefined ? !(caseThread && r.thread && r.thread !== caseThread) : r.thread === caseThread));
   const native = selected.filter(r => r.incoming).map(r => JSON.stringify(r.message)).join('\n') + '\n';
-  const raw = [...records.map(r => r.raw), ...malformed, ...truncated].join('\n') + '\n';
+  const retainedRaw = identity.nativePrompt === undefined ? [...records.map(r => r.raw), ...malformed, ...truncated] : selected.map(r => r.raw);
+  const raw = retainedRaw.join('\n') + '\n';
   if (retain) {
     await writeFile(retain.raw, raw, { flag: 'wx', mode: 0o600 });
     await writeFile(retain.native, native, { flag: 'wx', mode: 0o600 });
@@ -187,18 +211,45 @@ export async function nativeMessages(logs: string, identity: { threadId: string;
   if (truncated.length) throw new Error(`T3 truncated ${truncated.length} native Claude record(s) for this verification instance during the case; required evidence is incomplete`);
   if (!selected.length) throw new Error('T3 native evidence unavailable for this child; summaries cannot replace it');
   if (records.some(r => !Number.isFinite(Date.parse(r.at)))) throw new Error('Native T3 evidence timestamp is invalid');
-  if (threads.size > 1) throw new Error('T3 verification provider has native evidence from extra thread identities during this case');
+  if (identity.nativePrompt !== undefined && selected.some(record => record.truncated)) throw new Error('Truncated Kimi native child evidence');
+  if (identity.nativePrompt === undefined && threads.size > 1) throw new Error('T3 verification provider has native evidence from extra thread identities during this case');
   return { native, raw, launches: selected.filter(r => !r.incoming && r.message.type === 'query.open').map(r => r.message),
     prompts: selected.filter(r => !r.incoming && r.message.type === 'prompt.offer').map(r => r.message) };
 }
 
-export function validateClaudePrompt(prompts: JsonObject[], task: unknown): void {
-  const user = prompts[0]?.message;
-  const content = user?.message?.content;
-  const text = typeof content === 'string' ? content
-    : Array.isArray(content) && content.length === 1 && content[0]?.type === 'text' ? content[0].text : undefined;
-  if (typeof task !== 'string' || !task || typeof text !== 'string' || prompts.length !== 1 || user?.type !== 'user' || user.message?.role !== 'user' || user.parent_tool_use_id !== null
-    || !(text === task || text === `Act as the test sub-agent for this task.\n\n${task}`)) throw new Error('Claude native prompt does not match this exact case request');
+function offeredText(offer: JsonObject | undefined): string | undefined {
+  const user = offer?.message, content = user?.message?.content;
+  if (user?.type !== 'user' || user.message?.role !== 'user' || user.parent_tool_use_id !== null) return undefined;
+  const text = typeof content === 'string' ? content : Array.isArray(content) && content.length === 1 && content[0]?.type === 'text' ? content[0].text : undefined;
+  return typeof text === 'string' ? text : undefined;
+}
+
+/** Later prompts are accepted only as T3 completion notifications that `completionNotifications` bound to this session's own tool results. */
+export function validateClaudePrompt(prompts: JsonObject[], task: unknown, completions: readonly string[] = []): void {
+  const text = offeredText(prompts[0]), remaining = [...completions];
+  if (typeof task !== 'string' || !task || text === undefined || !(text === task || text === `Act as the test sub-agent for this task.\n\n${task}`)) throw new Error('Claude native prompt does not match this exact case request');
+  for (const offer of prompts.slice(1)) {
+    const later = offeredText(offer), index = later === undefined ? -1 : remaining.indexOf(later);
+    if (index < 0) throw new Error('Claude native prompt does not match this exact case request');
+    remaining.splice(index, 1);
+  }
+}
+
+/** The exact T3 completion notification text for each async dispatch whose later task_status reports this child's completed run with nothing pending. */
+export function completionNotifications(tools: readonly AppTool[]): string[] {
+  const texts: string[] = [];
+  for (const [index, dispatch] of tools.entries()) {
+    const taskId = dispatch.result.taskId, title = dispatch.arguments.title;
+    if (dispatch.tool !== 'delegate_task' || dispatch.arguments.mode !== 'async' || typeof taskId !== 'string' || !taskId || (title !== undefined && (typeof title !== 'string' || !title))) continue;
+    const { childRunId, childThreadId, providerInstanceId, model } = dispatch.result;
+    const terminal = tools.slice(index + 1).find(({ tool, arguments: args, result }) => tool === 'task_status' && args.taskId === taskId && result.taskId === taskId
+      && result.status === 'completed' && result.workState === 'result_available' && result.hasPendingChildRuns === false && result.hasPendingQuestion === false && result.pendingApproval === null
+      && typeof result.summary === 'string' && typeof childRunId === 'string' && !!childRunId && typeof childThreadId === 'string' && !!childThreadId
+      && result.childRunId === childRunId && result.childThreadId === childThreadId && result.latestTerminalRunId === childRunId && result.latestTerminalStatus === 'completed'
+      && result.providerInstanceId === providerInstanceId && result.model === model);
+    if (terminal) texts.push(`Delegated task ${taskId}${title === undefined ? '' : ` (${title})`} [completed]:\n${terminal.result.summary}`);
+  }
+  return texts;
 }
 
 export function validateClaudeLaunch(native: string, launches: JsonObject[], model: string, binary: string, effort?: string): void {
@@ -220,6 +271,8 @@ export class T3App {
   get runnerRoute(): { providerInstanceId: string; model: string } {
     return { providerInstanceId: this.config.verifyClaudeProviderId, model: this.config.runnerClaudeModel };
   }
+
+  get kimiRoute(): SelectedKimiRoute | undefined { return this.config.kimiRoute; }
 
   get settingsPath(): string { return this.config.settingsPath; }
 
@@ -250,6 +303,14 @@ export class T3App {
         throw new Error(`Add T3 provider instance ${id} once in T3 Settings: driver ${kind}, enabled, binary ${this.launcher(driver)}, no launch arguments, no environment entries. Verification runs never edit T3 settings.`);
       }
     }
+  }
+
+  private selectedKimi(providers: JsonObject): SelectedKimiRoute {
+    const route = this.config.kimiRoute;
+    if (!route) throw new Error('unsupported-native-consumer:kimi-cliproxy: add the operator-selected kimiRoute to the T3 configuration');
+    const entry = providers[route.providerInstanceId];
+    if (entry?.driver !== 'codex' || entry.enabled !== true) throw new Error(`Selected Kimi CLIProxy instance ${route.providerInstanceId} must be an enabled codex provider in T3 Settings. Verification runs never edit T3 settings.`);
+    return route;
   }
 
   async claudeBinaryPath(): Promise<string> {
@@ -397,12 +458,38 @@ export class T3App {
     return [childPath, childRaw];
   }
 
+  private async kimiChild(calls: readonly AppTool[], parentThreadId: string, c: AppCase): Promise<{ evidence: string[]; child: NonNullable<SessionRecord['appKimiChild']> }> {
+    const dispatches = calls.filter(call => call.tool === 'delegate_task');
+    const dispatch = dispatches[0], route = this.config.kimiRoute;
+    if (dispatches.length !== 1 || !dispatch || !route || dispatch.arguments.role !== 'test'
+      || dispatch.arguments.task !== kimiPongTask(c.fixture)) throw new Error('Kimi native child needs the exact bounded test task');
+    const statuses = calls.filter(call => call.tool === 'task_status' && call.arguments.taskId === dispatch.result.taskId);
+    const completed = statuses.find(call => call.result.status === 'completed')?.result;
+    if (!completed || completed.taskId !== dispatch.result.taskId || completed.providerInstanceId !== route.providerInstanceId || completed.model !== route.model
+      || typeof completed.taskId !== 'string' || !completed.taskId || typeof completed.childThreadId !== 'string' || !completed.childThreadId
+      || typeof completed.childRunId !== 'string' || !completed.childRunId || completed.latestTerminalRunId !== completed.childRunId
+      || completed.latestTerminalStatus !== 'completed' || completed.workState !== 'result_available' || completed.hasPendingChildRuns !== false
+      || completed.hasPendingQuestion !== false || completed.pendingApproval !== null) throw new Error('Kimi native child lacks the original completed task');
+    const reads = calls.filter(call => call.tool === 't3_thread_read');
+    if (reads.length !== 1 || reads[0]!.arguments.threadId !== completed.childThreadId) throw new Error('Kimi native child needs its complete original thread activity');
+    const expected: KimiChildRequest = { taskId: completed.taskId, threadId: completed.childThreadId, runId: completed.childRunId,
+      providerInstanceId: route.providerInstanceId, model: route.model, task: dispatch.arguments.task, parentThreadId, started: c.started };
+    const started = validateKimiChildActivity(reads[0]!.result, expected);
+    const nativePath = c.stdout + '.kimi-child.jsonl', rawPath = nativePath + '.t3-native.log', bindingPath = nativePath + '.binding.json';
+    const native = await nativeMessages(this.config.logsDirectory, { providerId: route.providerInstanceId, threadId: expected.threadId, nativePrompt: expected.task }, started, 'codex', { native: nativePath, raw: rawPath });
+    const child = parseKimiNativeChild(native.native, { ...expected, started });
+    await save(bindingPath, { request: expected, activity: reads[0]!.result, child });
+    return { evidence: [nativePath, rawPath, bindingPath], child };
+  }
+
   async record(c: AppCase): Promise<AppRecord> {
     interruption.signal.throwIfAborted();
     if (!this.passThrough || !this.locked) throw new Error('Prepare the T3 verification launchers before recording a case');
     if (this.pending || this.armed) throw new Error('Previous T3 case still has pending work or armed launchers');
     const providers = await this.providers();
     this.verifyInstances(providers);
+    const kimi = c.childRoute === 'selected-kimi' ? this.selectedKimi(providers) : undefined;
+    const childTarget = kimi ? { providerInstanceId: kimi.providerInstanceId, model: kimi.model } : c.harness === 'codex' ? this.runnerRoute : undefined;
     const configHome = c.env.CLAUDE_CONFIG_DIR || join(c.env.HOME!, '.claude');
     for (const id of [this.config.baseProviderId, this.config.verifyClaudeProviderId]) {
       const home = providers[id]?.config?.homePath;
@@ -416,7 +503,7 @@ export class T3App {
     const responsePath = join(directory, `${id}.response.json`);
     const request: AppRequest = { id, parentThreadId: this.config.parentThreadId,
       target: { providerInstanceId: providerId, model: c.harness === 'claude' ? this.config.model : this.config.codexModel }, responsePath,
-      ...(c.harness === 'codex' ? { runnerTarget: this.runnerRoute } : {}),
+      ...(childTarget ? { runnerTarget: childTarget } : {}),
       task: `${c.prompt}\n\nThis is a live verification case. ${c.harness === 'claude' ? 'Invoke named skills with the native Skill tool, never substitute a filesystem read.' : 'Use the natively discovered candidate skill.'} T3's starting directory is inherited; use the absolute fixture paths in this request. Do not publish or change remote state. Case identity: ${id}.` };
     await mkdir(directory, { recursive: true, mode: 0o700 });
     await writeFile(receipts, '', { flag: 'a', mode: 0o600 });
@@ -425,7 +512,7 @@ export class T3App {
     this.armed = true;
     await this.retainState();
     try {
-      await this.writeLauncher('claude', { real: this.passThrough.claude, env, args: claudeArgs, receipt: { path: receipts, label: `${id} claude` } });
+      if (c.harness === 'claude' || !kimi) await this.writeLauncher('claude', { real: this.passThrough.claude, env, args: claudeArgs, receipt: { path: receipts, label: `${id} claude` } });
       if (c.harness === 'codex') await this.writeLauncher('codex', { real: this.passThrough.codex, env, receipt: { path: receipts, label: `${id} codex` } });
       this.pending = id;
       await this.retainState();
@@ -447,25 +534,30 @@ export class T3App {
     const launches = (await readFile(receipts, 'utf8')).split('\n').filter(line => line.startsWith(`${id} `) || (c.harness === 'codex' && / codex \d+$/.test(line)));
     await writeFile(caseLaunches, launches.map(line => line + '\n').join(''), { flag: 'wx', mode: 0o600 });
     if (reply.status.status !== 'completed') throw new Error(`T3 task ended ${reply.status.status}; terminal receipt retained`);
-    if (!launches.some(line => line.startsWith(`${id} claude `))) throw new Error("No Claude CLI started through this case's launcher");
+    if ((c.harness === 'claude' || !kimi) && !launches.some(line => line.startsWith(`${id} claude `))) throw new Error("No Claude CLI started through this case's launcher");
     if (c.harness === 'codex' && !launches.some(line => / codex \d+$/.test(line))) throw new Error("No Codex app-server started through this run's launcher; an app-server from before this run may still serve the verification instance");
     const routes = capabilityRoutes(request, reply, c.started);
     const evidence = [raw, binding, caseLaunches];
     if (c.harness === 'claude') {
       validateClaudeLaunch(collected.native, collected.launches, request.target.model, this.launcher('claude'));
-      validateClaudePrompt(collected.prompts, request.task);
-      const native = await parseClaudeEvidence(collected.native, { pluginRoot: c.pluginRoot, workspace: c.workspace, started: c.started, model: request.target.model, writePolicy: c.writePolicy });
+      if (!kimi) validateClaudePrompt(collected.prompts, request.task);
+      const native = await parseClaudeEvidence(collected.native, { pluginRoot: c.pluginRoot, workspace: c.workspace, started: c.started, model: request.target.model, writePolicy: c.writePolicy, ...(kimi ? { t3Tools: true } : {}) });
+      if (kimi) validateClaudePrompt(collected.prompts, request.task, completionNotifications(native.t3Tools));
       if (native.cliVersion !== c.cliVersion.split(/\s/)[0]) throw new Error('Claude native CLI version changed since candidate preparation');
-      return { evidence, record: { ...parseSession('claude', collected.native, 0, c.started), skills: native.session.skills, commands: native.session.commands } };
+      const child = kimi ? await this.kimiChild(native.t3Tools, identity.threadId, c) : undefined;
+      return { evidence: [...evidence, ...(child?.evidence ?? [])], record: { ...parseSession('claude', collected.native, 0, c.started), skills: native.session.skills, commands: native.session.commands,
+        ...(kimi ? { appTools: native.t3Tools, appRoutes: routes, appKimiChild: child!.child } : {}) } };
     }
-    evidence.push(...await this.claudeChild(collected.native, routes, c));
+    if (!kimi) evidence.push(...await this.claudeChild(collected.native, routes, c));
     const native = await parseCodexAppEvidence(collected.native, { pluginRoot: c.pluginRoot, workspace: c.workspace, codexHome: c.env.CODEX_HOME!, started: c.started,
       prompt: request.task, model: request.target.model, writePolicy: c.writePolicy }).catch((error: Error) => {
       if (!error.message.includes('escaped isolated candidate')) throw error;
       throw new Error(`${error.message}; T3 may still be serving the Codex verification instance from an app-server started outside this run, so wait for its idle release or restart T3`);
     });
-    return { evidence, rolloutPath: native.rolloutPath, record: { ...native.session, appTools: native.toolCalls, appRoutes: routes } };
+    const child = kimi ? await this.kimiChild(native.toolCalls, identity.threadId, c) : undefined;
+    return { evidence: [...evidence, ...(child?.evidence ?? [])], rolloutPath: native.rolloutPath,
+      record: { ...native.session, appTools: native.toolCalls, appRoutes: routes, ...(child ? { appKimiChild: child.child } : {}) } };
   }
 }
 
-export type AppTransport = Pick<T3App, 'prepare' | 'record' | 'cleanup' | 'runnerRoute' | 'settingsPath' | 'claudeBinaryPath' | 'liveCodexServers' | 'keepCodexHomes'>;
+export type AppTransport = Pick<T3App, 'prepare' | 'record' | 'cleanup' | 'runnerRoute' | 'settingsPath' | 'claudeBinaryPath' | 'liveCodexServers' | 'keepCodexHomes'> & { readonly kimiRoute?: SelectedKimiRoute };

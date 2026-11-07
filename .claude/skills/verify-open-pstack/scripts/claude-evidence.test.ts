@@ -447,3 +447,62 @@ describe('Claude native candidate evidence', () => {
     await expect(parseClaudeEvidence(serialize(events), expected)).rejects.toThrow('Conflicting Claude tool result');
   });
 });
+
+describe('Claude T3 tool evidence for the selected Kimi route case', () => {
+  const allowed = ['mcp__t3-code__orchestrator_capabilities', 'mcp__t3-code__delegate_task', 'mcp__t3_code__task_status', 'mcp__t3-code__t3_thread_read'];
+  async function t3Fixture() {
+    const f = await fixture();
+    f.events[2]!.tools = ['Bash', 'Skill', ...allowed, 'mcp__t3-code__t3_thread_launch'];
+    f.expected.t3Tools = true;
+    return f;
+  }
+  const textResult = (id: string, content: unknown, metadata: unknown, isError?: boolean): Event => event({ type: 'user', parent_tool_use_id: null, tool_use_result: metadata,
+    message: { content: [{ type: 'tool_result', tool_use_id: id, content, ...(isError === undefined ? {} : { is_error: isError }) }] } });
+  test('retains actual invocation and result positions when native T3 tools overlap', async () => {
+    const { expected, events } = await t3Fixture();
+    events.splice(8, 0,
+      use('catalog', allowed[0]!, { search: 'selected' }), use('dispatch', allowed[1]!, { mode: 'async' }),
+      textResult('dispatch', '{"taskId":"child"}', null), textResult('catalog', '{"providers":[]}', null));
+    const calls = (await parseClaudeEvidence(serialize(events), expected)).t3Tools;
+    expect(calls.map(call => [call.tool, call.callIndex, call.resultIndex])).toEqual([
+      ['orchestrator_capabilities', 8, 11], ['delegate_task', 9, 10],
+    ]);
+  });
+  test('without the case option every MCP tool stays forbidden, even one in the native inventory', async () => {
+    const { expected, events } = await fixture();
+    events[2]!.tools = allowed;
+    events.splice(8, 0, use('mcp', 'mcp__t3-code__orchestrator_capabilities', {}), result('mcp', '{}', {}));
+    await expect(parseClaudeEvidence(serialize(events), expected)).rejects.toThrow('Forbidden MCP tool');
+  });
+  test('records allowlisted top-level T3 calls in order with structured results normalized', async () => {
+    const { expected, events } = await t3Fixture();
+    events.splice(8, 0,
+      use('catalog', allowed[0]!, { search: 'codex_cliproxy' }), textResult('catalog', 'Listed providers.', { structuredContent: { providers: [{ providerInstanceId: 'codex_cliproxy' }] } }),
+      use('dispatch', allowed[1]!, { mode: 'async', interactionMode: 'plan' }), textResult('dispatch', [{ type: 'text', text: '{"taskId":"kimi-task"}' }], [{ type: 'text', text: '{"taskId":"kimi-task"}' }]),
+      use('status', allowed[2]!, { taskId: 'kimi-task' }), textResult('status', 'Task completed: PONG', [{ type: 'text', text: 'Task completed: PONG' }]),
+      use('read', allowed[3]!, { threadId: 'kimi-thread' }), textResult('read', '{"thread":{}}', null, true));
+    expect((await parseClaudeEvidence(serialize(events), expected)).t3Tools).toEqual([
+      { tool: 'orchestrator_capabilities', arguments: { search: 'codex_cliproxy' }, result: { providers: [{ providerInstanceId: 'codex_cliproxy' }] }, callIndex: 8, resultIndex: 9 },
+      { tool: 'delegate_task', arguments: { mode: 'async', interactionMode: 'plan' }, result: { taskId: 'kimi-task' }, callIndex: 10, resultIndex: 11 },
+      { tool: 'task_status', arguments: { taskId: 'kimi-task' }, result: {}, callIndex: 12, resultIndex: 13 },
+      { tool: 't3_thread_read', arguments: { threadId: 'kimi-thread' }, result: {}, callIndex: 14, resultIndex: 15 },
+    ]);
+  });
+  test('a session that uses no T3 tool returns an empty list rather than inventing calls', async () => {
+    const { expected, events } = await t3Fixture();
+    expect((await parseClaudeEvidence(serialize(events), expected)).t3Tools).toEqual([]);
+  });
+  test.each([
+    ['a tool outside the allowlist', (events: Event[]) => { events.splice(8, 0, use('launch', 'mcp__t3-code__t3_thread_launch', {}), result('launch', '{}', {})); }, 'Forbidden MCP tool'],
+    ['an allowlisted name absent from the native inventory', (events: Event[]) => { events[2]!.tools = ['Bash']; events.splice(8, 0, use('mcp', allowed[1]!, {}), result('mcp', '{}', {})); }, 'Forbidden MCP tool'],
+    ['another MCP server', (events: Event[]) => { events[2]!.tools.push('mcp__other__delegate_task'); events.splice(8, 0, use('mcp', 'mcp__other__delegate_task', {}), result('mcp', '{}', {})); }, 'Forbidden MCP tool'],
+    ['a nested agent T3 call', (events: Event[]) => { events.splice(8, 0, { ...use('mcp', allowed[1]!, {}), parent_tool_use_id: 'agent' }); }, 'Forbidden MCP tool'],
+    ['a T3 call without its native result', (events: Event[]) => { events.splice(8, 0, use('mcp', allowed[1]!, { mode: 'async' })); }, 'Missing Claude tool result'],
+    ['conflicting T3 results', (events: Event[]) => { events.splice(8, 0, use('mcp', allowed[1]!, {}), result('mcp', '{"taskId":"a"}', {}), result('mcp', '{"taskId":"b"}', {})); }, 'Conflicting Claude tool result'],
+    ['a reused T3 call id', (events: Event[]) => { events.splice(8, 0, use('mcp', allowed[1]!, { mode: 'async' }), use('mcp', allowed[1]!, { mode: 'wait' }), result('mcp', '{}', {})); }, 'Conflicting Claude tool invocation'],
+  ] as const)('rejects %s', async (_label, mutate, reason) => {
+    const { expected, events } = await t3Fixture();
+    mutate(events);
+    await expect(parseClaudeEvidence(serialize(events), expected)).rejects.toThrow(reason);
+  });
+});
