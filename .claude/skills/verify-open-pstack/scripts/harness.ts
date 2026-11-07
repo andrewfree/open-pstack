@@ -193,7 +193,7 @@ export class MacDriver implements Driver {
               const stdout = join(records, `${c.id}.jsonl`), stderr = join(records, `${c.id}.stderr`), cwd = c.cwd === 'workspace' ? workspace : dir;
               const rolloutCopy = join(records, `${c.id}.rollout.jsonl`), started = Date.now();
               const appCase = harness === 'claude' || c.id.startsWith('app-route-');
-              const app = appCase ? await this.app!.record({ harness, projectSkill: feature === 'project-skill', pluginRoot: installation.location, workspace, fixture: dir,
+              const app = appCase ? await this.app!.record({ harness, claudeChild: c.t3ClaudeChild === true, projectSkill: feature === 'project-skill', pluginRoot: installation.location, workspace, fixture: dir,
                 prompt: c.prompt(fixture), env, stdout, stderr, started, cliVersion: installation.cliVersion, writePolicy }) : undefined;
               const exitCode = app ? 0 : await this.record(launch({ cwd, addDirs: cwd === dir ? [] : [dir], codexSandbox: c.codexSandbox }), { cwd, env, input: c.prompt(fixture), stdout, stderr });
               evidence.push(stdout, ...(await stat(stderr)).size ? [stderr] : [], ...app?.evidence ?? []);
