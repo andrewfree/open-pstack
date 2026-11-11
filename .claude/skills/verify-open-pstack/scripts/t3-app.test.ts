@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test';
-import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { save } from './io.ts';
@@ -131,8 +131,21 @@ function capabilities() {
 test('binds live route selection to the coordinator before the delegated run', () => {
   expect(capabilityRoutes(request, capabilities(), started)).toEqual([{ ...request.target, efforts: ['max'] }]);
 });
+test('reuses the coordinator discovery for a later case without accepting an earlier child run', () => {
+  const first = capabilities(), later = capabilities();
+  first.capabilities.capturedAt = '2026-10-13T23:59:00Z';
+  later.capabilities = first.capabilities;
+  later.activity.recentRuns[0]!.requestedAt = '2026-10-14T00:02:01Z';
+  later.activity.recentRuns[0]!.completedAt = '2026-10-14T00:02:02Z';
+  const laterStarted = Date.parse('2026-10-14T00:02:00Z');
+  expect(capabilityRoutes(request, first, started)).toEqual(capabilityRoutes(request, later, laterStarted));
+  expect(validateAppReply(request, later, laterStarted)).toEqual({ threadId: 'child', providerId: 'candidate', runId: 'run' });
+  expect(() => capabilityRoutes(request, first, laterStarted)).toThrow();
+  expect(() => validateAppReply(request, first, laterStarted)).toThrow('predates this case');
+});
 for (const [name, mutate] of [
-  ['stale catalog', (r: any) => { r.capabilities.capturedAt = '2026-10-13T00:00:00Z'; }],
+  ['invalid catalog timestamp', (r: any) => { r.capabilities.capturedAt = 'not-a-timestamp'; }],
+  ['missing catalog timestamp', (r: any) => { delete r.capabilities.capturedAt; }],
   ['post-run catalog', (r: any) => { r.capabilities.capturedAt = '2026-10-14T00:00:02Z'; }],
   ['different coordinator', (r: any) => { r.capabilities.result.parentThreadId = 'other'; }],
   ['disabled provider', (r: any) => { r.capabilities.result.providers[0].canRunChildTask = false; }],
@@ -187,7 +200,7 @@ test('requires exactly the logged native Claude user prompt, including the app t
   }
   expect(() => validateClaudePrompt(offer(undefined), undefined)).toThrow();
 });
-test('keeps every eligible nested Claude model and effort from the fresh catalog', () => {
+test('keeps every eligible nested Claude model and effort from the coordinating catalog', () => {
   const r = capabilities();
   r.capabilities.result.providers.push({ providerInstanceId: 'child-provider', canRunChildTask: true, models: [
     { id: 'opus-current', options: [{ id: 'effort', values: ['max'], default: 'medium' }] },
@@ -222,7 +235,7 @@ const candidateSession = (pluginRoot: string, model: string) => [
     plugins: [{ name: 'pstack', path: pluginRoot, source: 'pstack@inline' }] },
   { type: 'result', subtype: 'success', is_error: false, terminal_reason: 'completed', result: 'done' },
 ].map(event => ({ session_id: 'sdk-session', ...event }));
-async function fakeApp() {
+async function fakeApp(replace?: (from: string, to: string) => Promise<void>) {
   const root = await mkdtemp(join(tmpdir(), 't3-launchers-')); roots.push(root);
   const settingsPath = join(root, 'settings.json'), logsDirectory = join(root, 'logs'), launcherDirectory = join(root, 'launchers');
   await mkdir(logsDirectory);
@@ -235,7 +248,7 @@ async function fakeApp() {
   await writeFile(settingsPath, JSON.stringify(settings));
   const config = { parentThreadId: 'parent', baseProviderId: 'claude', model: 'haiku', codexProviderId: 'codex', codexModel: 'luna', runnerClaudeModel: 'opus',
     verifyClaudeProviderId: 'verify_claude', verifyCodexProviderId: 'verify_codex', launcherDirectory, settingsPath, logsDirectory };
-  const app = new T3App(config, root), pluginRoot = join(root, 'plugin');
+  const app = new T3App(config, root, replace), pluginRoot = join(root, 'plugin');
   await mkdir(join(pluginRoot, 'hooks'), { recursive: true }); await mkdir(join(root, 'candidate'));
   await writeFile(join(pluginRoot, 'hooks/hooks.json'), JSON.stringify({ hooks: { SessionStart: [{ matcher: 'startup|clear|compact', hooks: [{ type: 'command', command: '"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd" session-start', async: false }] }] } }));
   await writeFile(join(pluginRoot, 'hooks/session-start-context.md'), HOOK_CONTEXT);
@@ -284,6 +297,155 @@ async function answerCase(a: Awaited<ReturnType<typeof fakeApp>>, { terminal = '
 const idle = (a: Awaited<ReturnType<typeof fakeApp>>) => Promise.all(['claude', 'codex'].map(driver => readFile(join(a.launcherDirectory, driver), 'utf8')));
 const passThrough = [launcherScript({ real: '/usr/bin/true' }), launcherScript({ real: '/usr/bin/true' })];
 
+async function poolApp() {
+  const a = await fakeApp(), wrapper = join(a.root, 'account-launcher');
+  await writeFile(wrapper, `#!/bin/sh\nprintf '%s\\n' "$@" > '${join(a.root, 'pool-args')}'\nprintf '%s' "$ANTHROPIC_API_KEY" > '${join(a.root, 'pool-inherited-key')}'\n`, { mode: 0o700 });
+  const environment = [
+    { name: 'CLIPROXY_CLAUDE_ROUTE', value: 'shared-pool', sensitive: false },
+    { name: 'CLIPROXY_ACCOUNT_PREFIX', value: '', sensitive: false },
+    { name: 'CLIPROXY_BASE_URL', value: 'http://127.0.0.1:8317', sensitive: false },
+    { name: 'CLIPROXY_CLAUDE_BINARY', value: '/usr/bin/true', sensitive: false },
+    { name: 'ANTHROPIC_API_KEY', value: '', sensitive: true, valueRedacted: true },
+    { name: 'ANTHROPIC_AUTH_TOKEN', value: '', sensitive: false },
+    { name: 'CLAUDE_CODE_OAUTH_TOKEN', value: '', sensitive: false },
+    { name: 'DO_NOT_TRACK', value: '1', sensitive: false },
+  ];
+  const settings = await json(a.settingsPath);
+  settings.providerInstances.pool = { driver: 'claudeAgent', enabled: true, config: { binaryPath: wrapper }, environment };
+  settings.providerInstances.verify_claude.environment = structuredClone(environment);
+  await writeFile(a.settingsPath, JSON.stringify(settings));
+  const config = { ...a.config, claudePoolProviderId: 'pool' };
+  return { ...a, app: new T3App(config, a.root), config, wrapper };
+}
+
+test('managed Claude pool uses the dedicated launcher without serializing its inherited credential', async () => {
+  const a = await poolApp(), before = await readFile(a.settingsPath, 'utf8');
+  const wrapper = await realpath(a.wrapper);
+  await a.app.prepare();
+  expect(await a.app.claudeBinaryPath()).toBe('/usr/bin/true');
+  const work = a.app.record(a.c);
+  const request = await pending(a.root);
+  const armed = await readFile(join(a.launcherDirectory, 'claude'), 'utf8');
+  const child = Bun.spawn([join(a.launcherDirectory, 'claude'), '--model', 'haiku'], {
+    env: { ...process.env, ANTHROPIC_API_KEY: 'synthetic-inherited-key' }, stdout: 'ignore', stderr: 'ignore',
+  });
+  expect(await child.exited).toBe(0);
+  await answerCase(a, { launched: [] });
+  const result = await work;
+  const binding = await readFile(a.c.stdout + '.t3-binding.json', 'utf8');
+  expect(armed).toContain(`exec '${wrapper}'`);
+  expect(armed).not.toContain('ANTHROPIC_API_KEY');
+  expect(armed).not.toContain('synthetic-inherited-key');
+  expect(binding).not.toContain('synthetic-inherited-key');
+  expect(binding).not.toContain('valueRedacted');
+  expect(JSON.parse(binding).claudePool).toMatchObject({ providerInstanceId: 'pool', origin: 'http://127.0.0.1:8317', route: 'shared-pool' });
+  expect(await readFile(join(a.root, 'pool-inherited-key'), 'utf8')).toBe('synthetic-inherited-key');
+  expect(await readFile(join(a.root, 'pool-args'), 'utf8')).toContain(`--model\nhaiku\n--setting-sources\n\n--plugin-dir\n${a.c.pluginRoot}\n--strict-mcp-config\n`);
+  expect(result.record.harness).toBe('claude');
+  await a.app.cleanup();
+  expect(await readFile(a.settingsPath, 'utf8')).toBe(before);
+  expect((await idle(a))[0]).toBe(launcherScript({ real: wrapper }));
+  expect((await readdir(a.launcherDirectory)).filter(name => name.endsWith('.blocked'))).toEqual([]);
+  expect(request.target.providerInstanceId).toBe('verify_claude');
+});
+
+test('pool source, endpoint, binary and managed credential metadata must agree before arming', async () => {
+  const a = await poolApp(), original = await json(a.settingsPath);
+  for (const [name, edit] of [
+    ['plaintext key', (s: any) => { s.providerInstances.verify_claude.environment[4].value = 'synthetic-plaintext'; }],
+    ['unredacted key', (s: any) => { s.providerInstances.pool.environment[4].valueRedacted = false; }],
+    ['extra field', (s: any) => { s.providerInstances.verify_claude.environment.push({ name: 'OTHER_KEY', value: '', sensitive: true }); }],
+    ['named account', (s: any) => { s.providerInstances.pool.environment[1].value = 't3-gmail'; }],
+    ['endpoint drift', (s: any) => { s.providerInstances.verify_claude.environment[2].value = 'http://other-host:8317'; }],
+    ['embedded URL credential', (s: any) => { s.providerInstances.pool.environment[2].value = 'http://user:password@localhost:8317'; }],
+    ['auth token override', (s: any) => { s.providerInstances.verify_claude.environment[5].value = 'synthetic-token'; }],
+    ['OAuth override', (s: any) => { s.providerInstances.verify_claude.environment[6].value = 'synthetic-token'; }],
+    ['different real binary', (s: any) => { s.providerInstances.pool.environment[3].value = '/usr/bin/false'; }],
+    ['duplicate entry', (s: any) => { s.providerInstances.pool.environment.push(s.providerInstances.pool.environment[0]); }],
+  ] as const) {
+    const changed = structuredClone(original); edit(changed);
+    await writeFile(a.settingsPath, JSON.stringify(changed));
+    await expect(a.app.prepare()).rejects.toThrow('Claude pool');
+    expect(await Bun.file(join(a.root, 't3-app', 'pending.json')).exists()).toBe(false);
+  }
+});
+
+test('pool routing drift after preparation fails before a case is pending', async () => {
+  const a = await poolApp(); await a.app.prepare();
+  const settings = await json(a.settingsPath);
+  for (const id of ['pool', 'verify_claude']) settings.providerInstances[id].environment[2].value = 'http://other-host:8317';
+  await writeFile(a.settingsPath, JSON.stringify(settings));
+  await expect(a.app.record(a.c)).rejects.toThrow('Claude pool changed');
+  expect(await Bun.file(join(a.root, 't3-app', 'pending.json')).exists()).toBe(false);
+  await a.app.cleanup();
+});
+
+test('pool changes during a case fail after disarming and before a binding is saved', async () => {
+  const a = await poolApp(); await a.app.prepare();
+  const work = a.app.record(a.c).catch((error: unknown) => error);
+  await pending(a.root);
+  const settings = await json(a.settingsPath);
+  for (const id of ['pool', 'verify_claude']) settings.providerInstances[id].environment[2].value = 'http://other-host:8317';
+  await writeFile(a.settingsPath, JSON.stringify(settings));
+  await answerCase(a);
+  const failure = await work;
+  expect(failure).toBeInstanceOf(Error);
+  if (failure instanceof Error) expect(failure.message).toContain('Claude pool changed');
+  expect(await Bun.file(a.c.stdout + '.t3-binding.json').exists()).toBe(false);
+  expect((await idle(a))[0]).toBe(launcherScript({ real: await realpath(a.wrapper) }));
+  await a.app.cleanup();
+});
+
+test('an unprovisioned pool verification profile fails the binary preflight without reading credentials', async () => {
+  const a = await poolApp(), settings = await json(a.settingsPath);
+  settings.providerInstances.verify_claude.environment = [];
+  await writeFile(a.settingsPath, JSON.stringify(settings));
+  await expect(a.app.claudeBinaryPath()).rejects.toThrow('provisioned T3-managed redacted client key');
+  expect(await Bun.file(join(a.root, 't3-app', 'pending.json')).exists()).toBe(false);
+});
+
+test('case environments cannot override a managed pool route or credential', async () => {
+  const a = await poolApp(); await a.app.prepare();
+  for (const name of ['CLIPROXY_BASE_URL', 'CLIPROXY_CLAUDE_ROUTE', 'CLIPROXY_ACCOUNT_PREFIX',
+    'CLIPROXY_CLAUDE_BINARY', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']) {
+    await expect(a.app.record({ ...a.c, env: { ...a.c.env, [name]: '' } })).rejects.toThrow('must come from T3');
+    expect(await Bun.file(join(a.root, 't3-app', 'pending.json')).exists()).toBe(false);
+  }
+  await a.app.cleanup();
+});
+
+test('optional pool provider ID is nonempty and distinct from all harness providers', async () => {
+  const a = await fakeApp();
+  for (const id of ['', 4, a.config.baseProviderId, a.config.verifyClaudeProviderId]) {
+    expect(() => t3Config({ ...a.config, claudePoolProviderId: id })).toThrow();
+  }
+});
+
+test('verification child disables background updates without changing provider settings or its caller', async () => {
+  const a = await fakeApp(), real = join(a.root, 'claude-probe');
+  await writeFile(real, '#!/bin/sh\nprintf \'%s\\n\' "$DISABLE_AUTOUPDATER" "${FORCE_AUTOUPDATE_PLUGINS-unset}"\n', { mode: 0o700 });
+  const settings = await json(a.settingsPath);
+  settings.providerInstances.claude.config.binaryPath = real;
+  await writeFile(a.settingsPath, JSON.stringify(settings));
+  const before = await readFile(a.settingsPath, 'utf8');
+  const caller = { ...process.env, DISABLE_AUTOUPDATER: '0', FORCE_AUTOUPDATE_PLUGINS: '1' };
+  a.c.env = { ...a.c.env, DISABLE_AUTOUPDATER: '0', FORCE_AUTOUPDATE_PLUGINS: '1' };
+  await a.app.prepare();
+  const work = a.app.record(a.c);
+  await pending(a.root);
+  const child = Bun.spawn([join(a.launcherDirectory, 'claude')], { env: caller, stdout: 'pipe', stderr: 'pipe' });
+  const output = await new Response(child.stdout).text(), exitCode = await child.exited;
+  await answerCase(a, { launched: [] });
+  await work;
+  await a.app.cleanup();
+  expect(exitCode).toBe(0);
+  expect(output).toBe('1\n\n');
+  expect(caller.DISABLE_AUTOUPDATER).toBe('0');
+  expect(caller.FORCE_AUTOUPDATE_PLUGINS).toBe('1');
+  expect(await readFile(a.settingsPath, 'utf8')).toBe(before);
+  expect(await readFile(join(a.launcherDirectory, 'claude'), 'utf8')).toBe(launcherScript({ real }));
+});
+
 test('sequential cases arm candidate launchers and restore pass-through without editing T3 settings', async () => {
   const a = await fakeApp(), before = await readFile(a.settingsPath, 'utf8');
   await expect(a.app.record(a.c)).rejects.toThrow('Prepare the T3 verification launchers');
@@ -294,7 +456,7 @@ test('sequential cases arm candidate launchers and restore pass-through without 
   expect(await a.app.claudeBinaryPath()).toBe('/usr/bin/true');
   let previous: string | undefined;
   for (let i = 0; i < 2; i++) {
-    const work = a.app.record({ ...a.c, stdout: join(a.root, `stdout-${i}.jsonl`), stderr: join(a.root, `stderr-${i}`) });
+    const work = a.app.record({ ...a.c, started: started + i * 750, stdout: join(a.root, `stdout-${i}.jsonl`), stderr: join(a.root, `stderr-${i}`) });
     const request = await pending(a.root, previous);
     expect(request.target.providerInstanceId).toBe('verify_claude');
     const armed = await readFile(join(a.launcherDirectory, 'claude'), 'utf8');
@@ -417,6 +579,59 @@ test('one run at a time holds the launchers, and a stale lock is taken over', as
   await writeFile(join(a.launcherDirectory, 'lock.json'), '');
   await expect(other.prepare()).rejects.toThrow('lock.json is unreadable');
 });
+for (const stage of ['claudeBinaryPath', 'prepare'] as const) {
+  test(`stale candidate launchers are disabled before invalid pool ${stage} fails`, async () => {
+    const a = await poolApp(); await a.app.prepare();
+    const armed = launcherScript({ real: '/usr/bin/true', args: ['--plugin-dir', '/old-candidate'], env: { OLD_CASE_ENV: 'old-case-value' } });
+    for (const driver of ['claude', 'codex']) await writeFile(join(a.launcherDirectory, driver), armed, { mode: 0o700 });
+    await writeFile(join(a.launcherDirectory, 'lock.json'), JSON.stringify({ pid: 2 ** 22 + 12345, root: a.root }));
+    const settings = await json(a.settingsPath);
+    settings.providerInstances.pool.environment[1].value = 'pinned-old-account';
+    const before = JSON.stringify(settings); await writeFile(a.settingsPath, before);
+    const next = new T3App(a.config, join(a.root, 'recovery'));
+    await expect(next[stage]()).rejects.toThrow('Claude pool');
+    for (const driver of ['claude', 'codex']) {
+      const script = await readFile(join(a.launcherDirectory, driver), 'utf8');
+      expect(script).not.toContain('/old-candidate');
+      expect(script).not.toContain('OLD_CASE_ENV');
+      const child = Bun.spawn([join(a.launcherDirectory, driver)], { stdout: 'pipe', stderr: 'pipe' });
+      expect(await child.exited).toBe(78);
+      expect(await new Response(child.stderr).text()).toContain('preflight');
+    }
+    expect(await readFile(a.settingsPath, 'utf8')).toBe(before);
+    await next.cleanup();
+    expect(await readdir(a.launcherDirectory)).not.toContain('lock.json');
+    settings.providerInstances.pool.environment[1].value = '';
+    await writeFile(a.settingsPath, JSON.stringify(settings));
+    await next.prepare();
+    expect((await idle(a))[0]).toBe(launcherScript({ real: await realpath(a.wrapper) }));
+    expect((await idle(a))[1]).toBe(passThrough[1]);
+    await next.cleanup();
+  });
+}
+test('invalid pool recovery never changes launchers held by another active run', async () => {
+  const a = await poolApp(); await a.app.prepare();
+  const armed = launcherScript({ real: '/usr/bin/true', args: ['--plugin-dir', '/active-candidate'] });
+  for (const driver of ['claude', 'codex']) await writeFile(join(a.launcherDirectory, driver), armed, { mode: 0o700 });
+  const settings = await json(a.settingsPath); settings.providerInstances.verify_claude.environment = [];
+  await writeFile(a.settingsPath, JSON.stringify(settings));
+  const next = new T3App(a.config, join(a.root, 'other-run'));
+  await expect(next.claudeBinaryPath()).rejects.toThrow('holds the launchers');
+  await expect(next.prepare()).rejects.toThrow('holds the launchers');
+  expect(await idle(a)).toEqual([armed, armed]);
+  await next.cleanup();
+  expect((await json(join(a.launcherDirectory, 'lock.json'))).root).toBe(a.root);
+  await a.app.cleanup();
+});
+test('standalone binary preflight releases recovery ownership on success and failure', async () => {
+  const a = await poolApp();
+  expect(await a.app.claudeBinaryPath()).toBe('/usr/bin/true');
+  expect(await readdir(a.launcherDirectory)).not.toContain('lock.json');
+  const settings = await json(a.settingsPath); settings.providerInstances.verify_claude.environment = [];
+  await writeFile(a.settingsPath, JSON.stringify(settings));
+  await expect(a.app.claudeBinaryPath()).rejects.toThrow('Claude pool');
+  expect(await readdir(a.launcherDirectory)).not.toContain('lock.json');
+});
 test('a Codex app-server still running from a run keeps the next run out, and its kept home is removed once it exits', async () => {
   const a = await preparedApp(), saved = process.env.CODEX_HOME;
   const root = await realpath(a.root), daily = join(root, 'daily-codex'), home = join(root, 'run-home');
@@ -450,4 +665,169 @@ test('a case whose launcher cannot be armed reports that failure, not a pending 
   const cleanup = await a.app.cleanup().catch(error => error);
   expect(cleanup.message).toContain('not a pstack verification launcher');
   expect(cleanup.message).not.toContain('no validated terminal receipt');
+});
+
+function renameFault(fails: (from: string, to: string) => boolean | Promise<boolean>) {
+  return async (from: string, to: string) => {
+    if (await fails(from, to)) throw new Error(`injected launcher rename failure: ${to}`);
+    await rename(from, to);
+  };
+}
+
+async function configuredLaunch(a: Awaited<ReturnType<typeof fakeApp>>, driver: 'claude' | 'codex', shell: boolean) {
+  const settings = await json(a.settingsPath), binary = settings.providerInstances[`verify_${driver}`].config.binaryPath;
+  try {
+    return await Bun.spawn(shell ? ['/bin/sh', binary] : [binary], { stdout: 'ignore', stderr: 'ignore' }).exited;
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+async function staleLaunchers(a: Awaited<ReturnType<typeof fakeApp>>, legacy: boolean) {
+  await mkdir(a.launcherDirectory, { mode: 0o700 });
+  const trace = join(a.root, 'stale-executions'), probe = join(a.root, 'stale-probe');
+  await writeFile(probe, `#!/bin/sh\nprintf 'ran\\n' >> '${trace}'\n`, { mode: 0o700 });
+  const script = legacy ? `#!/bin/sh\n# pstack-verify launcher\nexec '${probe}' "$@" --plugin-dir /old-candidate\n`
+    : launcherScript({ real: probe, args: ['--plugin-dir', '/old-candidate'], env: { OLD_CASE_ENV: 'old-value' } });
+  for (const driver of ['claude', 'codex'] as const) {
+    await writeFile(join(a.launcherDirectory, driver), script, { mode: 0o700 });
+    for (const shell of [false, true]) expect(await configuredLaunch(a, driver, shell)).toBe(0);
+  }
+  expect(await readFile(trace, 'utf8')).toBe('ran\n'.repeat(4));
+  await rm(trace);
+  await writeFile(join(a.launcherDirectory, 'lock.json'), JSON.stringify({ pid: 2 ** 22 + 12345, root: '/interrupted-run' }));
+  return { trace, script };
+}
+
+for (const stage of ['claudeBinaryPath', 'prepare'] as const) for (const driver of ['claude', 'codex'] as const) for (const legacy of [false, true]) {
+  test(`launcher fault quarantines ${legacy ? 'legacy' : 'current'} stale ${driver} before ${stage} returns`, async () => {
+    let slot = '';
+    const a = await fakeApp(renameFault((_from, to) => to === slot));
+    slot = join(a.launcherDirectory, driver);
+    const before = await readFile(a.settingsPath, 'utf8'), { trace, script } = await staleLaunchers(a, legacy);
+    await expect(a.app[stage]()).rejects.toThrow('could not be disabled');
+    await a.app.cleanup();
+    expect(await Bun.file(slot).exists()).toBe(false);
+    for (const shell of [false, true]) {
+      const exit = await configuredLaunch(a, driver, shell);
+      if (shell) expect(exit).not.toBe(0); else expect(exit).toBeNull();
+      expect(await configuredLaunch(a, driver === 'claude' ? 'codex' : 'claude', shell)).toBe(78);
+    }
+    expect(await Bun.file(trace).exists()).toBe(false);
+    const blocked = (await readdir(a.launcherDirectory)).filter(name => name.endsWith('.blocked'));
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0]).toStartWith(driver + '.');
+    expect(await readFile(join(a.launcherDirectory, blocked[0]!), 'utf8')).toBe(script);
+    expect(await readdir(a.launcherDirectory)).not.toContain('lock.json');
+    const recovery = new T3App(a.config, join(a.root, 'recovery'));
+    await recovery.prepare();
+    for (const recovered of ['claude', 'codex'] as const) for (const shell of [false, true]) expect(await configuredLaunch(a, recovered, shell)).toBe(0);
+    await recovery.cleanup();
+    expect(await Bun.file(trace).exists()).toBe(false);
+    expect(await readFile(join(a.launcherDirectory, blocked[0]!), 'utf8')).toBe(script);
+    expect(await readFile(a.settingsPath, 'utf8')).toBe(before);
+    expect((await readdir(a.launcherDirectory)).filter(name => name.endsWith('.tmp'))).toEqual([]);
+  });
+}
+
+for (const stage of ['claudeBinaryPath', 'prepare'] as const) for (const driver of ['claude', 'codex'] as const) {
+  test(`launcher fault retains ownership when stale ${driver} cannot be replaced or quarantined in ${stage}`, async () => {
+    let slot = '';
+    const a = await fakeApp(renameFault((from, to) => from === slot || to === slot));
+    slot = join(a.launcherDirectory, driver);
+    const { trace } = await staleLaunchers(a, true);
+    const error = await a.app[stage]().catch(error => error);
+    expect(error.message).toContain('injected launcher rename failure');
+    if (stage === 'claudeBinaryPath') expect(error.message).toContain('may still start a candidate');
+    await expect(a.app.cleanup()).rejects.toThrow('may still start a candidate');
+    expect((await json(join(a.launcherDirectory, 'lock.json'))).root).toBe(a.root);
+    for (const shell of [false, true]) expect(await configuredLaunch(a, driver, shell)).toBe(0);
+    expect(await readFile(trace, 'utf8')).toBe('ran\nran\n');
+    await writeFile(join(a.launcherDirectory, 'lock.json'), JSON.stringify({ pid: 2 ** 22 + 12345, root: a.root }));
+    const recovery = new T3App(a.config, join(a.root, 'recovery'));
+    await recovery.prepare(); await recovery.cleanup();
+    for (const shell of [false, true]) expect(await configuredLaunch(a, driver, shell)).toBe(0);
+    expect(await readFile(trace, 'utf8')).toBe('ran\nran\n');
+  });
+}
+
+for (const [harness, driver] of [['claude', 'claude'], ['codex', 'claude'], ['codex', 'codex']] as const) for (const quarantineFails of [false, true]) {
+  test(`launcher fault ${quarantineFails ? 'retains ownership for' : 'quarantines'} armed ${driver} after ${harness} case`, async () => {
+    let fault = false, slot = '';
+    const a = await fakeApp(renameFault((from, to) => fault && (to === slot || quarantineFails && from === slot)));
+    a.c.harness = harness; slot = join(a.launcherDirectory, driver);
+    await a.app.prepare();
+    const work = a.app.record(a.c).catch(error => error), request = await pending(a.root);
+    const armed = await readFile(slot, 'utf8');
+    expect(armed).toContain(request.id);
+    const launches = join(a.root, 't3-app', 'launches.log');
+    for (const shell of [false, true]) expect(await configuredLaunch(a, driver, shell)).toBe(0);
+    const before = await readFile(launches, 'utf8');
+    fault = true;
+    await answerCase(a, { launched: [], runnerCatalog: harness === 'codex' });
+    expect((await work).message).toContain('Pass-through launchers were not restored');
+    const cleanup = await a.app.cleanup().catch(error => error);
+    if (quarantineFails) {
+      expect(cleanup.message).toContain('may still start a candidate');
+      expect((await json(join(a.launcherDirectory, 'lock.json'))).root).toBe(a.root);
+      expect((await json(join(a.root, 't3-app', 'state.json'))).armedLaunchers).toBe(true);
+    } else {
+      expect(cleanup.message).toContain('Pass-through launchers were not restored');
+      expect(await readdir(a.launcherDirectory)).not.toContain('lock.json');
+      expect(await Bun.file(slot).exists()).toBe(false);
+      for (const shell of [false, true]) {
+        const exit = await configuredLaunch(a, driver, shell);
+        if (shell) expect(exit).not.toBe(0); else expect(exit).toBeNull();
+      }
+      expect(await readFile(launches, 'utf8')).toBe(before);
+      const blocked = (await readdir(a.launcherDirectory)).filter(name => name.startsWith(driver + '.') && name.endsWith('.blocked'));
+      expect(blocked).toHaveLength(1);
+      expect(await readFile(join(a.launcherDirectory, blocked[0]!), 'utf8')).toBe(armed);
+    }
+    fault = false;
+    await a.app.cleanup();
+  });
+}
+
+for (const driver of ['claude', 'codex'] as const) {
+  test(`launcher fault preserves the disabled ${driver} when prepare cannot restore pass-through`, async () => {
+    let slot = '';
+    const a = await fakeApp(renameFault(async (from, to) => to === slot && (await readFile(from, 'utf8')).includes("exec '")));
+    slot = join(a.launcherDirectory, driver);
+    await expect(a.app.prepare()).rejects.toThrow('Pass-through launchers were not restored');
+    for (const shell of [false, true]) expect(await configuredLaunch(a, driver, shell)).toBe(78);
+    expect((await readdir(a.launcherDirectory)).filter(name => name.endsWith('.blocked'))).toEqual([]);
+    await a.app.cleanup();
+    expect(await readdir(a.launcherDirectory)).not.toContain('lock.json');
+  });
+}
+
+for (const operator of ['file', 'symlink'] as const) test(`launcher fault never quarantines an operator ${operator} installed before arming`, async () => {
+  const a = await fakeApp(renameFault(() => false)); await a.app.prepare();
+  const slot = join(a.launcherDirectory, 'claude');
+  await rm(slot);
+  const target = join(a.root, 'operator-binary');
+  await writeFile(target, 'operator file\n', { mode: 0o700 });
+  if (operator === 'symlink') await symlink(target, slot); else await writeFile(slot, 'operator file\n', { mode: 0o700 });
+  const mode = (await lstat(slot)).mode;
+  await expect(a.app.record(a.c)).rejects.toThrow('not a pstack verification launcher');
+  await expect(a.app.cleanup()).rejects.toThrow('not a pstack verification launcher');
+  expect(await readFile(slot, 'utf8')).toBe('operator file\n');
+  expect(await readFile(target, 'utf8')).toBe('operator file\n');
+  expect((await lstat(slot)).isSymbolicLink()).toBe(operator === 'symlink');
+  expect((await lstat(slot)).mode).toBe(mode);
+  expect((await readdir(a.launcherDirectory)).filter(name => name.endsWith('.blocked'))).toEqual([]);
+  expect(await readdir(a.launcherDirectory)).not.toContain('lock.json');
+});
+
+test('launcher fault cannot move another active owners slots', async () => {
+  const a = await preparedApp(), before = await idle(a);
+  const other = new T3App(a.config, join(a.root, 'other-run'), renameFault(() => true));
+  await expect(other.prepare()).rejects.toThrow('holds the launchers');
+  await other.cleanup();
+  expect(await idle(a)).toEqual(before);
+  expect((await readdir(a.launcherDirectory)).filter(name => name.endsWith('.blocked'))).toEqual([]);
+  expect((await json(join(a.launcherDirectory, 'lock.json'))).root).toBe(a.root);
+  await a.app.cleanup();
 });

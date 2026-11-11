@@ -9,9 +9,10 @@ const roots: string[] = [];
 const project = '.claude/skills/verify-open-pstack';
 const plugin = 'plugins/pstack';
 const alias = '.agents/skills/verify-open-pstack';
+const profiles = 'docs/model-routing';
 const gitEnv = { PATH: process.env.PATH ?? '', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
-async function fixture(): Promise<{ root: string; sha: string }> {
+async function fixture(withProfiles = false): Promise<{ root: string; sha: string }> {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'pstack-provenance-'))); roots.push(root);
   await mkdir(join(root, project, 'scripts'), { recursive: true });
   await mkdir(join(root, plugin, 'skills/poteto-mode/scripts'), { recursive: true });
@@ -21,6 +22,10 @@ async function fixture(): Promise<{ root: string; sha: string }> {
   await writeFile(join(root, plugin, 'plugin.json'), '{"version":"1"}\n');
   await writeFile(join(root, plugin, 'skills/poteto-mode/scripts/bootstrap.ts'), 'bootstrap\n');
   await symlink('../../.claude/skills/verify-open-pstack', join(root, alias));
+  if (withProfiles) {
+    await mkdir(join(root, profiles), { recursive: true });
+    for (const harness of ['claude', 'codex']) await writeFile(join(root, profiles, `correctness-first-${harness}.md`), `${harness} profile\n`);
+  }
   for (const args of [
     ['git', 'init', '--quiet'], ['git', 'config', 'user.name', 'Provenance Test'],
     ['git', 'config', 'user.email', 'test@example.invalid'], ['git', 'add', '.'],
@@ -28,6 +33,73 @@ async function fixture(): Promise<{ root: string; sha: string }> {
   ]) await command(args, { cwd: root, env: gitEnv });
   return { root, sha: (await command(['git', 'rev-parse', 'HEAD'], { cwd: root, env: gitEnv })).trim() };
 }
+
+test('optional routing profiles match immutable blobs and detect mutation, addition, deletion and mode changes', async () => {
+  const { root, sha } = await fixture(true), pinned = await sourceHash(root, sha);
+  expect(await sourceDigest(root)).toBe(pinned);
+  for (const harness of ['claude', 'codex']) {
+    const path = join(root, profiles, `correctness-first-${harness}.md`), original = `${harness} profile\n`;
+    await writeFile(path, `${harness} changed profile\n`);
+    await expect(sourceHash(root, sha)).rejects.toThrow('Source differs from pinned Git tree');
+    expect(await sourceDigest(root)).not.toBe(pinned);
+    await writeFile(path, original);
+    expect(await sourceHash(root, sha)).toBe(pinned);
+    await rm(path);
+    await expect(sourceHash(root, sha)).rejects.toThrow('Source differs from pinned Git tree');
+    expect(await sourceDigest(root)).not.toBe(pinned);
+    await writeFile(path, original);
+  }
+  const added = join(root, profiles, 'untracked.md');
+  await writeFile(added, 'untracked routing profile\n');
+  await expect(sourceHash(root, sha)).rejects.toThrow('Source differs from pinned Git tree');
+  expect(await sourceDigest(root)).not.toBe(pinned);
+  await rm(added);
+  const path = join(root, profiles, 'correctness-first-codex.md');
+  await command(['git', 'config', 'core.filemode', 'false'], { cwd: root, env: gitEnv });
+  await chmod(path, 0o755);
+  await expect(sourceHash(root, sha)).rejects.toThrow('Source differs from pinned Git tree');
+  expect(await sourceDigest(root)).not.toBe(pinned);
+  await chmod(path, 0o644);
+  expect(await sourceHash(root, sha)).toBe(pinned);
+  expect(await sourceDigest(root)).toBe(pinned);
+  await rm(join(root, profiles), { recursive: true });
+  await expect(sourceHash(root, sha)).rejects.toThrow('Source differs from pinned Git tree');
+  expect(await sourceDigest(root)).not.toBe(pinned);
+});
+
+test('absent routing profiles preserve earlier candidates and unrelated documentation stays outside coverage', async () => {
+  const { root, sha } = await fixture(), pinned = await sourceHash(root, sha);
+  await mkdir(join(root, 'docs/other'), { recursive: true });
+  await writeFile(join(root, 'docs/other/note.md'), 'unrelated documentation\n');
+  expect(await sourceHash(root, sha)).toBe(pinned);
+  expect(await sourceDigest(root)).toBe(pinned);
+  await mkdir(join(root, profiles));
+  await writeFile(join(root, profiles, 'correctness-first-codex.md'), 'untracked profile\n');
+  await expect(sourceHash(root, sha)).rejects.toThrow('Source differs from pinned Git tree');
+  expect(await sourceDigest(root)).not.toBe(pinned);
+});
+
+test('routing provenance rejects profile symlinks and redirected ancestor directories', async () => {
+  const { root, sha } = await fixture(true), path = join(root, profiles, 'correctness-first-codex.md');
+  await rm(path);
+  await symlink(join(root, profiles, 'correctness-first-claude.md'), path);
+  await expect(sourceHash(root, sha)).rejects.toThrow();
+  await expect(sourceDigest(root)).rejects.toThrow('source symlink');
+  await rm(path);
+  await writeFile(path, 'codex profile\n');
+  const original = join(root, profiles), moved = join(root, 'routing-copy');
+  await rename(original, moved);
+  await symlink(moved, original);
+  await expect(sourceHash(root, sha)).rejects.toThrow();
+  await expect(sourceDigest(root)).rejects.toThrow('source directory');
+  await rm(original);
+  await rename(moved, original);
+  const docs = join(root, 'docs'), other = join(root, 'docs-copy');
+  await rename(docs, other);
+  await symlink(other, docs);
+  await expect(sourceHash(root, sha)).rejects.toThrow();
+  await expect(sourceDigest(root)).rejects.toThrow('source directory');
+});
 
 test('real pinned source remains stable after both permitted dependency bootstraps, including symlinks', async () => {
   const { root, sha } = await fixture(), before = await sourceHash(root, sha);

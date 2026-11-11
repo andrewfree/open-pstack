@@ -2,7 +2,7 @@ import { afterEach, expect, test } from 'bun:test';
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { assertDailyState, captureDailyState, type DailyStatePaths } from './daily-state.ts';
+import { assertDailyState, captureDailyState, dailyFieldChanges, type DailyStatePaths, type DailyFileSnapshot } from './daily-state.ts';
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -74,4 +74,49 @@ test('captures linked project memory while skipping links to files and absent ta
   await writeFile(join(target, 'memory/MEMORY.md'), 'changed linked memory');
   const after = await captureDailyState(paths);
   expect(() => assertDailyState(before, after)).toThrow('linked/memory/MEMORY.md');
+});
+
+for (const field of ['lastUpdated', 'source']) test(`strictly rejects registry ${field} changes and binds private field digests to captured bytes`, async () => {
+  const initialPaths = await fixture(), registry = join(initialPaths.home, 'known_marketplaces.json');
+  const paths = {...initialPaths, files: [...initialPaths.files, registry]};
+  const initial = {'claude-plugins-official': {lastUpdated:'2026-11-05T01:00:00Z', source:{source:'github', repo:'private-value-not-retained'}}};
+  await writeFile(registry, JSON.stringify(initial));
+  const beforeFields: DailyFileSnapshot[] = [], afterFields: DailyFileSnapshot[] = [];
+  const before = await captureDailyState(paths, item => beforeFields.push(item));
+  const changed = field === 'lastUpdated' ? {...initial['claude-plugins-official'], lastUpdated:'2026-11-05T02:00:00Z'}
+    : {...initial['claude-plugins-official'], source:{source:'github', repo:'different-private-value'}};
+  await writeFile(registry, JSON.stringify({'claude-plugins-official':changed}));
+  const after = await captureDailyState(paths, item => afterFields.push(item));
+  expect(() => assertDailyState(before, after)).toThrow(registry);
+  const a = beforeFields.find(item => item.path === registry), b = afterFields.find(item => item.path === registry);
+  expect(a).toBeDefined(); expect(b).toBeDefined();
+  if (a?.kind !== 'json' || b?.kind !== 'json') throw Error('Expected JSON diagnostic');
+  expect(a.fingerprint).toBe(before[registry]!); expect(b.fingerprint).toBe(after[registry]!);
+  expect(a.fields[`/claude-plugins-official/${field}`]).not.toBe(b.fields[`/claude-plugins-official/${field}`]);
+  expect(dailyFieldChanges(beforeFields, afterFields).find(item => item.path === registry)?.changedFields).toContain(`/claude-plugins-official/${field}`);
+  expect(JSON.stringify([a,b])).not.toContain('private-value');
+  expect(JSON.stringify([a,b])).not.toContain('2026-11-05T');
+});
+test('diagnostics never turn formatting-only registry drift into a pass', async () => {
+  const initialPaths = await fixture(), registry = join(initialPaths.home, 'known_marketplaces.json');
+  const paths = {...initialPaths, files: [...initialPaths.files, registry]};
+  await writeFile(registry,'{"official":{"lastUpdated":"unchanged"}}');
+  const beforeFields: DailyFileSnapshot[] = [], afterFields: DailyFileSnapshot[] = [];
+  const before = await captureDailyState(paths,item=>beforeFields.push(item));
+  await writeFile(registry,'{ "official": { "lastUpdated": "unchanged" } }\n');
+  const after = await captureDailyState(paths,item=>afterFields.push(item));
+  expect(() => assertDailyState(before,after)).toThrow(registry);
+  expect(beforeFields.find(item=>item.path===registry)?.kind).toBe('json');
+  expect(afterFields.find(item=>item.path===registry)?.kind).toBe('json');
+  expect(dailyFieldChanges(beforeFields, afterFields).find(item => item.path === registry)?.changedFields).toEqual(['$bytes-or-format']);
+});
+
+test('field diagnostics do not parse credential-bearing settings fields', async () => {
+  const paths = await fixture();
+  await writeFile(paths.settingsPath!, JSON.stringify({env:{PRIVATE_TOKEN:'synthetic-secret'}}));
+  const fields: DailyFileSnapshot[] = [];
+  await captureDailyState(paths, item => fields.push(item));
+  expect(fields.find(item => item.path === paths.settingsPath)?.kind).toBe('opaque');
+  expect(JSON.stringify(fields)).not.toContain('PRIVATE_TOKEN');
+  expect(JSON.stringify(fields)).not.toContain('synthetic-secret');
 });

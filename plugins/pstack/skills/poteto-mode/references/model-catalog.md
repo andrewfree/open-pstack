@@ -10,6 +10,7 @@ Model and provider facts for [`provider-dispatch.md`](provider-dispatch.md), whi
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | fable | Fable | claude | fable | max | low medium high xhigh max | `pstack-fable-<effort>` | optional | - |
 | sol | GPT-6.1 Sol | codex | gpt-6.1-sol | max | low medium high xhigh max ultra | - | default | gpt-5.6-sol-max |
+| astra | GPT-6 Astra | codex | gpt-6-astra | high | low medium high xhigh max ultra | - | optional | - |
 | grok | Grok 4.7 | grok | grok-4.7 | xhigh | low medium high xhigh max | - | default | grok-4.7-xhigh-fast |
 | opus | Opus | claude | opus | max | low medium high xhigh max | `pstack-opus-<effort>` | default | opus |
 | luna | GPT-6 Luna | codex | gpt-6-luna | max | low medium high xhigh max | - | optional | - |

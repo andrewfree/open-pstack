@@ -18,7 +18,7 @@ export function evidence(receipt: Receipt): string {
     `- Base SHA: \`${receipt.base}\``,
     `- Result: ${failed ? 'FAILED — verification did not complete; rerun required' : receipt.selection.noRuntime && !receipt.selfTest ? 'PASSED — no runtime change' : 'PASSED — named features verified'}`,
     `- Self-test: ${receipt.selfTest ? failed ? 'required in both harnesses' : 'completed in both harnesses' : 'not requested'}`,
-    `- Planned sessions: ${receipt.sessions} (limit ${SESSION_LIMIT})`,
+    `- Planned sessions: ${receipt.sessions} (limit ${SESSION_LIMIT}); maximum before optional profile selection`,
     ...(receipt.wide ? [`- Wide run reason: ${safe(receipt.wide)}`] : []),
     `- Publisher revision: ${receipt.publisherRevision ? `\`${receipt.publisherRevision}\`` : 'not supplied'}`,
     `- Evidence-set SHA-256: \`${sha256(JSON.stringify({ installations: receipt.installations, observations: receipt.observations }))}\``,
@@ -112,7 +112,7 @@ export async function verify(options: VerifyOptions): Promise<Receipt> {
   for (const harness of requiredHarnesses(receipt)) {
     for (const feature of requiredFeatures(receipt, harness)) receipt.sessions += recipe(feature, harness, options.routes).length;
   }
-  console.log(`Planned headless sessions: ${receipt.sessions} (limit ${SESSION_LIMIT})`);
+  console.log(`Planned headless session maximum: ${receipt.sessions} (limit ${SESSION_LIMIT})`);
   if (receipt.sessions > SESSION_LIMIT && !options.wide) throw new Refused(`${receipt.sessions} planned sessions exceed the limit of ${SESSION_LIMIT}; name fewer features or pass --wide "<reason>"`);
   if (options.wide) receipt.wide = options.wide;
   if (requiredHarnesses(receipt).length) await driver.preflight(receipt);

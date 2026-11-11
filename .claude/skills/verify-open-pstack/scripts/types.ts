@@ -29,6 +29,7 @@ export interface Observation {
 export interface Installation {
   harness: Harness; cliVersion: string; pluginVersion: string; sha: string;
   location: string; treeHash: string; home: string; sourceHash?: string;
+  correctnessProfile?: boolean;
 }
 export interface Receipt {
   schema: 1; repo: string; pr: number; sha: string; base: string; phase: Phase;
@@ -51,6 +52,7 @@ export interface SessionRecord {
   commands: string[];
   tools: { name: string; id: string; input: Record<string, any>; parent: string | null; result?: string; failed: boolean }[];
   context: string[];
+  assistantText?: string[];
   appTools?: { tool: string; arguments: Record<string, unknown>; result: Record<string, unknown> }[];
   appRoutes?: { providerInstanceId: string; model: string; efforts: string[] }[];
 }
