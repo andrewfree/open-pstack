@@ -290,6 +290,62 @@ class ReviewRegressionTests(unittest.TestCase):
                 self.assertEqual(selected["model"], "unknown")
                 self.assertEqual(selected["status"], "unknown")
 
+    def test_generic_aggregate_scope_aliases_override_request_identity(self):
+        shapes = ({"type": "request.completed"}, {"type": "usage.partial"}, {"object": "response"})
+        for scope in ("session", "turn", "aggregate"):
+            for aliases in ({"usage_scope": scope}, {"usageScope": scope},
+                            {"usage_scope": "request", "usageScope": scope},
+                            {"usageScope": "request", "usage_scope": scope}):
+                for shape in shapes:
+                    for mode in ("auto", "openai", "grok", "pstack"):
+                        with self.subTest(scope=scope, aliases=aliases, shape=shape, mode=mode):
+                            source = self.root / "aggregate.jsonl"
+                            source.write_text(json.dumps({"schemaVersion": 1, "request_id": "fixture-request",
+                                                          "model": "toy-exact", "usage": {"input_tokens": 100},
+                                                          **shape, **aliases}) + "\n")
+                            before = source.read_bytes()
+                            result = import_file(source, mode)
+                            self.assertFalse(result["records"])
+                            code = "receipt_usage_granularity_unknown" if mode == "pstack" else "aggregate_usage_without_request_identity"
+                            self.assertEqual(result["diagnostics"], [{"code": code, "source_ref": str(source.resolve()) + ":1", "excluded": True}])
+                            self.assertEqual(result["source_metadata"]["excluded_events"], 1)
+                            self.assertEqual(source.read_bytes(), before)
+
+    def test_nested_response_keeps_outer_and_inner_aggregate_scope_guards(self):
+        for alias in ("usage_scope", "usageScope"):
+            for scope in ("session", "turn", "aggregate"):
+                for placement in ("outer", "inner"):
+                    for mode in ("auto", "openai", "grok"):
+                        with self.subTest(alias=alias, scope=scope, placement=placement, mode=mode):
+                            response = {"id": "fixture-request", "model": "toy-exact", "usage": {"input_tokens": 100},
+                                        "usage_scope": "request", "usageScope": "request"}
+                            event = {"schemaVersion": 1, "type": "response.completed", "response": response,
+                                     "usage_scope": "request", "usageScope": "request"}
+                            (event if placement == "outer" else response)[alias] = scope
+                            source = self.root / "response.json"
+                            source.write_text(json.dumps(event))
+                            result = import_file(source, mode)
+                            self.assertFalse(result["records"])
+                            self.assertEqual([d["code"] for d in result["diagnostics"]], ["aggregate_usage_without_request_identity"])
+                            self.assertEqual(result["source_metadata"]["usage_events"], 1)
+
+    def test_aggregate_events_do_not_poison_valid_requests_sharing_an_id(self):
+        for alias in ("usage_scope", "usageScope"):
+            for reverse in (False, True):
+                with self.subTest(alias=alias, reverse=reverse):
+                    valid = {"schemaVersion": 1, "type": "request.completed", "request_id": "fixture-request",
+                             "model": "toy-exact", "usage": {"input_tokens": 100},
+                             "usage_scope": "request", "usageScope": "request"}
+                    aggregate = {**valid, alias: "turn", "usage": {"input_tokens": 10000}}
+                    independent = {**valid, "request_id": "other-fixture", "usage": {"input_tokens": 300}}
+                    events = [aggregate, valid, independent] if reverse else [valid, aggregate, independent]
+                    source = self.root / "requests.jsonl"
+                    source.write_text("".join(json.dumps(event) + "\n" for event in events))
+                    result = import_file(source, "auto")
+                    self.assertEqual(sorted(row["usage"]["input_total"] for row in result["records"]), [100, 300])
+                    self.assertTrue(all(row["status"] == "success" for row in result["records"]))
+                    self.assertEqual([d["code"] for d in result["diagnostics"]], ["aggregate_usage_without_request_identity"])
+
     def test_snapshot_invalid_counters_cannot_be_repaired_in_either_order(self):
         fields = ((None, "input_tokens"), (None, "inputTokens"), (None, "output_tokens"),
                   (None, "cached_input_tokens"), (None, "cache_creation_input_tokens"),

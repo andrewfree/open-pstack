@@ -487,8 +487,10 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
                 warnings.append("receipt_input_token_semantics_unknown")
             emit(data, receipt_usage, dialect, provider, line, _id(obj), warnings)
             return
+        scopes = (obj.get("usage_scope"), obj.get("usageScope"))
         if kind in {"response.completed", "response.failed"} and isinstance(obj.get("response"), dict):
             response = obj["response"]
+            scopes += (response.get("usage_scope"), response.get("usageScope"))
             # The Responses API nests telemetry alongside content. Select metadata
             # explicitly, retaining outer event status and timestamp precedence.
             obj = {key: value for key, value in obj.items() if key in {
@@ -509,7 +511,7 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
             return
         metadata["usage_events"] += 1
         identity = _id(obj)
-        if obj.get("usage_scope") in ("session", "turn", "aggregate"):
+        if any(scope in ("session", "turn", "aggregate") for scope in scopes):
             diagnostic("aggregate_usage_without_request_identity", line, True)
             return
         provider = "xai" if mode == "grok" else _provider(obj.get("provider", "openai"))

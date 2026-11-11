@@ -83,6 +83,13 @@ precedence over the broad pstack receipt marker. Untyped `schemaVersion`/`usage`
 receipts still use the pstack adapter, with timing optional. An explicit format
 selection always keeps that adapter's semantics.
 
+For generic events, either `usage_scope` or `usageScope` declaring `session`,
+`turn` or `aggregate` excludes the event even when a request ID is present.
+Recognized nested Responses API envelopes check these fields on both the outer
+event and its response. A `request` value in one field does not override an
+aggregate value in another. Excluding that event does not discard a separate
+valid request with the same ID.
+
 An explicit non-request scope excludes a pstack receipt even when it has an ID.
 Codex's [event contract](https://github.com/openai/codex/blob/main/sdk/typescript/src/events.ts)
 defines `turn.completed.usage` over the agent turn. It cannot establish request
