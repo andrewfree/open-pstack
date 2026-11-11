@@ -238,6 +238,58 @@ class ReviewRegressionTests(unittest.TestCase):
                     self.assertEqual([d["code"] for d in result["diagnostics"]],
                                      ["receipt_usage_granularity_unknown"])
 
+    def test_versioned_generic_event_types_keep_generic_model_and_status(self):
+        kinds = ("request.usage", "request.completed", "request.failed", "response.completed",
+                 "response.failed", "usage", "usage.partial", "message_start", "message_delta")
+        for kind in kinds:
+            for provider in ("openai", "xai"):
+                for suffix in (".json", ".jsonl"):
+                    with self.subTest(kind=kind, provider=provider, suffix=suffix):
+                        source = self.root / ("versioned" + suffix)
+                        event = {"schemaVersion": 1, "type": kind, "provider": provider,
+                                 "request_id": "fixture-request", "model": "toy-reported",
+                                 "usage": {"input_tokens": 100, "output_tokens": 10}}
+                        source.write_text(json.dumps(event) + "\n")
+                        before = source.read_bytes()
+                        automatic, explicit = import_file(source, "auto"), import_file(source, "openai")
+                        self.assertEqual(automatic["records"], explicit["records"])
+                        self.assertEqual(len(automatic["records"]), 1)
+                        row = automatic["records"][0]
+                        self.assertEqual(row["model"], "toy-reported")
+                        self.assertEqual(row["source_kind"], "observational")
+                        expected = "success" if kind.endswith(".completed") else "failed" if kind.endswith(".failed") else "unknown"
+                        self.assertEqual(row["status"], expected)
+                        self.assertEqual(source.read_bytes(), before)
+
+    def test_versioned_native_object_envelopes_keep_generic_semantics(self):
+        for kind in ("chat.completion", "chat.completion.chunk", "response"):
+            with self.subTest(object=kind):
+                source = self.root / "native-object.json"
+                source.write_text(json.dumps({"schemaVersion": 1, "object": kind, "id": "fixture-request",
+                                              "model": "toy-reported", "usage": {"input_tokens": 100},
+                                              "status": "completed"}))
+                automatic, explicit = import_file(source, "auto"), import_file(source, "openai")
+                self.assertEqual(automatic["records"], explicit["records"])
+                self.assertEqual(automatic["records"][0]["model"], "toy-reported")
+
+    def test_untyped_receipt_model_provenance_and_explicit_format_stay_strict(self):
+        for object_kind in (None, [], {}):
+            with self.subTest(object=object_kind):
+                receipt = {"schemaVersion": 1, "usage": {"inputTokens": 100}, "requestId": "fixture-request",
+                           "provider": "codex", "model": "toy-requested", "modelVerified": False,
+                           "object": object_kind}
+                source = self.root / "untyped-receipt.json"
+                source.write_text(json.dumps(receipt))
+                automatic, explicit = import_file(source, "auto"), import_file(source, "pstack")
+                self.assertEqual(automatic["records"], explicit["records"])
+                self.assertEqual(automatic["records"][0]["model"], "unknown")
+                self.assertIsNone(automatic["records"][0]["elapsed_seconds"])
+                receipt["type"] = "request.completed"
+                source.write_text(json.dumps(receipt))
+                selected = import_file(source, "pstack")["records"][0]
+                self.assertEqual(selected["model"], "unknown")
+                self.assertEqual(selected["status"], "unknown")
+
     def test_snapshot_invalid_counters_cannot_be_repaired_in_either_order(self):
         fields = ((None, "input_tokens"), (None, "inputTokens"), (None, "output_tokens"),
                   (None, "cached_input_tokens"), (None, "cache_creation_input_tokens"),

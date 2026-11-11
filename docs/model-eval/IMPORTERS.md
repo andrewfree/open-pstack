@@ -78,6 +78,11 @@ them with imports using this source-scoped identity format.
 | OpenAI / Grok | Top-level `request.usage`, `request.completed`, `request.failed`, `response.completed`, `response.failed`, `usage`, `usage.partial`, `message_start`, `message_delta`, or native `chat.completion`/`chat.completion.chunk`/`response` object; an untyped envelope with explicit request ID and model is also accepted | Both prompt/completion and input/output counter names are supported, with cached/reasoning detail fields. Cache reads are included in input total; uncached input is calculated only when read and write counters are known. Omitted cache-write counters remain null. Explicit 30m/12h writes are supported, and unsplit writes remain unknown TTL. Generic `usage` without request identity is excluded. Session/turn/aggregate scopes are excluded. |
 | pstack | One JSON receipt with `schemaVersion` and `usage` | Whole-run receipts without explicit request scope/identity are excluded with `receipt_usage_granularity_unknown`. Per-request receipts support camelCase counters and `elapsedMs`. An unverified requested model becomes unknown; a verified `reportedModel` is preserved. Claude receipts preserve the runner producer's native Anthropic semantics: `inputTokens` is uncached input, `cachedInputTokens` is cache reads, and `cacheCreationInputTokens` is cache writes with unknown TTL. Input total requires all three. Conflicting native and camelCase aliases are excluded. Other providers with unproven camelCase input semantics retain the unknown-input warning. |
 
+Auto-detection gives recognized event types and native API object envelopes
+precedence over the broad pstack receipt marker. Untyped `schemaVersion`/`usage`
+receipts still use the pstack adapter, with timing optional. An explicit format
+selection always keeps that adapter's semantics.
+
 An explicit non-request scope excludes a pstack receipt even when it has an ID.
 Codex's [event contract](https://github.com/openai/codex/blob/main/sdk/typescript/src/events.ts)
 defines `turn.completed.usage` over the agent turn. It cannot establish request

@@ -19,6 +19,9 @@ FORMATS = {"auto", "codex", "claude", "anthropic", "kimi", "openai", "grok", "ps
 MAX_LINE_BYTES = 8 * 1024 * 1024
 _MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_./:@+\-]{0,159}\Z")
 _PROVIDERS = {"openai", "anthropic", "kimi", "xai", "cursor", "unknown"}
+_GENERIC_EVENTS = {"request.usage", "request.completed", "request.failed", "response.completed", "response.failed",
+                   "usage", "usage.partial", "message_start", "message_delta"}
+_GENERIC_OBJECTS = {"chat.completion", "chat.completion.chunk", "response"}
 _COUNTER_KEYS = {"input_tokens", "prompt_tokens", "inputTokens", "cached_input_tokens",
                  "cachedInputTokens", "cache_write_input_tokens", "cache_creation_input_tokens",
                  "cacheCreationInputTokens", "cache_read_input_tokens", "output_tokens",
@@ -360,6 +363,8 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
                 mode = "claude"
             elif kind == "usage.record":
                 mode = "kimi"
+            elif kind in _GENERIC_EVENTS or (isinstance(obj.get("object"), str) and obj["object"] in _GENERIC_OBJECTS):
+                mode = "openai"
             elif "schemaVersion" in obj and isinstance(obj.get("usage"), dict):
                 mode = "pstack"
             else:
@@ -492,12 +497,11 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
             for key in ("id", "model", "usage", "status", "timestamp", "created_at"):
                 if key not in obj and key in response:
                     obj[key] = response[key]
-        allowed = {"request.usage", "request.completed", "request.failed", "response.completed", "response.failed", "usage", "usage.partial", "message_start", "message_delta"}
         raw = obj.get("usage")
         object_kind = obj.get("object")
-        native_response = isinstance(object_kind, str) and object_kind in {"chat.completion", "chat.completion.chunk", "response"}
+        native_response = isinstance(object_kind, str) and object_kind in _GENERIC_OBJECTS
         explicit_request = kind is None and isinstance(obj.get("request_id"), str) and "model" in obj and "role" not in obj and "message" not in obj
-        if kind not in allowed and not native_response and not explicit_request:
+        if kind not in _GENERIC_EVENTS and not native_response and not explicit_request:
             metadata["ignored_lines"] += 1
             return
         if not isinstance(raw, dict):
