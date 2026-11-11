@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test';
-import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { save } from './io.ts';
@@ -235,7 +235,7 @@ const candidateSession = (pluginRoot: string, model: string) => [
     plugins: [{ name: 'pstack', path: pluginRoot, source: 'pstack@inline' }] },
   { type: 'result', subtype: 'success', is_error: false, terminal_reason: 'completed', result: 'done' },
 ].map(event => ({ session_id: 'sdk-session', ...event }));
-async function fakeApp() {
+async function fakeApp(replace?: (from: string, to: string) => Promise<void>) {
   const root = await mkdtemp(join(tmpdir(), 't3-launchers-')); roots.push(root);
   const settingsPath = join(root, 'settings.json'), logsDirectory = join(root, 'logs'), launcherDirectory = join(root, 'launchers');
   await mkdir(logsDirectory);
@@ -248,7 +248,7 @@ async function fakeApp() {
   await writeFile(settingsPath, JSON.stringify(settings));
   const config = { parentThreadId: 'parent', baseProviderId: 'claude', model: 'haiku', codexProviderId: 'codex', codexModel: 'luna', runnerClaudeModel: 'opus',
     verifyClaudeProviderId: 'verify_claude', verifyCodexProviderId: 'verify_codex', launcherDirectory, settingsPath, logsDirectory };
-  const app = new T3App(config, root), pluginRoot = join(root, 'plugin');
+  const app = new T3App(config, root, replace), pluginRoot = join(root, 'plugin');
   await mkdir(join(pluginRoot, 'hooks'), { recursive: true }); await mkdir(join(root, 'candidate'));
   await writeFile(join(pluginRoot, 'hooks/hooks.json'), JSON.stringify({ hooks: { SessionStart: [{ matcher: 'startup|clear|compact', hooks: [{ type: 'command', command: '"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd" session-start', async: false }] }] } }));
   await writeFile(join(pluginRoot, 'hooks/session-start-context.md'), HOOK_CONTEXT);
@@ -345,6 +345,7 @@ test('managed Claude pool uses the dedicated launcher without serializing its in
   await a.app.cleanup();
   expect(await readFile(a.settingsPath, 'utf8')).toBe(before);
   expect((await idle(a))[0]).toBe(launcherScript({ real: wrapper }));
+  expect((await readdir(a.launcherDirectory)).filter(name => name.endsWith('.blocked'))).toEqual([]);
   expect(request.target.providerInstanceId).toBe('verify_claude');
 });
 
@@ -664,4 +665,169 @@ test('a case whose launcher cannot be armed reports that failure, not a pending 
   const cleanup = await a.app.cleanup().catch(error => error);
   expect(cleanup.message).toContain('not a pstack verification launcher');
   expect(cleanup.message).not.toContain('no validated terminal receipt');
+});
+
+function renameFault(fails: (from: string, to: string) => boolean | Promise<boolean>) {
+  return async (from: string, to: string) => {
+    if (await fails(from, to)) throw new Error(`injected launcher rename failure: ${to}`);
+    await rename(from, to);
+  };
+}
+
+async function configuredLaunch(a: Awaited<ReturnType<typeof fakeApp>>, driver: 'claude' | 'codex', shell: boolean) {
+  const settings = await json(a.settingsPath), binary = settings.providerInstances[`verify_${driver}`].config.binaryPath;
+  try {
+    return await Bun.spawn(shell ? ['/bin/sh', binary] : [binary], { stdout: 'ignore', stderr: 'ignore' }).exited;
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+async function staleLaunchers(a: Awaited<ReturnType<typeof fakeApp>>, legacy: boolean) {
+  await mkdir(a.launcherDirectory, { mode: 0o700 });
+  const trace = join(a.root, 'stale-executions'), probe = join(a.root, 'stale-probe');
+  await writeFile(probe, `#!/bin/sh\nprintf 'ran\\n' >> '${trace}'\n`, { mode: 0o700 });
+  const script = legacy ? `#!/bin/sh\n# pstack-verify launcher\nexec '${probe}' "$@" --plugin-dir /old-candidate\n`
+    : launcherScript({ real: probe, args: ['--plugin-dir', '/old-candidate'], env: { OLD_CASE_ENV: 'old-value' } });
+  for (const driver of ['claude', 'codex'] as const) {
+    await writeFile(join(a.launcherDirectory, driver), script, { mode: 0o700 });
+    for (const shell of [false, true]) expect(await configuredLaunch(a, driver, shell)).toBe(0);
+  }
+  expect(await readFile(trace, 'utf8')).toBe('ran\n'.repeat(4));
+  await rm(trace);
+  await writeFile(join(a.launcherDirectory, 'lock.json'), JSON.stringify({ pid: 2 ** 22 + 12345, root: '/interrupted-run' }));
+  return { trace, script };
+}
+
+for (const stage of ['claudeBinaryPath', 'prepare'] as const) for (const driver of ['claude', 'codex'] as const) for (const legacy of [false, true]) {
+  test(`launcher fault quarantines ${legacy ? 'legacy' : 'current'} stale ${driver} before ${stage} returns`, async () => {
+    let slot = '';
+    const a = await fakeApp(renameFault((_from, to) => to === slot));
+    slot = join(a.launcherDirectory, driver);
+    const before = await readFile(a.settingsPath, 'utf8'), { trace, script } = await staleLaunchers(a, legacy);
+    await expect(a.app[stage]()).rejects.toThrow('could not be disabled');
+    await a.app.cleanup();
+    expect(await Bun.file(slot).exists()).toBe(false);
+    for (const shell of [false, true]) {
+      const exit = await configuredLaunch(a, driver, shell);
+      if (shell) expect(exit).not.toBe(0); else expect(exit).toBeNull();
+      expect(await configuredLaunch(a, driver === 'claude' ? 'codex' : 'claude', shell)).toBe(78);
+    }
+    expect(await Bun.file(trace).exists()).toBe(false);
+    const blocked = (await readdir(a.launcherDirectory)).filter(name => name.endsWith('.blocked'));
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0]).toStartWith(driver + '.');
+    expect(await readFile(join(a.launcherDirectory, blocked[0]!), 'utf8')).toBe(script);
+    expect(await readdir(a.launcherDirectory)).not.toContain('lock.json');
+    const recovery = new T3App(a.config, join(a.root, 'recovery'));
+    await recovery.prepare();
+    for (const recovered of ['claude', 'codex'] as const) for (const shell of [false, true]) expect(await configuredLaunch(a, recovered, shell)).toBe(0);
+    await recovery.cleanup();
+    expect(await Bun.file(trace).exists()).toBe(false);
+    expect(await readFile(join(a.launcherDirectory, blocked[0]!), 'utf8')).toBe(script);
+    expect(await readFile(a.settingsPath, 'utf8')).toBe(before);
+    expect((await readdir(a.launcherDirectory)).filter(name => name.endsWith('.tmp'))).toEqual([]);
+  });
+}
+
+for (const stage of ['claudeBinaryPath', 'prepare'] as const) for (const driver of ['claude', 'codex'] as const) {
+  test(`launcher fault retains ownership when stale ${driver} cannot be replaced or quarantined in ${stage}`, async () => {
+    let slot = '';
+    const a = await fakeApp(renameFault((from, to) => from === slot || to === slot));
+    slot = join(a.launcherDirectory, driver);
+    const { trace } = await staleLaunchers(a, true);
+    const error = await a.app[stage]().catch(error => error);
+    expect(error.message).toContain('injected launcher rename failure');
+    if (stage === 'claudeBinaryPath') expect(error.message).toContain('may still start a candidate');
+    await expect(a.app.cleanup()).rejects.toThrow('may still start a candidate');
+    expect((await json(join(a.launcherDirectory, 'lock.json'))).root).toBe(a.root);
+    for (const shell of [false, true]) expect(await configuredLaunch(a, driver, shell)).toBe(0);
+    expect(await readFile(trace, 'utf8')).toBe('ran\nran\n');
+    await writeFile(join(a.launcherDirectory, 'lock.json'), JSON.stringify({ pid: 2 ** 22 + 12345, root: a.root }));
+    const recovery = new T3App(a.config, join(a.root, 'recovery'));
+    await recovery.prepare(); await recovery.cleanup();
+    for (const shell of [false, true]) expect(await configuredLaunch(a, driver, shell)).toBe(0);
+    expect(await readFile(trace, 'utf8')).toBe('ran\nran\n');
+  });
+}
+
+for (const [harness, driver] of [['claude', 'claude'], ['codex', 'claude'], ['codex', 'codex']] as const) for (const quarantineFails of [false, true]) {
+  test(`launcher fault ${quarantineFails ? 'retains ownership for' : 'quarantines'} armed ${driver} after ${harness} case`, async () => {
+    let fault = false, slot = '';
+    const a = await fakeApp(renameFault((from, to) => fault && (to === slot || quarantineFails && from === slot)));
+    a.c.harness = harness; slot = join(a.launcherDirectory, driver);
+    await a.app.prepare();
+    const work = a.app.record(a.c).catch(error => error), request = await pending(a.root);
+    const armed = await readFile(slot, 'utf8');
+    expect(armed).toContain(request.id);
+    const launches = join(a.root, 't3-app', 'launches.log');
+    for (const shell of [false, true]) expect(await configuredLaunch(a, driver, shell)).toBe(0);
+    const before = await readFile(launches, 'utf8');
+    fault = true;
+    await answerCase(a, { launched: [], runnerCatalog: harness === 'codex' });
+    expect((await work).message).toContain('Pass-through launchers were not restored');
+    const cleanup = await a.app.cleanup().catch(error => error);
+    if (quarantineFails) {
+      expect(cleanup.message).toContain('may still start a candidate');
+      expect((await json(join(a.launcherDirectory, 'lock.json'))).root).toBe(a.root);
+      expect((await json(join(a.root, 't3-app', 'state.json'))).armedLaunchers).toBe(true);
+    } else {
+      expect(cleanup.message).toContain('Pass-through launchers were not restored');
+      expect(await readdir(a.launcherDirectory)).not.toContain('lock.json');
+      expect(await Bun.file(slot).exists()).toBe(false);
+      for (const shell of [false, true]) {
+        const exit = await configuredLaunch(a, driver, shell);
+        if (shell) expect(exit).not.toBe(0); else expect(exit).toBeNull();
+      }
+      expect(await readFile(launches, 'utf8')).toBe(before);
+      const blocked = (await readdir(a.launcherDirectory)).filter(name => name.startsWith(driver + '.') && name.endsWith('.blocked'));
+      expect(blocked).toHaveLength(1);
+      expect(await readFile(join(a.launcherDirectory, blocked[0]!), 'utf8')).toBe(armed);
+    }
+    fault = false;
+    await a.app.cleanup();
+  });
+}
+
+for (const driver of ['claude', 'codex'] as const) {
+  test(`launcher fault preserves the disabled ${driver} when prepare cannot restore pass-through`, async () => {
+    let slot = '';
+    const a = await fakeApp(renameFault(async (from, to) => to === slot && (await readFile(from, 'utf8')).includes("exec '")));
+    slot = join(a.launcherDirectory, driver);
+    await expect(a.app.prepare()).rejects.toThrow('Pass-through launchers were not restored');
+    for (const shell of [false, true]) expect(await configuredLaunch(a, driver, shell)).toBe(78);
+    expect((await readdir(a.launcherDirectory)).filter(name => name.endsWith('.blocked'))).toEqual([]);
+    await a.app.cleanup();
+    expect(await readdir(a.launcherDirectory)).not.toContain('lock.json');
+  });
+}
+
+for (const operator of ['file', 'symlink'] as const) test(`launcher fault never quarantines an operator ${operator} installed before arming`, async () => {
+  const a = await fakeApp(renameFault(() => false)); await a.app.prepare();
+  const slot = join(a.launcherDirectory, 'claude');
+  await rm(slot);
+  const target = join(a.root, 'operator-binary');
+  await writeFile(target, 'operator file\n', { mode: 0o700 });
+  if (operator === 'symlink') await symlink(target, slot); else await writeFile(slot, 'operator file\n', { mode: 0o700 });
+  const mode = (await lstat(slot)).mode;
+  await expect(a.app.record(a.c)).rejects.toThrow('not a pstack verification launcher');
+  await expect(a.app.cleanup()).rejects.toThrow('not a pstack verification launcher');
+  expect(await readFile(slot, 'utf8')).toBe('operator file\n');
+  expect(await readFile(target, 'utf8')).toBe('operator file\n');
+  expect((await lstat(slot)).isSymbolicLink()).toBe(operator === 'symlink');
+  expect((await lstat(slot)).mode).toBe(mode);
+  expect((await readdir(a.launcherDirectory)).filter(name => name.endsWith('.blocked'))).toEqual([]);
+  expect(await readdir(a.launcherDirectory)).not.toContain('lock.json');
+});
+
+test('launcher fault cannot move another active owners slots', async () => {
+  const a = await preparedApp(), before = await idle(a);
+  const other = new T3App(a.config, join(a.root, 'other-run'), renameFault(() => true));
+  await expect(other.prepare()).rejects.toThrow('holds the launchers');
+  await other.cleanup();
+  expect(await idle(a)).toEqual(before);
+  expect((await readdir(a.launcherDirectory)).filter(name => name.endsWith('.blocked'))).toEqual([]);
+  expect((await json(join(a.launcherDirectory, 'lock.json'))).root).toBe(a.root);
+  await a.app.cleanup();
 });

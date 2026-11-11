@@ -5,6 +5,9 @@ This port applies the Cursor → Claude Code substitutions in skill bodies. Earl
 
 ## Unreleased
 
+- If a verification launcher cannot be replaced, move the owned script aside and retain its bytes. Keep the run lock when an unresolved slot may still execute candidate arguments, and preserve the original preflight error alongside cleanup failures. Settings, native proof checks and publication rules are unchanged.
+- Preserve failed nested evaluation bundles and source metadata, compare deep duplicate records without recursion, accept request-scoped receipts without timing, reject invalid partial counters before merging snapshots, and label each trial group's source kind in neutral reports.
+
 - Disable the additional OpenAI Developers and Codex Security curated-plugin MCP servers in verification-owned Codex homes for Codex 0.167. Port only the shared isolation fix from [PR #11](https://github.com/andrewfree/open-pstack/pull/11), preserving daily settings and the existing native evidence rules. Marketplace timestamps, settings and memories retain their strict fingerprints.
 
 - Setup explicitly waits for native Claude probe and smoke results with `run_in_background: false`. T3 Claude Agent tasks and external processes keep their background handles and completion checks.

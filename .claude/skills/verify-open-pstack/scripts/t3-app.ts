@@ -222,9 +222,10 @@ export class T3App {
   private pending?: string;
   private armed = false;
   private locked = false;
+  private exposed = new Set<Driver>();
   private passThrough?: Record<Driver, string>;
   private pool?: ClaudePoolRoute;
-  constructor(private config: T3Config, private root: string) {}
+  constructor(private config: T3Config, private root: string, private replace: (from: string, to: string) => Promise<void> = rename) {}
   get runnerRoute(): { providerInstanceId: string; model: string } {
     return { providerInstanceId: this.config.verifyClaudeProviderId, model: this.config.runnerClaudeModel };
   }
@@ -263,12 +264,18 @@ export class T3App {
 
   async claudeBinaryPath(): Promise<string> {
     const held = this.locked;
+    let failure: unknown;
     try {
       await this.lockLaunchers();
       const providers = await this.providers(), binary = this.dailyBinary(providers, 'claude');
       await this.claudePool(providers);
       return binary;
-    } finally { if (!held) await this.cleanup(); }
+    } catch (error) { failure = error; throw error; }
+    finally {
+      if (!held) await this.cleanup().catch(error => {
+        throw failure === undefined ? error : new Error(`${errorMessage(failure)}; ${errorMessage(error)}`);
+      });
+    }
   }
 
   private async claudePool(providers: JsonObject): Promise<ClaudePoolRoute | undefined> {
@@ -290,9 +297,10 @@ export class T3App {
     for (const driver of ['claude', 'codex'] as const) await this.assertLauncherSlot(driver);
     if (this.locked) return;
     await this.lock();
+    this.exposed = new Set(['claude', 'codex']);
     const failures: string[] = [];
     for (const driver of ['claude', 'codex'] as const) {
-      try { await this.writeLauncher(driver, { disabled: true }); } catch (error) { failures.push(`${driver}: ${errorMessage(error)}`); }
+      try { await this.secure(driver, { disabled: true }); } catch (error) { failures.push(`${driver}: ${errorMessage(error)}`); }
     }
     if (failures.length) throw new Error(`Verification launchers could not be disabled (${failures.join('; ')})`);
     await this.retainState();
@@ -308,23 +316,55 @@ export class T3App {
     return targets;
   }
 
+  private async launcherSlot(driver: Driver): Promise<'absent' | 'verification' | 'operator'> {
+    const path = this.launcher(driver), existing = await lstat(path).catch((error: unknown) => {
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return undefined;
+      throw error;
+    });
+    if (!existing) return 'absent';
+    if (!existing.isFile()) return 'operator';
+    return (await Bun.file(path).slice(0, 256).text()).split('\n').includes(LAUNCHER_MARKER) ? 'verification' : 'operator';
+  }
+
   private async assertLauncherSlot(driver: Driver): Promise<void> {
-    const path = this.launcher(driver), existing = await lstat(path).catch(() => undefined);
-    if (existing && (!existing.isFile() || !(await Bun.file(path).slice(0, 256).text()).split('\n').includes(LAUNCHER_MARKER))) throw new Error(`Refusing to replace ${path}: it is not a pstack verification launcher`);
+    if (await this.launcherSlot(driver) === 'operator') throw new Error(`Refusing to replace ${this.launcher(driver)}: it is not a pstack verification launcher`);
   }
 
   private async writeLauncher(driver: Driver, launch: Launch): Promise<void> {
     await this.assertLauncherSlot(driver);
     const path = this.launcher(driver), temporary = `${path}.${randomUUID()}.tmp`;
-    await writeFile(temporary, launcherScript(launch), { flag: 'wx', mode: 0o700 });
-    await rename(temporary, path);
+    try {
+      await writeFile(temporary, launcherScript(launch), { flag: 'wx', mode: 0o700 });
+      await this.replace(temporary, path);
+    } catch (error) {
+      await rm(temporary, { force: true }).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async secure(driver: Driver, launch: Launch): Promise<void> {
+    try { await this.writeLauncher(driver, launch); }
+    catch (error) {
+      if (!this.exposed.has(driver)) throw error;
+      try {
+        if (await this.launcherSlot(driver) === 'verification') {
+          const path = this.launcher(driver);
+          await this.replace(path, `${path}.${randomUUID()}.blocked`);
+        }
+        this.exposed.delete(driver);
+      } catch (blockingError) {
+        throw new Error(`${errorMessage(error)}; blocking ${this.launcher(driver)} also failed: ${errorMessage(blockingError)}`);
+      }
+      throw error;
+    }
+    this.exposed.delete(driver);
   }
 
   /** Idle launchers pass straight through, so T3's background probes and stray use see an ordinary CLI. */
   private async disarm(): Promise<void> {
     const failures: string[] = [];
     for (const driver of ['claude', 'codex'] as const) {
-      try { await this.writeLauncher(driver, { real: this.passThrough![driver] }); } catch (error) { failures.push(`${driver}: ${errorMessage(error)}`); }
+      try { await this.secure(driver, { real: this.passThrough![driver] }); } catch (error) { failures.push(`${driver}: ${errorMessage(error)}`); }
     }
     if (failures.length) throw new Error(`Pass-through launchers were not restored (${failures.join('; ')}); the verification instances may still carry candidate arguments`);
     this.armed = false;
@@ -408,9 +448,13 @@ export class T3App {
     if (this.armed) await this.disarm().catch(error => { failures.push(errorMessage(error)); });
     if (this.pending) failures.push(`T3 case ${this.pending} has no validated terminal receipt; check or cancel only that task before trusting this run`);
     if (this.locked) {
-      const held = await this.readLock().catch(() => undefined);
-      if (held?.pid === process.pid && held.root === this.root) await rm(this.lockPath);
-      this.locked = false;
+      if (this.exposed.size) failures.push(`${[...this.exposed].map(driver => this.launcher(driver)).join(' and ')} may still start a candidate: disabling and moving the launcher aside failed; ${this.lockPath} remains held`);
+      else {
+        if (this.armed) { this.armed = false; await this.retainState(); }
+        const held = await this.readLock().catch(() => undefined);
+        if (held?.pid === process.pid && held.root === this.root) await rm(this.lockPath);
+        this.locked = false;
+      }
     }
     if (failures.length) throw new Error(failures.join('; '));
   }
@@ -466,8 +510,12 @@ export class T3App {
     this.armed = true;
     await this.retainState();
     try {
+      this.exposed.add('claude');
       await this.writeLauncher('claude', { real: this.passThrough.claude, env, args: claudeArgs, receipt: { path: receipts, label: `${id} claude` } });
-      if (c.harness === 'codex') await this.writeLauncher('codex', { real: this.passThrough.codex, env, receipt: { path: receipts, label: `${id} codex` } });
+      if (c.harness === 'codex') {
+        this.exposed.add('codex');
+        await this.writeLauncher('codex', { real: this.passThrough.codex, env, receipt: { path: receipts, label: `${id} codex` } });
+      }
       this.pending = id;
       await this.retainState();
       await save(join(directory, 'pending.json'), request);
