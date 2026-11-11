@@ -101,7 +101,11 @@ def grade_bundle(response_text, receipt):
     grades = {}
     for case in list_cases():
         answer = response.get(case["id"]) if isinstance(response, dict) else None
-        grades[case["id"]] = grade_response(case["id"], json_text(answer))
+        try:
+            text = json_text(answer)
+        except RecursionError:
+            error, text = "invalid strict JSON bundle", json_text(None)
+        grades[case["id"]] = grade_response(case["id"], text)
     trial = {key: receipt.get(key) for key in required}
     trial.update({"task_id": "correctness-bundle-v1", "category": "mixed_microtasks",
                   "source_kind": source_kind, "attempt": receipt.get("attempt", 1),

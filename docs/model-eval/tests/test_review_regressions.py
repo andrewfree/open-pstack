@@ -10,9 +10,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from modeleval.__main__ import main
+from modeleval.__main__ import grade_bundle, main
 from modeleval.accounting import summarize
-from modeleval.cases import suite_sha256
+from modeleval.cases import list_cases, suite_sha256
 from modeleval.evaluation import summarize_trials
 from modeleval.importers import import_file
 from modeleval.reporting import render_html, render_markdown
@@ -97,6 +97,39 @@ class ReviewRegressionTests(unittest.TestCase):
             self.assertIn("sampled sources: 4", render(result))
         self.assertEqual(source.read_bytes(), before)
         self.assertEqual([file.read_bytes() for file in inputs], snapshots)
+
+    def test_nested_answer_encoding_keeps_failed_attempt_and_measured_receipt(self):
+        cases = list_cases()
+        nested = "[" * 2000 + "0" + "]" * 2000
+        response = "{" + ",".join(json.dumps(case["id"]) + ":" + (nested if index == 0 else "null")
+                                  for index, case in enumerate(cases)) + "}"
+        answer = 0
+        for _ in range(2000):
+            answer = [answer]
+        decoded = dict.fromkeys(case["id"] for case in cases)
+        decoded[cases[0]["id"]] = answer
+        receipt = {"trial_id": "encoding-trial", "repeat_id": "encoding-repeat", "provider": "toy",
+                   "model": "toy-exact", "effort": "fixed", "config_id": "fixture-config",
+                   "route": "fixture", "suite_sha256": suite_sha256(), "model_verified": True,
+                   "billing_basis": "subscription", "elapsed_seconds": 7.25, "status": "timeout",
+                   "attempt": 1, "source_kind": "synthetic", "cache_condition": "unknown",
+                   "model_provenance": "synthetic fixture"}
+        receipt_before = json.dumps(receipt)
+        with patch("json.encoder.c_make_encoder", None):
+            with self.assertRaises(RecursionError):
+                json.dumps(decoded[cases[0]["id"]], indent=2)
+            with patch("modeleval.__main__.json", wraps=json) as codec:
+                codec.loads.return_value = decoded
+                result = grade_bundle(response, receipt)
+        self.assertFalse(result["correct"])
+        self.assertEqual(result["bundle_error"], "invalid strict JSON bundle")
+        for field in ("trial_id", "repeat_id", "elapsed_seconds", "status", "attempt", "source_kind",
+                      "suite_sha256", "model_verified", "model_provenance", "cache_condition"):
+            self.assertEqual(result[field], receipt[field])
+        self.assertEqual(result["response_sha256"], hashlib.sha256(response.encode()).hexdigest())
+        self.assertEqual(set(result["case_grades"]), {case["id"] for case in cases})
+        self.assertEqual(json.dumps(receipt), receipt_before)
+        self.assertEqual(json.loads(json.dumps(result)), result)
 
     def test_deep_json_duplicates_survive_both_summary_entry_points(self):
         for factory, summarize_rows, included in (
