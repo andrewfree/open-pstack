@@ -5,6 +5,8 @@ This port applies the Cursor → Claude Code substitutions in skill bodies. Earl
 
 ## Unreleased
 
+- Disable the additional OpenAI Developers and Codex Security curated-plugin MCP servers in verification-owned Codex homes for Codex 0.167. Port only the shared isolation fix from [PR #11](https://github.com/andrewfree/open-pstack/pull/11), preserving daily settings and the existing native evidence rules. Marketplace timestamps, settings and memories retain their strict fingerprints.
+
 - Setup explicitly waits for native Claude probe and smoke results with `run_in_background: false`. T3 Claude Agent tasks and external processes keep their background handles and completion checks.
 - Register GPT-6 Astra as an optional direct Codex family with explicit effort selection.
 - Add complete opt-in correctness-first model sheets for Codex and Claude. Code writers use Sol or Astra, readers use Luna or bounded Haiku, and Opus supplies critique. Existing first-run defaults and user settings remain unchanged until explicit setup.
