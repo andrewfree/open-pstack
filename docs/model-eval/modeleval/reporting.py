@@ -3,6 +3,15 @@
 from html import escape
 
 
+TRIAL_NOTE = (
+    "Source kinds are caller supplied: synthetic checks exercise the workflow, observational inputs describe "
+    "selected observations, and controlled trials assert matched conditions. These labels are not independently "
+    "verified provenance or model attestation. Qualification requires comparable tasks and independent repeats; "
+    "pilot results do not establish broad quality or comparative speed. Compare prompts, tools, cache conditions "
+    "and host overhead before interpreting timing."
+)
+
+
 def _percent(value):
     return "unknown" if value is None else f"{float(value) * 100:.1f}%"
 
@@ -10,6 +19,10 @@ def _percent(value):
 def _label(group):
     suffix = " (configured only)" if "served model identity is unverified" in group.get("inconclusive_reasons", []) else ""
     return f"{group['provider']} / {group['model']}" + suffix
+
+
+def _trial_label(group):
+    return _label(group) + f"; source_kind: {group.get('source_kind', 'unknown')}"
 
 
 def _catalog_note(usage):
@@ -39,15 +52,15 @@ def render_markdown(usage, trials=None):
     out += ["", f"Imported records: {usage['input_records']}; included: {usage['included_records']}; identical duplicates removed: {usage['identical_duplicates_removed']}; validation exclusions: {len(usage['errors'])}.", "",
             "Unknown cache-write TTLs, model IDs or context thresholds keep monetary totals unknown. Known partial subtotals must not be presented as full costs."]
     if trials:
-        out += ["", "## Controlled pilot", "", f"Verdict: **{trials['ranking']['verdict']}**.", "",
-                "The bundled microtasks check the evaluation workflow. One repeat does not establish broad quality or comparative speed. Dispatch-to-completion time includes host overhead; different routes have different prompts and tools.", "",
-                "| Model | Repeats | First-pass correct | Critical failures |", "|---|---:|---:|---:|"]
+        out += ["", "## Trial results", "", f"Verdict: **{trials['ranking']['verdict']}**.", "",
+                TRIAL_NOTE, "",
+                "| Model and source | Repeats | First-pass correct | Critical failures |", "|---|---:|---:|---:|"]
         for group in trials["groups"]:
-            label = _label(group).replace('|', '/')
+            label = escape(_trial_label(group)).replace('|', '/')
             out.append(f"| {label} | {group['repeat_count']} | {group['repeat_first_passes']} | {group['repeat_critical_failures']} |")
         out += ["", "Qualification reasons: " + "; ".join(trials["ranking"]["reasons"]), ""]
         for group in trials["groups"]:
-            out.append("- " + _label(group) + ": " + "; ".join(group.get("inconclusive_reasons", [])))
+            out.append("- " + escape(_trial_label(group)).replace('|', '/') + ": " + "; ".join(group.get("inconclusive_reasons", [])))
     return "\n".join(out) + "\n"
 
 
@@ -65,12 +78,12 @@ def render_html(usage, trials=None):
     if trials:
         items = []
         for group in trials["groups"]:
-            items.append(f'<tr><td>{escape(_label(group))}</td><td>{escape(str(group["repeat_first_passes"]))}/{escape(str(group["repeat_count"]))}</td>'
+            items.append(f'<tr><td>{escape(_trial_label(group))}</td><td>{escape(str(group["repeat_first_passes"]))}/{escape(str(group["repeat_count"]))}</td>'
                          f'<td>{escape(str(group["repeat_critical_failures"]))}</td></tr>')
         reasons = sorted(set(trials["ranking"].get("reasons", []) + [r for g in trials['groups'] for r in g.get('inconclusive_reasons', [])]))
-        trial_html = ('<section><h3>Live subscription pilot</h3><p><strong>' + escape(trials["ranking"]["verdict"]) +
-                      '</strong>. One bundled run per model, three narrow tasks. This checks the workflow; it does not rank speed or general quality.</p>'
-                      '<table><thead><tr><th>Model</th><th>Bundles passed</th><th>Critical errors</th></tr></thead><tbody>' + ''.join(items) + '</tbody></table><p>' + escape('; '.join(reasons)) + '</p></section>')
+        trial_html = ('<section><h3>Trial results</h3><p><strong>' + escape(trials["ranking"]["verdict"]) +
+                      '</strong>. ' + escape(TRIAL_NOTE) + '</p>'
+                      '<table><thead><tr><th>Model and source</th><th>First-pass correct / repeats</th><th>Critical errors</th></tr></thead><tbody>' + ''.join(items) + '</tbody></table><p>' + escape('; '.join(reasons)) + '</p></section>')
     return ('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
             '<title>Model evaluation evidence</title><style>:root{font-family:var(--font-sans,system-ui);color:var(--foreground,#e8e8eb)}'
             'body{margin:0}section{margin:18px 0}h3{font-size:17px;margin:0 0 10px}p{line-height:1.5;color:var(--muted-foreground,#aaa)}'

@@ -131,15 +131,21 @@ def _writes(usage, total):
         usage["cache_write_unknown"] = total
 
 
-def _normalize(raw, dialect):
-    usage = dict.fromkeys(USAGE_FIELDS)
-    warnings = []
+def _invalid_usage_counters(raw):
     if any(k in _COUNTER_KEYS and v is not None and _counter(v) is None for k, v in raw.items()):
-        return None, ["invalid_usage_counter"]
+        return True
     for container, keys in _DETAIL_COUNTER_KEYS.items():
         detail = _dict(raw.get(container))
         if any(k in detail and detail[k] is not None and _counter(detail[k]) is None for k in keys):
-            return None, ["invalid_usage_counter"]
+            return True
+    return False
+
+
+def _normalize(raw, dialect):
+    usage = dict.fromkeys(USAGE_FIELDS)
+    warnings = []
+    if _invalid_usage_counters(raw):
+        return None, ["invalid_usage_counter"]
     for aliases in (("input_tokens", "prompt_tokens", "inputTokens"), ("output_tokens", "completion_tokens", "outputTokens"),
                     ("cached_input_tokens", "cachedInputTokens", "cache_read_input_tokens"),
                     ("cache_write_input_tokens", "cache_creation_input_tokens", "cacheCreationInputTokens")):
@@ -354,7 +360,7 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
                 mode = "claude"
             elif kind == "usage.record":
                 mode = "kimi"
-            elif "schemaVersion" in obj and "elapsedMs" in obj:
+            elif "schemaVersion" in obj and isinstance(obj.get("usage"), dict):
                 mode = "pstack"
             else:
                 mode = "openai"
@@ -512,7 +518,11 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
                 diagnostic("partial_usage_without_request_identity", line, True)
                 return
             key = (provider, session, identity)
-            group = partials.setdefault(key, {"raw": {}, "data": {}, "line": line, "conflict": False, "partial": False, "snapshots": set()})
+            group = partials.setdefault(key, {"raw": {}, "data": {}, "line": line, "conflict": False, "invalid": False, "partial": False, "snapshots": set()})
+            if _invalid_usage_counters(raw):
+                group["invalid"] = True
+                diagnostic("invalid_usage_counter", line, True)
+                return
             group["partial"] = group["partial"] or partial
             filtered = {}
             for field, value in raw.items():
@@ -615,6 +625,8 @@ def import_file(path, format, billing_basis="subscription", *, byte_limit=None):
     except OSError:
         diagnostic("source_unreadable", 0, True)
     for (provider, request_session, identity), group in partials.items():
+        if group["invalid"]:
+            continue
         if group["conflict"]:
             diagnostic("contradictory_partial_usage", group["line"], True)
         else:

@@ -300,13 +300,27 @@ def _deduplicate(items, id_field):
 
 
 def _same(left, right):
-    if type(left) is not type(right):
-        return False
-    if isinstance(left, dict):
-        return left.keys() == right.keys() and all(_same(value, right[key]) for key, value in left.items())
-    if isinstance(left, list):
-        return len(left) == len(right) and all(_same(a, b) for a, b in zip(left, right))
-    return left == right
+    pending, compared = [(left, right)], set()
+    while pending:
+        left, right = pending.pop()
+        if type(left) is not type(right):
+            return False
+        if isinstance(left, (dict, list)):
+            pair = (id(left), id(right))
+            if pair in compared:
+                continue
+            compared.add(pair)
+        if isinstance(left, dict):
+            if left.keys() != right.keys():
+                return False
+            pending.extend((value, right[key]) for key, value in left.items())
+        elif isinstance(left, list):
+            if len(left) != len(right):
+                return False
+            pending.extend(zip(left, right))
+        elif left != right:
+            return False
+    return True
 
 
 def _coverage(values):

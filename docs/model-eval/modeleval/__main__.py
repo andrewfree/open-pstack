@@ -96,7 +96,7 @@ def grade_bundle(response_text, receipt):
             raise ValueError("bundle must be an object")
         if set(response) != {case["id"] for case in list_cases()}:
             raise ValueError("bundle must contain exactly the frozen case IDs")
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):
         error = "invalid strict JSON bundle"
     grades = {}
     for case in list_cases():
@@ -171,7 +171,8 @@ def main(argv=None):
             documents = [read_json(file) for file in args.files]
             documents = [doc for doc in documents if isinstance(doc, dict)]
             value["import_diagnostics"] = [item for doc in documents for item in doc.get("diagnostics", [])]
-            value["import_sources"] = [item for doc in documents for item in doc.get("sources", doc.get("source_metadata", []))]
+            sources = [doc.get("sources", doc.get("source_metadata", [])) for doc in documents]
+            value["import_sources"] = [item for source in sources for item in ([source] if isinstance(source, dict) else source)]
             value["import_diagnostic_counts"] = dict(Counter(item["code"] for item in value["import_diagnostics"]))
             value["import_excluded_events"] = sum(item.get("excluded") is True for item in value["import_diagnostics"])
             value["catalog"] = {"path": str(Path(args.catalog).resolve()),
