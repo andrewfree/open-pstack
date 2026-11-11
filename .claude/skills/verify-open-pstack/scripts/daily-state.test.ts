@@ -110,3 +110,13 @@ test('diagnostics never turn formatting-only registry drift into a pass', async 
   expect(afterFields.find(item=>item.path===registry)?.kind).toBe('json');
   expect(dailyFieldChanges(beforeFields, afterFields).find(item => item.path === registry)?.changedFields).toEqual(['$bytes-or-format']);
 });
+
+test('field diagnostics do not parse credential-bearing settings fields', async () => {
+  const paths = await fixture();
+  await writeFile(paths.settingsPath!, JSON.stringify({env:{PRIVATE_TOKEN:'synthetic-secret'}}));
+  const fields: DailyFileSnapshot[] = [];
+  await captureDailyState(paths, item => fields.push(item));
+  expect(fields.find(item => item.path === paths.settingsPath)?.kind).toBe('opaque');
+  expect(JSON.stringify(fields)).not.toContain('PRIVATE_TOKEN');
+  expect(JSON.stringify(fields)).not.toContain('synthetic-secret');
+});

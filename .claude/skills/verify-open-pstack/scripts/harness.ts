@@ -99,7 +99,6 @@ export class MacDriver implements Driver {
       const fields: DailyFileSnapshot[] = [], daily = this.daily!;
       const after = await captureDailyState(daily.paths, item => fields.push(item));
       await save(join(daily.root, 'daily-state-after.json'), after);
-      await save(join(daily.root, 'daily-state-fields-after.json'), fields);
       await save(join(daily.root, 'daily-state-drift.json'), dailyFieldChanges(daily.fields, fields));
       assertDailyState(daily.before, after);
     });
@@ -124,7 +123,6 @@ export class MacDriver implements Driver {
     const fields: DailyFileSnapshot[] = [];
     this.daily = { paths, before: await captureDailyState(paths, item => fields.push(item)), fields, root };
     await save(join(root, 'daily-state-before.json'), this.daily.before);
-    await save(join(root, 'daily-state-fields-before.json'), fields);
     const referenceHome = join(root, 'source-home'), reference = join(referenceHome, 'workspace');
     await mkdir(join(referenceHome, 'tmp'), { recursive: true, mode: 0o700 });
     const trustedRun: Command = (args, options = {}) => this.run(args, { ...options, env: isolatedEnv(referenceHome) });

@@ -1,5 +1,5 @@
 import { lstat, readdir, readFile, readlink, stat } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { sha256 } from './io.ts';
 import type { NativeWritePolicy } from './command-policy.ts';
 
@@ -81,7 +81,7 @@ export async function captureDailyState(paths: DailyStatePaths, onFile?: (snapsh
     if (onFile) {
       const base = {path, fingerprint: result[path]!, mode: info.mode & 0o777, targetHash: sha256(target)};
       let snapshot: DailyFileSnapshot = {...base, kind: 'opaque'};
-      if (path.endsWith('.json')) {
+      if (basename(path) === 'known_marketplaces.json') {
         try { snapshot = {...base, kind: 'json', fields: fieldDigests(bytes)}; } catch { snapshot = {...base, kind: 'opaque'}; }
       }
       onFile(snapshot);

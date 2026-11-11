@@ -135,11 +135,12 @@ describe('isolated harness boundaries', () => {
   });
 
   test.each([
-    { failInstall: false, profile: false, baseProfile: false },
-    { failInstall: false, profile: true, baseProfile: true },
-    { failInstall: false, profile: true, baseProfile: false },
-    { failInstall: true, profile: false, baseProfile: false },
-  ])('prepare pins candidate declarations and links existing Codex login (%j)', async ({ failInstall, profile, baseProfile }) => {
+    { failInstall: false, profile: false, baseProfile: false, failCleanup: false },
+    { failInstall: false, profile: false, baseProfile: false, failCleanup: true },
+    { failInstall: false, profile: true, baseProfile: true, failCleanup: false },
+    { failInstall: false, profile: true, baseProfile: false, failCleanup: false },
+    { failInstall: true, profile: false, baseProfile: false, failCleanup: false },
+  ])('prepare pins candidate declarations and links existing Codex login (%j)', async ({ failInstall, profile, baseProfile, failCleanup }) => {
     const root = await fixture(), repository = join(root, 'repository'), operatorHome = join(root, 'operator-home'), calls: string[][] = [];
     const auth = await loginFixture(root);
     for (const manifest of ['.claude-plugin', '.codex-plugin']) {
@@ -216,6 +217,12 @@ describe('isolated harness boundaries', () => {
       throw new Error('fixture native surface reached');
     };
     const app = appStub('', undefined, async c => { sessions.push(['app:claude']); await writeFile(c.stdout, 'retained raw native evidence'); throw new Error('fixture native surface reached'); });
+    const registry = join(operatorHome, 'claude-config/plugins/known_marketplaces.json');
+    const originalRegistry = JSON.stringify({ official: { lastUpdated: 'T1' } });
+    await mkdir(join(registry, '..'), { recursive: true });
+    await writeFile(registry, originalRegistry);
+    const cleanupError = new Error('original transport cleanup failed');
+    if (failCleanup) app.app.cleanup = async () => { throw cleanupError; };
     const driver = new MacDriver(run, record, [], app.app);
     try {
       Object.defineProperty(process, 'platform', { ...platform, value: 'darwin' });
@@ -249,6 +256,15 @@ describe('isolated harness boundaries', () => {
       await mkdir(join(root, 'artifacts'), { mode: 0o700 });
       await writeFile(join(root, 'artifacts/private.txt'), 'private raw evidence', { mode: 0o600 });
       for (const harness of ['claude', 'codex']) await writeFile(join(root, 'state', harness, 'native-state.db'), 'retained candidate state');
+      if (failCleanup) {
+        await writeFile(registry, JSON.stringify({ official: { lastUpdated: 'T2' } }));
+        await expect(driver.cleanup()).rejects.toBe(cleanupError);
+        const drift = JSON.parse(await readFile(join(root, 'daily-state-drift.json'), 'utf8'));
+        expect(drift.find((item: { path: string }) => item.path === registry).changedFields).toEqual(['/official', '/official/lastUpdated']);
+        expect(JSON.stringify(drift)).not.toContain('T1'); expect(JSON.stringify(drift)).not.toContain('T2');
+        await writeFile(registry, originalRegistry);
+        app.app.cleanup = async () => {};
+      }
       await driver.cleanup(); await driver.cleanup();
       Object.defineProperty(process, 'platform', platform);
       for (const [name, value] of Object.entries(previous)) {
@@ -258,8 +274,8 @@ describe('isolated harness boundaries', () => {
     expect(calls.some(c => c.includes('auth') || c.includes('login'))).toBe(false);
     expect(calls.some(c => c[0] === '/usr/bin/sandbox-exec')).toBe(false);
     expect(await readFile(join(root, 'artifacts/private.txt'), 'utf8')).toBe('private raw evidence');
-    expect(Array.isArray(JSON.parse(await readFile(join(root, 'daily-state-fields-before.json'), 'utf8')))).toBe(true);
-    expect(Array.isArray(JSON.parse(await readFile(join(root, 'daily-state-fields-after.json'), 'utf8')))).toBe(true);
+    await expect(stat(join(root, 'daily-state-fields-before.json'))).rejects.toThrow('ENOENT');
+    await expect(stat(join(root, 'daily-state-fields-after.json'))).rejects.toThrow('ENOENT');
     expect(JSON.parse(await readFile(join(root, 'daily-state-drift.json'), 'utf8'))).toEqual([]);
     expect(await readFile(auth, 'utf8')).toBe('opaque existing login');
     expect(await readFile(join(auth, '../daily-state'), 'utf8')).toBe('do not touch');
