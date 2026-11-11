@@ -5,7 +5,7 @@ This port applies the Cursor → Claude Code substitutions in skill bodies. Earl
 
 ## Unreleased
 
-- Setup calls native Codex `wait_agent` after probe and smoke dispatch, reads every result before continuing, and waits for the separate judge before replying. Completion notifications alone do not satisfy setup's native wait requirement.
+- Setup calls native Codex `wait_agent` after probe and smoke dispatch. It reads every native, T3 and external worker result before dispatching the separate judge, then drains the judge through its selected route. Completion notifications alone do not satisfy setup's native Codex wait requirement.
 - If a verification launcher cannot be replaced, move the owned script aside and retain its bytes. Keep the run lock when an unresolved slot may still execute candidate arguments, and preserve the original preflight error alongside cleanup failures. Settings, native proof checks and publication rules are unchanged.
 - Preserve failed nested evaluation bundles and source metadata, compare deep duplicate records without recursion, accept request-scoped receipts without timing, reject invalid partial counters before merging snapshots, and label each trial group's source kind in neutral reports.
 
