@@ -2,7 +2,7 @@ import { copyFile, mkdir, readdir, readFile, realpath, stat } from 'node:fs/prom
 import { basename, join } from 'node:path';
 import { recipe, type Fixture } from '../features/recipes.ts';
 import { requiredFeatures, requiredHarnesses } from './core.ts';
-import { assertDailyState, captureDailyState, dailyStatePaths, type DailyState, type DailyStatePaths } from './daily-state.ts';
+import { assertDailyState, captureDailyState, dailyFieldChanges, dailyStatePaths, type DailyState, type DailyStatePaths, type DailyFileSnapshot } from './daily-state.ts';
 import { command, isolatedEnv, retainedFile, save, session, treeHash, type Command, type Session } from './io.ts';
 import { doctor } from './doctor.ts';
 import { assertCodexAuth, configureCodexVerification, linkCodexAuth, removeCodexHome, restoreSetup, snapshotSetup, type SetupSnapshot } from './isolation.ts';
@@ -76,7 +76,7 @@ export class MacDriver implements Driver {
   private codexHomes: string[] = [];
   private setup?: SetupSnapshot;
   private restorationFailed = false;
-  private daily?: { paths: DailyStatePaths; before: DailyState; root: string };
+  private daily?: { paths: DailyStatePaths; before: DailyState; fields: DailyFileSnapshot[]; root: string };
   constructor(private run: Command = command, private record: Session = session, private routes: string[] = [], private app?: AppTransport) {}
   async cleanup(): Promise<string | void> {
     const failures: unknown[] = [];
@@ -95,12 +95,15 @@ export class MacDriver implements Driver {
       } else for (const home of this.codexHomes) await removeCodexHome(home);
       this.codexHomes = [];
     });
+    if (this.daily) await step(async () => {
+      const fields: DailyFileSnapshot[] = [], daily = this.daily!;
+      const after = await captureDailyState(daily.paths, item => fields.push(item));
+      await save(join(daily.root, 'daily-state-after.json'), after);
+      await save(join(daily.root, 'daily-state-fields-after.json'), fields);
+      await save(join(daily.root, 'daily-state-drift.json'), dailyFieldChanges(daily.fields, fields));
+      assertDailyState(daily.before, after);
+    });
     if (failures.length) throw failures[0];
-    if (this.daily) {
-      const after = await captureDailyState(this.daily.paths);
-      await save(join(this.daily.root, 'daily-state-after.json'), after);
-      assertDailyState(this.daily.before, after);
-    }
     if (kept) return "Setup files restored and verified; run-owned Codex home kept, with its auth link verified, while T3's verification app-server still runs; private raw evidence retained";
   }
   private candidate(home: string): Command {
@@ -118,8 +121,10 @@ export class MacDriver implements Driver {
     await this.app?.prepare();
     const root = receipt.artifactRoot;
     const paths = dailyStatePaths(this.app?.settingsPath);
-    this.daily = { paths, before: await captureDailyState(paths), root };
+    const fields: DailyFileSnapshot[] = [];
+    this.daily = { paths, before: await captureDailyState(paths, item => fields.push(item)), fields, root };
     await save(join(root, 'daily-state-before.json'), this.daily.before);
+    await save(join(root, 'daily-state-fields-before.json'), fields);
     const referenceHome = join(root, 'source-home'), reference = join(referenceHome, 'workspace');
     await mkdir(join(referenceHome, 'tmp'), { recursive: true, mode: 0o700 });
     const trustedRun: Command = (args, options = {}) => this.run(args, { ...options, env: isolatedEnv(referenceHome) });

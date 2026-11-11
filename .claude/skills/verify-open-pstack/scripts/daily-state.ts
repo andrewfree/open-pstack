@@ -5,6 +5,46 @@ import type { NativeWritePolicy } from './command-policy.ts';
 
 export interface DailyStatePaths extends NativeWritePolicy { settingsPath?: string }
 export type DailyState = Record<string, string | null>;
+type PresentSnapshot = {path: string; fingerprint: string; mode: number; targetHash: string};
+export type DailyFileSnapshot = {kind: 'absent'; path: string; fingerprint: null}
+  | PresentSnapshot & ({kind: 'json'; fields: Record<string, string>} | {kind: 'opaque'});
+export interface DailyFieldChange {path: string; before: string | null; after: string | null; changedFields: string[]}
+
+function fieldDigests(bytes: Buffer): Record<string, string> {
+  const value: unknown = JSON.parse(bytes.toString('utf8'));
+  const fields: Record<string, string> = {};
+  const pointer = (key: string): string => key.replaceAll('~', '~0').replaceAll('/', '~1');
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return {'/': sha256(stable(value))};
+  for (const [key, entry] of Object.entries(value)) {
+    const prefix = '/' + pointer(key);
+    fields[prefix] = sha256(stable(entry));
+    if (entry !== null && typeof entry === 'object' && !Array.isArray(entry)) {
+      for (const [name, item] of Object.entries(entry)) fields[prefix + '/' + pointer(name)] = sha256(stable(item));
+    }
+  }
+  return fields;
+}
+export function dailyFieldChanges(before: DailyFileSnapshot[], after: DailyFileSnapshot[]): DailyFieldChange[] {
+  const previous = new Map(before.map(item => [item.path, item])), current = new Map(after.map(item => [item.path, item]));
+  const changes: DailyFieldChange[] = [];
+  for (const path of [...new Set([...previous.keys(), ...current.keys()])].sort()) {
+    const a = previous.get(path), b = current.get(path);
+    if (a?.fingerprint === b?.fingerprint) continue;
+    const changedFields: string[] = [];
+    if (a && b && a.kind !== 'absent' && b.kind !== 'absent') {
+      if (a.mode !== b.mode) changedFields.push('$mode');
+      if (a.targetHash !== b.targetHash) changedFields.push('$link');
+      if (a.kind === 'json' && b.kind === 'json') {
+        for (const field of [...new Set([...Object.keys(a.fields), ...Object.keys(b.fields)])].sort()) {
+          if (a.fields[field] !== b.fields[field]) changedFields.push(field);
+        }
+      }
+    } else changedFields.push('$presence');
+    changes.push({path, before: a?.fingerprint ?? null, after: b?.fingerprint ?? null,
+      changedFields: changedFields.length ? changedFields : ['$bytes-or-format']});
+  }
+  return changes;
+}
 
 export function dailyStatePaths(settingsPath?: string): DailyStatePaths {
   const home = process.env.HOME;
@@ -29,15 +69,23 @@ function stable(value: unknown): string {
 }
 
 /** Retain only digests, paths, and modes. Never copy daily configuration or credentials. */
-export async function captureDailyState(paths: DailyStatePaths): Promise<DailyState> {
+export async function captureDailyState(paths: DailyStatePaths, onFile?: (snapshot: DailyFileSnapshot) => void): Promise<DailyState> {
   const result: DailyState = {};
   async function file(path: string, json = false): Promise<void> {
     const info = await lstat(path).catch(absent);
-    if (!info) { result[path] = null; return; }
+    if (!info) { result[path] = null; onFile?.({kind: 'absent', path, fingerprint: null}); return; }
     if (!info.isFile() && !info.isSymbolicLink()) throw new Error(`Daily state is not a file: ${path}`);
     const bytes = await readFile(path);
     const target = info.isSymbolicLink() ? await readlink(path) : '';
     result[path] = sha256(`${info.mode & 0o777}\0${target}\0${json ? stable(JSON.parse(bytes.toString('utf8'))) : sha256(bytes)}`);
+    if (onFile) {
+      const base = {path, fingerprint: result[path]!, mode: info.mode & 0o777, targetHash: sha256(target)};
+      let snapshot: DailyFileSnapshot = {...base, kind: 'opaque'};
+      if (path.endsWith('.json')) {
+        try { snapshot = {...base, kind: 'json', fields: fieldDigests(bytes)}; } catch { snapshot = {...base, kind: 'opaque'}; }
+      }
+      onFile(snapshot);
+    }
   }
   async function memory(path: string): Promise<void> {
     const info = await lstat(path).catch(absent);

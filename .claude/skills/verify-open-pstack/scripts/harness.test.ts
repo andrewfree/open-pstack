@@ -258,6 +258,9 @@ describe('isolated harness boundaries', () => {
     expect(calls.some(c => c.includes('auth') || c.includes('login'))).toBe(false);
     expect(calls.some(c => c[0] === '/usr/bin/sandbox-exec')).toBe(false);
     expect(await readFile(join(root, 'artifacts/private.txt'), 'utf8')).toBe('private raw evidence');
+    expect(Array.isArray(JSON.parse(await readFile(join(root, 'daily-state-fields-before.json'), 'utf8')))).toBe(true);
+    expect(Array.isArray(JSON.parse(await readFile(join(root, 'daily-state-fields-after.json'), 'utf8')))).toBe(true);
+    expect(JSON.parse(await readFile(join(root, 'daily-state-drift.json'), 'utf8'))).toEqual([]);
     expect(await readFile(auth, 'utf8')).toBe('opaque existing login');
     expect(await readFile(join(auth, '../daily-state'), 'utf8')).toBe('do not touch');
     expect((await stat(join(root, 'artifacts'))).mode & 0o777).toBe(0o700);
