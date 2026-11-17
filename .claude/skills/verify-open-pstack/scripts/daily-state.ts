@@ -38,13 +38,18 @@ function stable(value: unknown): string {
 /** Retain only digests, paths, and modes. Never copy daily configuration or credentials. */
 export async function captureDailyState(paths: DailyStatePaths): Promise<DailyState> {
   const result: DailyState = {};
+  function jsonDigest(bytes: Buffer, digest: Digest): string {
+    let parsed: unknown;
+    try { parsed = JSON.parse(bytes.toString('utf8')); } catch { return `unparsed:${sha256(bytes)}`; }
+    return stable(digest === 'json' ? parsed : withoutRefreshTimes(parsed));
+  }
   async function file(path: string, digest: Digest = 'bytes'): Promise<void> {
     const info = await lstat(path).catch(absent);
     if (!info) { result[path] = null; return; }
     if (!info.isFile() && !info.isSymbolicLink()) throw new Error(`Daily state is not a file: ${path}`);
     const bytes = await readFile(path);
     const target = info.isSymbolicLink() ? await readlink(path) : '';
-    const content = digest === 'bytes' ? sha256(bytes) : stable(digest === 'json' ? JSON.parse(bytes.toString('utf8')) : withoutRefreshTimes(JSON.parse(bytes.toString('utf8'))));
+    const content = digest === 'bytes' ? sha256(bytes) : jsonDigest(bytes, digest);
     result[path] = sha256(`${info.mode & 0o777}\0${target}\0${content}`);
   }
   async function memory(path: string): Promise<void> {
