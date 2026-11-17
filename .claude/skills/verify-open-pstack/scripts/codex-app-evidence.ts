@@ -7,7 +7,7 @@ import type { SessionRecord } from './types.ts';
 
 type ObjectValue = Record<string, unknown>;
 const T3_MCP_SERVERS = new Set(['t3-code', 't3-code-direct']);
-const t3Server = (server: unknown): boolean => typeof server === 'string' && T3_MCP_SERVERS.has(server);
+export const t3Server = (server: unknown): boolean => typeof server === 'string' && T3_MCP_SERVERS.has(server);
 
 export interface CodexAppEvidenceOptions {
   pluginRoot: string; workspace: string; codexHome: string; started: number; prompt: string; model?: string;
@@ -68,7 +68,7 @@ function userPrompts(items: ObjectValue[], expected: string): string[] {
   const notified = new Set<string>();
   for (const message of messages.slice(1)) {
     const notification = itemText(message), position = items.indexOf(message);
-    const matches: string[] = [];
+    const matches = new Set<string>();
     for (const [index, item] of items.entries()) {
       if (index >= position || item.tool !== 'delegate_task') continue;
       const dispatched = nativeToolResult(item);
@@ -85,11 +85,12 @@ function userPrompts(items: ObjectValue[], expected: string): string[] {
           || result.childRunId !== dispatched.childRunId || result.childThreadId !== dispatched.childThreadId
           || result.latestTerminalRunId !== dispatched.childRunId || result.latestTerminalStatus !== 'completed'
           || result.providerInstanceId !== dispatched.providerInstanceId || result.model !== dispatched.model) continue;
-        if (notification === `Delegated task ${taskId}${title} [completed]:\n${result.summary}`) matches.push(taskId);
+        if (notification === `Delegated task ${taskId}${title} [completed]:\n${result.summary}`) matches.add(taskId);
       }
     }
-    if (matches.length !== 1 || notified.has(matches[0]!)) throw new Error('Codex extra user message is not a bound delegated completion');
-    notified.add(matches[0]!);
+    const [match] = matches;
+    if (matches.size !== 1 || notified.has(match!)) throw new Error('Codex extra user message is not a bound delegated completion');
+    notified.add(match!);
   }
   return prompts;
 }

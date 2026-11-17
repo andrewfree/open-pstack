@@ -92,6 +92,11 @@ describe('Codex app native evidence', () => {
     const f = await asyncFixture(); [f.events[8], f.events[9]] = [f.events[9]!, f.events[8]!];
     expect((await parseCodexAppEvidence(serialize(f.events), f.expected)).items.filter(item => item.type === 'userMessage')).toHaveLength(2);
   });
+  test('binds a completion notification when the parent reads the completed status before and after it', async () => {
+    const f = await asyncFixture(); [f.events[8], f.events[9]] = [f.events[9]!, f.events[8]!];
+    f.events.splice(10, 0, nativeItem({ ...f.terminal, id: 'status-again' }));
+    expect((await parseCodexAppEvidence(serialize(f.events), f.expected)).items.filter(item => item.type === 'userMessage')).toHaveLength(2);
+  });
   test.each(['missing', 'different', 'duplicate'])('rejects %s rollout completion notification', async kind => {
     const f = await asyncFixture();
     if (kind === 'missing') f.rows.splice(-2, 1);
