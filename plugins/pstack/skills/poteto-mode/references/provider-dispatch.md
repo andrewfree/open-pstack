@@ -30,6 +30,8 @@ The top-level harness resolves the route once. A child receives an assigned prov
 
 The catalog's [route table](model-catalog.md#routes) gives each provider's route from each parent. A provider native to the parent uses the parent's subagent primitive. A Codex parent's `claude` lanes use the [T3 Claude Agent route](#the-t3-claude-agent-route) or drop out. Every other provider uses the external runner.
 
+A host's own delegation guidance does not change these routes. T3 tells agents to use `delegate_task` for another provider's model. When a pstack parent dispatches a lane, `delegate_task` carries only lanes whose route is the T3 Claude Agent route. On either parent, every other non-native lane goes to the external runner, even when T3 lists an instance for its provider, because only the runner applies the provider's tool limits and records a receipt with its model proof. A runner dropout stays a dropout: never retry it through `delegate_task` or another host tool.
+
 `inherit-parent` and `auto` remain aliases. They use the parent's current model and effort through its native subagent primitive. In a panel they still consume one lane, but they reduce provider diversity; say so in the synthesis record.
 
 ## Native lanes

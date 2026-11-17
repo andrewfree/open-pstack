@@ -6,6 +6,9 @@ import { assertAllowedWrite, forbiddenCommand, type NativeWritePolicy } from './
 import type { SessionRecord } from './types.ts';
 
 type ObjectValue = Record<string, unknown>;
+const T3_MCP_SERVERS = new Set(['t3-code', 't3-code-direct']);
+export const t3Server = (server: unknown): boolean => typeof server === 'string' && T3_MCP_SERVERS.has(server);
+
 export interface CodexAppEvidenceOptions {
   pluginRoot: string; workspace: string; codexHome: string; started: number; prompt: string; model?: string;
   writePolicy?: NativeWritePolicy;
@@ -50,9 +53,9 @@ function itemText(item: ObjectValue): string {
     return string(part.text, 'user text');
   }).join('\n');
 }
-const allowedMcpTools = new Set(['orchestrator_capabilities', 'delegate_task', 'task_status', 't3_thread_read']);
+const allowedMcpTools = new Set(['orchestrator_capabilities', 'delegate_task', 'task_status', 't3_thread_read', 't3_thread_wait']);
 function nativeToolResult(item: ObjectValue): ObjectValue | undefined {
-  if (item.type !== 'mcpToolCall' || item.server !== 't3-code' || item.status !== 'completed' || item.error !== null || item.result == null) return;
+  if (item.type !== 'mcpToolCall' || !t3Server(item.server) || item.status !== 'completed' || item.error !== null || item.result == null) return;
   const result = object(item.result);
   if ((result.isError !== undefined && result.isError !== false) || result.structuredContent == null) return;
   return object(result.structuredContent);
@@ -65,7 +68,7 @@ function userPrompts(items: ObjectValue[], expected: string): string[] {
   const notified = new Set<string>();
   for (const message of messages.slice(1)) {
     const notification = itemText(message), position = items.indexOf(message);
-    const matches: string[] = [];
+    const matches = new Map<number, string>();
     for (const [index, item] of items.entries()) {
       if (index >= position || item.tool !== 'delegate_task') continue;
       const dispatched = nativeToolResult(item);
@@ -73,7 +76,7 @@ function userPrompts(items: ObjectValue[], expected: string): string[] {
       const args = object(item.arguments), taskId = string(dispatched.taskId, 'delegated task');
       if (args.mode !== 'async') continue;
       const title = args.title === undefined ? '' : ` (${string(args.title, 'delegate title')})`;
-      for (const terminal of items.slice(position + 1)) {
+      for (const terminal of items.slice(index + 1)) {
         if (terminal.tool !== 'task_status' || object(terminal.arguments).taskId !== taskId) continue;
         const result = nativeToolResult(terminal);
         if (!result || result.taskId !== taskId || result.status !== 'completed' || result.workState !== 'result_available'
@@ -82,11 +85,12 @@ function userPrompts(items: ObjectValue[], expected: string): string[] {
           || result.childRunId !== dispatched.childRunId || result.childThreadId !== dispatched.childThreadId
           || result.latestTerminalRunId !== dispatched.childRunId || result.latestTerminalStatus !== 'completed'
           || result.providerInstanceId !== dispatched.providerInstanceId || result.model !== dispatched.model) continue;
-        if (notification === `Delegated task ${taskId}${title} [completed]:\n${result.summary}`) matches.push(taskId);
+        if (notification === `Delegated task ${taskId}${title} [completed]:\n${result.summary}`) matches.set(index, taskId);
       }
     }
-    if (matches.length !== 1 || notified.has(matches[0]!)) throw new Error('Codex extra user message is not a bound delegated completion');
-    notified.add(matches[0]!);
+    const [match] = matches.values();
+    if (matches.size !== 1 || notified.has(match!)) throw new Error('Codex extra user message is not a bound delegated completion');
+    notified.add(match!);
   }
   return prompts;
 }
@@ -121,17 +125,17 @@ export async function parseCodexAppEvidence(text: string, expected: CodexAppEvid
   if (turn.status !== 'inProgress' || turn.error !== null || terminal.status !== 'completed' || terminal.error !== null) throw new Error('Codex native turn did not complete successfully');
   if (!(events.indexOf(started) < events.indexOf(turnStart) && events.indexOf(turnStart) < events.indexOf(turnEnd))) throw new Error('Codex native lifecycle is out of order');
   const inventory = events.filter(event => event.method === 'mcpServer/startupStatus/updated');
-  let mcpStarting = false, mcpReady = false;
+  const mcpStarting = new Set<string>(), mcpReady = new Set<string>();
   for (const event of inventory) {
     const params = object(event.params);
     identity(params.threadId, sessionId, 'MCP inventory thread');
-    if (event.truncated === true || params.truncated === true || params.name !== 't3-code'
+    if (event.truncated === true || params.truncated === true || typeof params.name !== 'string' || !T3_MCP_SERVERS.has(params.name)
       || params.error !== null || params.failureReason !== null || params.status !== 'starting' && params.status !== 'ready'
-      || events.indexOf(event) <= events.indexOf(started) || events.indexOf(event) >= events.indexOf(turnEnd)) throw new Error('Codex MCP inventory must contain only healthy t3-code');
-    if (params.status === 'starting') mcpStarting = true;
-    if (params.status === 'ready') { if (!mcpStarting) throw new Error('Codex MCP inventory is out of order'); mcpReady = true; }
+      || events.indexOf(event) >= events.indexOf(turnEnd)) throw new Error('Codex MCP inventory must contain only healthy T3 servers');
+    if (params.status === 'starting') mcpStarting.add(params.name);
+    if (params.status === 'ready') { if (!mcpStarting.has(params.name)) throw new Error('Codex MCP inventory is out of order'); mcpReady.add(params.name); }
   }
-  if (!mcpStarting || !mcpReady) throw new Error('Missing Codex MCP startup inventory');
+  if (!mcpReady.has('t3-code')) throw new Error('Missing Codex MCP startup inventory');
   const items: ObjectValue[] = [], itemIds = new Set<string>(), pending = new Map<string, ObjectValue>();
   for (const [index, event] of events.entries()) {
     if (event.params !== undefined) {
@@ -158,13 +162,13 @@ export async function parseCodexAppEvidence(text: string, expected: CodexAppEvid
           const candidates = id === undefined ? [...pending.values()] : typeof id === 'string' && pending.has(id) ? [pending.get(id)!] : [];
           if (candidates.length !== 1) throw new Error('Ambiguous truncated Codex item completion');
           const candidate = candidates[0]!;
-          if (candidate.type !== 'mcpToolCall' || candidate.server !== 't3-code' || candidate.tool !== 'orchestrator_capabilities') throw new Error('Truncated Codex item may hide delegation evidence');
+          if (candidate.type !== 'mcpToolCall' || !t3Server(candidate.server) || candidate.tool !== 'orchestrator_capabilities') throw new Error('Truncated Codex item may hide delegation evidence');
           const candidateId = string(candidate.id, 'truncated item id');
           pending.delete(candidateId); itemIds.add(candidateId); continue;
         }
         const item = object(params.item), id = string(item.id, 'item id');
         if (item.type === 'commandExecution' && forbiddenCommand(string(item.command, 'native command'))) throw new Error('Forbidden command in Codex candidate session');
-        if (item.type === 'mcpToolCall' && (item.server !== 't3-code' || !allowedMcpTools.has(string(item.tool, 'MCP tool name')))) throw new Error('Forbidden MCP tool in Codex candidate session');
+        if (item.type === 'mcpToolCall' && (!t3Server(item.server) || !allowedMcpTools.has(string(item.tool, 'MCP tool name')))) throw new Error('Forbidden MCP tool in Codex candidate session');
         if (item.type === 'fileChange') await checkFileChanges(item.changes, thread.cwd, expected.writePolicy);
         if (itemIds.has(id)) throw new Error('Duplicate Codex completed item');
         if (event.method === 'item/started') {
@@ -183,7 +187,7 @@ export async function parseCodexAppEvidence(text: string, expected: CodexAppEvid
       if (result.turn !== undefined) identity(object(result.turn).id, turnId, 'response turn');
     }
   }
-  if ([...pending.values()].some(item => item.type === 'mcpToolCall' && item.server === 't3-code' && item.tool === 'delegate_task')) throw new Error('Missing Codex delegate_task completion');
+  if ([...pending.values()].some(item => item.type === 'mcpToolCall' && t3Server(item.server) && item.tool === 'delegate_task')) throw new Error('Missing Codex delegate_task completion');
   const nativePrompts = userPrompts(items, expected.prompt);
   const codexHome = await realpath(expected.codexHome);
   const homeReplies = events.filter(event => event.result !== undefined && object(event.result).codexHome !== undefined);
@@ -243,7 +247,7 @@ export async function parseCodexAppEvidence(text: string, expected: CodexAppEvid
   if (!isDeepStrictEqual(prompts, nativePrompts)) throw new Error('Codex rollout request differs from native request');
   const toolCalls: CodexAppTool[] = [];
   for (const item of items) {
-    if (item.type !== 'mcpToolCall' || item.server !== 't3-code') continue;
+    if (item.type !== 'mcpToolCall' || !t3Server(item.server)) continue;
     toolCalls.push({ tool: string(item.tool, 'MCP tool name'), arguments: object(item.arguments), result: nativeToolResult(item) ?? {} });
   }
   const commands = items.filter(item => item.type === 'commandExecution' && typeof item.command === 'string');

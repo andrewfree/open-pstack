@@ -239,7 +239,7 @@ async function fakeApp() {
   await mkdir(join(pluginRoot, 'hooks'), { recursive: true }); await mkdir(join(root, 'candidate'));
   await writeFile(join(pluginRoot, 'hooks/hooks.json'), JSON.stringify({ hooks: { SessionStart: [{ matcher: 'startup|clear|compact', hooks: [{ type: 'command', command: '"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd" session-start', async: false }] }] } }));
   await writeFile(join(pluginRoot, 'hooks/session-start-context.md'), HOOK_CONTEXT);
-  const c: AppCase = { harness: 'claude', pluginRoot, workspace: join(root, 'candidate'), fixture: join(root, 'fixture'), prompt: 'Test a pinned candidate skill.',
+  const c: AppCase = { harness: 'claude', claudeChild: false, pluginRoot, workspace: join(root, 'candidate'), fixture: join(root, 'fixture'), prompt: 'Test a pinned candidate skill.',
     env: { HOME: root, USER: 'operator', LOGNAME: 'operator', CODEX_HOME: join(root, 'codex'), GIT_CONFIG_KEY_0: 'credential.helper', GIT_CONFIG_VALUE_0: '' },
     stdout: join(root, 'stdout.jsonl'), stderr: join(root, 'stderr'), started, cliVersion: '2.1.310 (Claude Code)', writePolicy: { home: root, files: [], directories: [] } };
   return { root, settingsPath, logsDirectory, launcherDirectory, app, c, config };
@@ -362,23 +362,34 @@ test('launch validation failure preserves native JSONL and raw logs', async () =
   expect(await readFile(a.c.stdout + '.t3-native.log', 'utf8')).toContain('wrong-model');
 });
 test('a Codex parent arms both launchers, delegates to the verification Claude instance and needs a Codex launch in this run', async () => {
-  const a = await preparedApp(); a.c.harness = 'codex';
+  const a = await preparedApp(); a.c.harness = 'codex'; a.c.claudeChild = true;
   expect(a.app.runnerRoute).toEqual({ providerInstanceId: 'verify_claude', model: 'opus' });
-  const delegated = (providerInstanceId: string) => ({ method: 'item/completed', params: { threadId: 'codex-thread', item: { type: 'mcpToolCall', server: 't3-code', tool: 'delegate_task',
+  const delegated = (providerInstanceId: string, server = 't3-code') => ({ method: 'item/completed', params: { threadId: 'codex-thread', item: { type: 'mcpToolCall', server, tool: 'delegate_task',
     arguments: { target: { model: 'opus', options: { effort: 'max' } }, task: 'Reply PONG.' }, result: { structuredContent: { childThreadId: 'claude-child', providerInstanceId, model: 'opus' } } } } });
   let previousId: string | undefined;
-  for (const [launched, child, error] of [[['claude'], 'verify_claude', 'No Codex app-server started'], [['claude', 'codex'], 'claude', 'lacks one matching Claude child'],
-    [['claude', 'codex'], 'verify_claude', 'native evidence unavailable']] as const) {
-    const work = a.app.record({ ...a.c, stdout: join(a.root, `stdout-${child}-${launched.length}.jsonl`), stderr: join(a.root, `stderr-${child}-${launched.length}`) }).catch(e => e);
+  for (const [launched, child, error, server] of [[['claude'], 'verify_claude', 'No Codex app-server started', 't3-code'], [['claude', 'codex'], 'claude', 'lacks one matching Claude child', 't3-code'],
+    [['claude', 'codex'], 'verify_claude', 'native evidence unavailable', 't3-code'], [['claude', 'codex'], 'verify_claude', 'native evidence unavailable', 't3-code-direct']] as const) {
+    const work = a.app.record({ ...a.c, stdout: join(a.root, `stdout-${child}-${launched.length}-${server}.jsonl`), stderr: join(a.root, `stderr-${child}-${launched.length}-${server}`) }).catch(e => e);
     const request = await pending(a.root, previousId);
     expect(request.target.providerInstanceId).toBe('verify_codex'); expect(request.runnerTarget).toEqual(a.app.runnerRoute);
     expect(await readFile(join(a.launcherDirectory, 'codex'), 'utf8')).toContain(`export CODEX_HOME='${a.c.env.CODEX_HOME}'`);
-    await answerCase(a, { launched: [...launched], codexEvent: delegated(child), runnerCatalog: true, previousId });
+    await answerCase(a, { launched: [...launched], codexEvent: delegated(child, server), runnerCatalog: true, previousId });
     expect((await work).message).toContain(error);
     expect(await idle(a)).toEqual(passThrough);
     previousId = request.id;
   }
 }, 15000);
+test('a Codex case without a Claude child needs no Claude launch, runner target or Claude child', async () => {
+  const a = await preparedApp(); a.c.harness = 'codex';
+  const work = a.app.record(a.c).catch(e => e);
+  const request = await pending(a.root);
+  expect(request.target.providerInstanceId).toBe('verify_codex'); expect(request.runnerTarget).toBeUndefined();
+  await answerCase(a, { launched: ['codex'] });
+  const error = (await work).message;
+  expect(error).toContain('Codex evidence requires exactly one native thread start');
+  expect(error).not.toContain('Claude');
+  expect(await idle(a)).toEqual(passThrough);
+});
 test('a mid-case settings change cannot leave a launcher armed or hide the case error', async () => {
   const a = await preparedApp(); a.c.harness = 'codex';
   const result = a.app.record(a.c).catch(error => error);
