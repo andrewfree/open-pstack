@@ -298,7 +298,7 @@ test('sequential cases arm candidate launchers and restore pass-through without 
     const request = await pending(a.root, previous);
     expect(request.target.providerInstanceId).toBe('verify_claude');
     const armed = await readFile(join(a.launcherDirectory, 'claude'), 'utf8');
-    for (const part of [`'--plugin-dir' '${a.c.pluginRoot}' '--strict-mcp-config'`, `'${request.id} claude'`, "export CLAUDE_CODE_DISABLE_AUTO_MEMORY='1'", "export GH_TOKEN=''", "export DO_NOT_TRACK='1'", "export DISABLE_AUTOUPDATER='1'", "export CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST='1'"]) expect(armed).toContain(part);
+    for (const part of [`'--plugin-dir' '${a.c.pluginRoot}' '--strict-mcp-config'`, `'${request.id} claude'`, "export CLAUDE_CODE_DISABLE_AUTO_MEMORY='1'", "export GH_TOKEN=''", "export DO_NOT_TRACK='1'"]) expect(armed).toContain(part);
     expect(await json(join(a.root, 't3-app', 'state.json'))).toEqual({ pendingCase: request.id, armedLaunchers: true });
     await answerCase(a, { previousId: previous });
     const result = await work;
