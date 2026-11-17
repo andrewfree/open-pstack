@@ -5,7 +5,7 @@ import { isAbsolute, join, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import { interruption, save } from './io.ts';
 import { parseClaudeEvidence } from './claude-evidence.ts';
-import { parseCodexAppEvidence } from './codex-app-evidence.ts';
+import { parseCodexAppEvidence, t3Server } from './codex-app-evidence.ts';
 import { parseSession } from './harness.ts';
 import { removeCodexHome } from './isolation.ts';
 import type { NativeWritePolicy } from './command-policy.ts';
@@ -380,7 +380,7 @@ export class T3App {
 
   private async claudeChild(native: string, routes: AppRouteEvidence[], c: AppCase): Promise<string[]> {
     const calls = native.trim().split('\n').map(line => JSON.parse(line))
-      .filter(e => e.method === 'item/completed' && e.params?.item?.type === 'mcpToolCall' && e.params.item.server === 't3-code' && e.params.item.tool === 'delegate_task')
+      .filter(e => e.method === 'item/completed' && e.params?.item?.type === 'mcpToolCall' && t3Server(e.params.item.server) && e.params.item.tool === 'delegate_task')
       .map(e => e.params.item);
     const call = calls[0], child = call?.result?.structuredContent;
     if (calls.length !== 1 || !child?.childThreadId || child.providerInstanceId !== this.config.verifyClaudeProviderId || child.model !== call.arguments?.target?.model) throw new Error('Codex native evidence lacks one matching Claude child');
