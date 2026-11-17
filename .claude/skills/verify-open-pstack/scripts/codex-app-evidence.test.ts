@@ -128,10 +128,20 @@ describe('Codex app native evidence', () => {
     if (kind === 'out-of-order') [f.events[2], f.events[3]] = [f.events[3]!, f.events[2]!];
     await expect(parseCodexAppEvidence(serialize(f.events), f.expected)).rejects.toThrow('MCP');
   });
-  test.each(['orchestrator_capabilities', 'delegate_task', 'task_status', 't3_thread_read'])('retains permitted native MCP tool %s', async tool => {
+  test.each(['orchestrator_capabilities', 'delegate_task', 'task_status', 't3_thread_read', 't3_thread_wait'])('retains permitted native MCP tool %s', async tool => {
     const f = await fixture(), item = { ...delegation(), tool };
     f.events.splice(7, 0, nativeItem(item));
     expect((await parseCodexAppEvidence(serialize(f.events), f.expected)).toolCalls[0]!.tool).toBe(tool);
+  });
+  test.each(['t3_thread_wait', 'delegate_task'])('retains %s on T3\'s second server, t3-code-direct, so recipes see it', async tool => {
+    const f = await fixture(), item = { ...delegation(), server: 't3-code-direct', tool };
+    f.events.splice(7, 0, nativeItem(item));
+    expect((await parseCodexAppEvidence(serialize(f.events), f.expected)).toolCalls.map(call => call.tool)).toContain(tool);
+  });
+  test('rejects a forbidden tool on t3-code-direct', async () => {
+    const f = await fixture(), item = { ...delegation(), server: 't3-code-direct', tool: 't3_thread_launch' };
+    f.events.splice(7, 0, nativeItem(item));
+    await expect(parseCodexAppEvidence(serialize(f.events), f.expected)).rejects.toThrow('Forbidden MCP tool');
   });
   test.each(['t3_thread_launch', 'schedule_task', 't3_environment_preferences_update', 't3_provider_instance_update', 'unknown'])('rejects forbidden native MCP tool %s even on failed attempts', async tool => {
     const f = await fixture(), item = { ...delegation(), tool, status: 'failed', result: null, error: { message: 'denied' } };
