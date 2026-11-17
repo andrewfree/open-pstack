@@ -364,16 +364,16 @@ test('launch validation failure preserves native JSONL and raw logs', async () =
 test('a Codex parent arms both launchers, delegates to the verification Claude instance and needs a Codex launch in this run', async () => {
   const a = await preparedApp(); a.c.harness = 'codex'; a.c.claudeChild = true;
   expect(a.app.runnerRoute).toEqual({ providerInstanceId: 'verify_claude', model: 'opus' });
-  const delegated = (providerInstanceId: string) => ({ method: 'item/completed', params: { threadId: 'codex-thread', item: { type: 'mcpToolCall', server: 't3-code', tool: 'delegate_task',
+  const delegated = (providerInstanceId: string, server = 't3-code') => ({ method: 'item/completed', params: { threadId: 'codex-thread', item: { type: 'mcpToolCall', server, tool: 'delegate_task',
     arguments: { target: { model: 'opus', options: { effort: 'max' } }, task: 'Reply PONG.' }, result: { structuredContent: { childThreadId: 'claude-child', providerInstanceId, model: 'opus' } } } } });
   let previousId: string | undefined;
-  for (const [launched, child, error] of [[['claude'], 'verify_claude', 'No Codex app-server started'], [['claude', 'codex'], 'claude', 'lacks one matching Claude child'],
-    [['claude', 'codex'], 'verify_claude', 'native evidence unavailable']] as const) {
-    const work = a.app.record({ ...a.c, stdout: join(a.root, `stdout-${child}-${launched.length}.jsonl`), stderr: join(a.root, `stderr-${child}-${launched.length}`) }).catch(e => e);
+  for (const [launched, child, error, server] of [[['claude'], 'verify_claude', 'No Codex app-server started', 't3-code'], [['claude', 'codex'], 'claude', 'lacks one matching Claude child', 't3-code'],
+    [['claude', 'codex'], 'verify_claude', 'native evidence unavailable', 't3-code'], [['claude', 'codex'], 'verify_claude', 'native evidence unavailable', 't3-code-direct']] as const) {
+    const work = a.app.record({ ...a.c, stdout: join(a.root, `stdout-${child}-${launched.length}-${server}.jsonl`), stderr: join(a.root, `stderr-${child}-${launched.length}-${server}`) }).catch(e => e);
     const request = await pending(a.root, previousId);
     expect(request.target.providerInstanceId).toBe('verify_codex'); expect(request.runnerTarget).toEqual(a.app.runnerRoute);
     expect(await readFile(join(a.launcherDirectory, 'codex'), 'utf8')).toContain(`export CODEX_HOME='${a.c.env.CODEX_HOME}'`);
-    await answerCase(a, { launched: [...launched], codexEvent: delegated(child), runnerCatalog: true, previousId });
+    await answerCase(a, { launched: [...launched], codexEvent: delegated(child, server), runnerCatalog: true, previousId });
     expect((await work).message).toContain(error);
     expect(await idle(a)).toEqual(passThrough);
     previousId = request.id;

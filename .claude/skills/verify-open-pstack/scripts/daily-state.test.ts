@@ -44,6 +44,16 @@ test('ignores a marketplace refresh that changes only lastUpdated, and detects a
   expect(() => assertDailyState(before, moved)).toThrow('Daily state changed');
 });
 
+test('reports an unparsable marketplace file as changed instead of throwing', async () => {
+  const paths = await fixture(), marketplaces = join(paths.home, '.claude/plugins/known_marketplaces.json');
+  await mkdir(join(paths.home, '.claude/plugins'), { recursive: true });
+  await writeFile(marketplaces, JSON.stringify({ official: { installLocation: '/market', lastUpdated: '2026-11-07T12:00:00.000Z' } }));
+  const tracked = { ...paths, files: [...paths.files, marketplaces] }, before = await captureDailyState(tracked);
+  await writeFile(marketplaces, '{"official":');
+  const partial = await captureDailyState(tracked);
+  expect(() => assertDailyState(before, partial)).toThrow('Daily state changed');
+  assertDailyState(partial, await captureDailyState(tracked));
+});
 test('detects newly created memory and configuration and removed memory', async () => {
   const paths = await fixture(), before = await captureDailyState(paths);
   const memory = join(paths.directories[0]!, 'new-project/memory/MEMORY.md');
