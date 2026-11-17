@@ -31,6 +31,19 @@ test('detects an unrelated settings edit without restoring it', async () => {
   expect(await readFile(paths.settingsPath!, 'utf8')).toContain('operator changed');
 });
 
+test('ignores a marketplace refresh that changes only lastUpdated, and detects any other marketplace change', async () => {
+  const paths = await fixture(), marketplaces = join(paths.home, '.claude/plugins/known_marketplaces.json');
+  await mkdir(join(paths.home, '.claude/plugins'), { recursive: true });
+  const entry = (lastUpdated: string, installLocation = '/market') => JSON.stringify({ official: { source: { source: 'github', repo: 'owner/market' }, installLocation, lastUpdated } });
+  await writeFile(marketplaces, entry('2026-11-07T12:00:00.000Z'));
+  const tracked = { ...paths, files: [...paths.files, marketplaces] }, before = await captureDailyState(tracked);
+  await writeFile(marketplaces, entry('2026-11-07T14:31:07.160Z'));
+  assertDailyState(before, await captureDailyState(tracked));
+  await writeFile(marketplaces, entry('2026-11-07T14:31:07.160Z', '/elsewhere'));
+  const moved = await captureDailyState(tracked);
+  expect(() => assertDailyState(before, moved)).toThrow('Daily state changed');
+});
+
 test('detects newly created memory and configuration and removed memory', async () => {
   const paths = await fixture(), before = await captureDailyState(paths);
   const memory = join(paths.directories[0]!, 'new-project/memory/MEMORY.md');

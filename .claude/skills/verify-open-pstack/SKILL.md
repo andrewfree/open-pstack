@@ -78,7 +78,7 @@ The parent builds `surface`, `action`, and `observed` from the recipe and its pa
 
 ## Cleanup
 
-Each native session exits on its own; a Claude selection without the transport launches none. Verify any setup restoration before publication. Removing the Codex run home removes only its auth symlink, never the operator's target file; cleanup keeps the home while T3's Codex app-server from this run still runs. Cleanup also proves the operator's daily Claude, Codex and T3 settings and memory are unchanged, or forbids publication. Preserve private raw evidence through merge, archive it afterwards, and let the operator delete only the named run root. No credential-copy cleanup or separate `~/.pstack-verify` login directories are needed. Do not kill unrelated processes.
+Each native session exits on its own; a Claude selection without the transport launches none. Verify any setup restoration before publication. Removing the Codex run home removes only its auth symlink, never the operator's target file; cleanup keeps the home while T3's Codex app-server from this run still runs. Cleanup also proves the operator's daily Claude, Codex and T3 settings and memory are unchanged, or forbids publication. In `~/.claude/plugins/known_marketplaces.json`, a marketplace's `lastUpdated` timestamp alone does not count as a change, because Claude Code refreshes it on its own; any other field does. Preserve private raw evidence through merge, archive it afterwards, and let the operator delete only the named run root. No credential-copy cleanup or separate `~/.pstack-verify` login directories are needed. Do not kill unrelated processes.
 
 ## Helpers
 

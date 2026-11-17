@@ -11,6 +11,8 @@ This port applies the Cursor → Claude Code substitutions in skill bodies. Earl
 
 - The verifier's Codex T3 cases accept T3's second MCP server, `t3-code-direct`, beside `t3-code`, and its run-owned Codex config switches off the `openai-developers` and `codex-security` curated plugin servers that Codex 0.167.0 starts. Any other server still fails the inventory check. The first PR 11 live run failed on both. Calls on either T3 server, including `t3_thread_wait`, now count as T3 tool calls, so a `delegate_task` through `t3-code-direct` still reaches the recipes' checks.
 
+- Two verifier rules now match current T3 and Claude Code behavior, after the third PR 11 live run. T3's completion notice for a parent's own `delegate_task` binds when the completed `task_status` was read before the notice as well as after it. The daily-state check ignores a marketplace's `lastUpdated` in `~/.claude/plugins/known_marketplaces.json`, which Claude Code refreshed about a minute after the case in all three runs; any other change to that file still forbids publication.
+
 - The Codex Claude-route refusal fixture runs a shell check that succeeds only when the installed runner exits 78. This lets the existing successful-command parser observe the expected refusal without accepting arbitrary failed commands. Regression tests use real shell results through that parser and reject unexpected runner exit codes; receipt and guard assertions are unchanged.
 
 - The T3 dispatch guide gives an explicit lane-record JSON shape and places the concrete target ID under `model`. The verifier still rejects renamed or mismatched fields and now names those fields in its private failure reason without printing their values.
