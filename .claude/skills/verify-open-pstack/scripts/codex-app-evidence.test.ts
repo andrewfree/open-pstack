@@ -101,6 +101,18 @@ describe('Codex app native evidence', () => {
     const f = await fixture(); f.events.splice(7, 0, mcpStatus('ready'));
     expect((await parseCodexAppEvidence(serialize(f.events), f.expected)).sessionId).toBe(sessionId);
   });
+  test('accepts T3\'s second server, t3-code-direct, when it starts healthy beside t3-code', async () => {
+    const f = await fixture(); f.events.splice(3, 0, mcpStatus('starting', 't3-code-direct'), mcpStatus('ready', 't3-code-direct'));
+    expect((await parseCodexAppEvidence(serialize(f.events), f.expected)).sessionId).toBe(sessionId);
+  });
+  test('still requires t3-code itself when only t3-code-direct is ready', async () => {
+    const f = await fixture(); f.events = f.events.map(e => e.method === 'mcpServer/startupStatus/updated' ? mcpStatus(e.params.status, 't3-code-direct') : e);
+    await expect(parseCodexAppEvidence(serialize(f.events), f.expected)).rejects.toThrow('Missing Codex MCP startup inventory');
+  });
+  test('rejects t3-code-direct ready before it started', async () => {
+    const f = await fixture(); f.events.splice(3, 0, mcpStatus('ready', 't3-code-direct'));
+    await expect(parseCodexAppEvidence(serialize(f.events), f.expected)).rejects.toThrow('out of order');
+  });
   test.each(['starting', 'ready', 'failed'])('rejects another MCP server with startup status %s', async status => {
     const f = await fixture(); f.events.splice(3, 0, mcpStatus(status, 'codex_apps'));
     await expect(parseCodexAppEvidence(serialize(f.events), f.expected)).rejects.toThrow('MCP inventory');

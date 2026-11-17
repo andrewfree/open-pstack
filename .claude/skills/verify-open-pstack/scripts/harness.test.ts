@@ -101,7 +101,9 @@ describe('isolated harness boundaries', () => {
         calls.push(args);
         const config = join(options!.env!.CODEX_HOME!, 'config.toml');
         expect(Bun.TOML.parse(await readFile(config, 'utf8'))).toEqual({ analytics: { enabled: false }, features: { apps: false },
-          plugins: { 'data-analytics@openai-curated-remote': { mcp_servers: { data: { enabled: false } } } } });
+          plugins: { 'data-analytics@openai-curated-remote': { mcp_servers: { data: { enabled: false } } },
+            'openai-developers@openai-curated-remote': { mcp_servers: { 'openai-api-credit-promo': { enabled: false }, 'openai-api-key-local-confirmation': { enabled: false } } },
+            'codex-security@openai-curated-remote': { mcp_servers: { 'codex-security': { enabled: false } } } } });
         expect((await stat(config)).mode & 0o777).toBe(0o600);
         expect(options!.env!.DO_NOT_TRACK).toBe('1');
       }
