@@ -15,7 +15,7 @@ function record(): SessionRecord {
     commands: ['/installed/skills/poteto-mode/scripts/runner/pstack-runner --parent codex'],
     appTools: [
       { tool: 'orchestrator_capabilities', arguments: { search: model }, result: { providers: [
-        { providerInstanceId: 'cursor', driverKind: provider, canRunChildTask: true, canRunCrossProviderChildTask: true, constraints: [], models: [{ id: model }] }] } },
+        { providerInstanceId: 'cursor', driverKind: provider, canRunChildTask: true, canRunCrossProviderChildTask: true, constraints: [], models: [{ id: 'default', label: 'Auto' }] }] } },
     ] };
 }
 async function fixture(): Promise<Fixture> {
@@ -51,7 +51,7 @@ for (const [label, change, message] of [
   ['a delegate_task call', (r: SessionRecord) => { r.appTools!.push({ tool: 'delegate_task', arguments: { target: { providerInstanceId: 'cursor', model } }, result: { taskId: 'task' } }); }, 'app-route-external-used-delegate-task'],
   ['no T3 catalog lookup', (r: SessionRecord) => { r.appTools = []; }, 'app-route-external-no-catalog-lookup'],
   ['a catalog lookup for another search', (r: SessionRecord) => { r.appTools![0]!.arguments.search = 'cursor'; }, 'app-route-external-no-catalog-lookup'],
-  ['a T3 catalog without the model', (r: SessionRecord) => { (r.appTools![0]!.result.providers as any)[0].models = [{ id: 'other' }]; }, 'app-route-external-not-offered-by-t3'],
+  ['a T3 catalog with no instance of that provider', (r: SessionRecord) => { (r.appTools![0]!.result.providers as any)[0].driverKind = 'codex'; }, 'app-route-external-not-offered-by-t3'],
   ['a T3 instance that cannot run child tasks', (r: SessionRecord) => { (r.appTools![0]!.result.providers as any)[0].canRunChildTask = false; }, 'app-route-external-not-offered-by-t3'],
   ['no runner command', (r: SessionRecord) => { r.commands = []; }, 'runner-not-run'],
 ] as const) test(`rejects ${label}`, async () => {

@@ -104,6 +104,10 @@ describe('Codex app native evidence', () => {
     const f = await fixture(); f.events.splice(7, 0, mcpStatus('ready'));
     expect((await parseCodexAppEvidence(serialize(f.events), f.expected)).sessionId).toBe(sessionId);
   });
+  test('accepts MCP startup for this thread that arrives just before thread/started', async () => {
+    const f = await fixture(); [f.events[1], f.events[2]] = [f.events[2]!, f.events[1]!];
+    expect((await parseCodexAppEvidence(serialize(f.events), f.expected)).sessionId).toBe(sessionId);
+  });
   test('accepts T3\'s second server, t3-code-direct, when it starts healthy beside t3-code', async () => {
     const f = await fixture(); f.events.splice(3, 0, mcpStatus('starting', 't3-code-direct'), mcpStatus('ready', 't3-code-direct'));
     expect((await parseCodexAppEvidence(serialize(f.events), f.expected)).sessionId).toBe(sessionId);
