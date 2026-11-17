@@ -68,7 +68,7 @@ function userPrompts(items: ObjectValue[], expected: string): string[] {
   const notified = new Set<string>();
   for (const message of messages.slice(1)) {
     const notification = itemText(message), position = items.indexOf(message);
-    const matches = new Set<string>();
+    const matches = new Map<number, string>();
     for (const [index, item] of items.entries()) {
       if (index >= position || item.tool !== 'delegate_task') continue;
       const dispatched = nativeToolResult(item);
@@ -85,10 +85,10 @@ function userPrompts(items: ObjectValue[], expected: string): string[] {
           || result.childRunId !== dispatched.childRunId || result.childThreadId !== dispatched.childThreadId
           || result.latestTerminalRunId !== dispatched.childRunId || result.latestTerminalStatus !== 'completed'
           || result.providerInstanceId !== dispatched.providerInstanceId || result.model !== dispatched.model) continue;
-        if (notification === `Delegated task ${taskId}${title} [completed]:\n${result.summary}`) matches.add(taskId);
+        if (notification === `Delegated task ${taskId}${title} [completed]:\n${result.summary}`) matches.set(index, taskId);
       }
     }
-    const [match] = matches;
+    const [match] = matches.values();
     if (matches.size !== 1 || notified.has(match!)) throw new Error('Codex extra user message is not a bound delegated completion');
     notified.add(match!);
   }
